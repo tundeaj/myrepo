@@ -27,9 +27,14 @@ const STEP_ICONS: Record<string, string> = {
   first_content: "upload",
 };
 
-/** Reusable across /admin (category="platform") and /instructor (category="instructor"). */
-export function SetupChecklist({ category }: { category: "platform" | "instructor" }) {
-  const { data, loading, error, retry } = useApi<{ steps: SetupStep[] }>(`/dashboard/setup-steps?category=${category}`);
+/** Reusable across /admin (category="platform") and /instructor (category="instructor").
+ *  Pass `steps` to skip the admin-gated fetch (the instructor portal supplies its own). */
+export function SetupChecklist({ category, steps: providedSteps }: { category: "platform" | "instructor"; steps?: SetupStep[] }) {
+  const { data, loading: fetchLoading, error: fetchError, retry } = useApi<{ steps: SetupStep[] }>(
+    providedSteps ? null : `/dashboard/setup-steps?category=${category}`,
+  );
+  const loading = providedSteps ? false : fetchLoading;
+  const error = providedSteps ? null : fetchError;
   const storageKey = `webinarflix.setup-checklist.${category}.collapsed`;
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(storageKey) === "true");
 
@@ -37,7 +42,7 @@ export function SetupChecklist({ category }: { category: "platform" | "instructo
     localStorage.setItem(storageKey, String(collapsed));
   }, [collapsed, storageKey]);
 
-  const steps = data?.steps ?? [];
+  const steps = providedSteps ?? data?.steps ?? [];
   const total = steps.length;
   const done = steps.filter((s) => s.status === "complete").length;
   const allDone = total > 0 && done === total;

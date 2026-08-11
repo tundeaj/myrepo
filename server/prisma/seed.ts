@@ -299,6 +299,7 @@ async function seedUiTranslations() {
     "nav.categories": "Categories",
     "nav.settings": "Settings",
     "nav.modules": "Modules",
+    "nav.instructors": "Instructors",
     "nav.instructor_applications": "Instructor Applications",
     "nav.review_queue": "Review Queue",
     "topbar.search_placeholder": "Search sessions, courses, speakers, users…",

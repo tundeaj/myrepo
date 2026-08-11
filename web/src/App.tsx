@@ -9,6 +9,18 @@ import { AllCourses } from "./pages/courses/AllCourses";
 import { AddEditCourse } from "./pages/courses/AddEditCourse";
 import { AllMedia } from "./pages/library/AllMedia";
 import { UploadMedia } from "./pages/library/UploadMedia";
+import { Applications } from "./pages/instructors/Applications";
+import { AllInstructors } from "./pages/instructors/AllInstructors";
+import { ReviewQueue } from "./pages/instructors/ReviewQueue";
+import { InstructorLayout } from "./layout/InstructorLayout";
+import { InstructorDashboard } from "./pages/instructor/InstructorDashboard";
+import { MyContent } from "./pages/instructor/MyContent";
+import { MyMedia } from "./pages/instructor/MyMedia";
+import { MyLearners } from "./pages/instructor/MyLearners";
+import { Earnings } from "./pages/instructor/Earnings";
+import { PayoutDetails } from "./pages/instructor/PayoutDetails";
+import { Schedule } from "./pages/instructor/Schedule";
+import { Teach } from "./pages/Teach";
 import { ProtectedRoute } from "./lib/ProtectedRoute";
 
 // Routes not yet built — each will be replaced with a real page in future prompts
@@ -41,8 +53,6 @@ const PLACEHOLDER_PATHS = [
   "categories",
   "settings",
   "settings/modules",
-  "instructors/applications",
-  "instructors/review",
 ];
 
 export function App() {
@@ -73,11 +83,30 @@ export function App() {
         <Route path="library" element={<AllMedia />} />
         <Route path="library/upload" element={<UploadMedia />} />
 
+        {/* ── Instructor management (Prompt 06, admin side) ── */}
+        <Route path="instructors" element={<AllInstructors />} />
+        <Route path="instructors/applications" element={<Applications />} />
+        <Route path="instructors/review" element={<ReviewQueue />} />
+
         {/* ── Placeholder routes (future prompts) ── */}
         {PLACEHOLDER_PATHS.map((path) => (
           <Route key={path} path={path} element={<PlaceholderPage />} />
         ))}
       </Route>
+      {/* ── Instructor portal (Prompt 06, instructor side) ── */}
+      <Route path="/instructor" element={<InstructorLayout />}>
+        <Route index element={<InstructorDashboard />} />
+        <Route path="content" element={<MyContent />} />
+        <Route path="media" element={<MyMedia />} />
+        <Route path="learners" element={<MyLearners />} />
+        <Route path="earnings" element={<Earnings />} />
+        <Route path="payout-details" element={<PayoutDetails />} />
+        <Route path="schedule" element={<Schedule />} />
+      </Route>
+
+      {/* ── Public instructor application (Prompt 06) ── */}
+      <Route path="/teach" element={<Teach />} />
+
       <Route path="/" element={<Navigate to="/admin" replace />} />
       <Route path="*" element={<Navigate to="/admin" replace />} />
     </Routes>
