@@ -586,6 +586,9 @@ model ContentItem {
   content_last_updated_at        DateTime?
   last_reviewed_by                Int?
   created_by                    Int?
+  // Course-specific JSON columns (null for non-course content types)
+  outcomes_json                 String?        @db.Text
+  cert_config_json              String?        @db.Text
   created_at                    DateTime       @default(now())
   updated_at                    DateTime       @updatedAt
 

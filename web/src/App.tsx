@@ -5,13 +5,13 @@ import { PlaceholderPage } from "./pages/PlaceholderPage";
 import { Login } from "./pages/Login";
 import { AllSessions } from "./pages/sessions/AllSessions";
 import { AddEditSession } from "./pages/sessions/AddEditSession";
+import { AllCourses } from "./pages/courses/AllCourses";
+import { AddEditCourse } from "./pages/courses/AddEditCourse";
 import { ProtectedRoute } from "./lib/ProtectedRoute";
 
 // Routes not yet built — each will be replaced with a real page in future prompts
 const PLACEHOLDER_PATHS = [
   "sessions/categories",
-  "courses",
-  "courses/new",
   "library",
   "speakers",
   "users",
@@ -61,6 +61,11 @@ export function App() {
         <Route path="sessions" element={<AllSessions />} />
         <Route path="sessions/new" element={<AddEditSession />} />
         <Route path="sessions/:id/edit" element={<AddEditSession />} />
+
+        {/* ── Courses (Prompt 04) ── */}
+        <Route path="courses" element={<AllCourses />} />
+        <Route path="courses/new" element={<AddEditCourse />} />
+        <Route path="courses/:id/edit" element={<AddEditCourse />} />
 
         {/* ── Placeholder routes (future prompts) ── */}
         {PLACEHOLDER_PATHS.map((path) => (
