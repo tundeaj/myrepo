@@ -12,5 +12,5 @@ export function signToken(payload: AuthTokenPayload): string {
 }
 
 export function verifyToken(token: string): AuthTokenPayload {
-  return jwt.verify(token, env.JWT_SECRET) as AuthTokenPayload;
+  return jwt.verify(token, env.JWT_SECRET) as unknown as AuthTokenPayload;
 }
