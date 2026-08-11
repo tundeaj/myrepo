@@ -1,0 +1,498 @@
+// Seeds reference/config data called out by SEED blocks in PROMPT 01-C, plus a
+// super_admin login and a light demo dataset so the admin dashboard isn't a wall
+// of zeros on first run. Safe to re-run — every insert is an upsert.
+import { PrismaClient } from "@prisma/client";
+import bcrypt from "bcryptjs";
+
+const prisma = new PrismaClient();
+
+async function seedSpeakerTypes() {
+  const rows = [
+    { name: "Lead Instructor", slug: "lead-instructor", display_order: 1 },
+    { name: "Guest Expert", slug: "guest-expert", display_order: 2 },
+    { name: "Industry Panelist", slug: "industry-panelist", display_order: 3 },
+    { name: "Host", slug: "host", display_order: 4 },
+    { name: "Moderator", slug: "moderator", display_order: 5 },
+  ];
+  for (const row of rows) {
+    const existing = await prisma.speakerType.findFirst({ where: { slug: row.slug } });
+    if (!existing) await prisma.speakerType.create({ data: row });
+  }
+}
+
+async function seedImageVariants() {
+  const rows = [
+    { variant_key: "poster", label: "Poster", width: 1080, height: 1620, aspect_ratio: "2:3", imagekit_transform: "n-poster", usage_note: "Browse rows and mobile cards", display_order: 1 },
+    { variant_key: "player", label: "Player", width: 1280, height: 720, aspect_ratio: "16:9", imagekit_transform: "n-player", usage_note: "Player and hero billboard", display_order: 2 },
+    { variant_key: "square", label: "Square", width: 1080, height: 1080, aspect_ratio: "1:1", imagekit_transform: "n-square", usage_note: "Speaker tiles and social sharing", display_order: 3 },
+    { variant_key: "thumb", label: "Thumbnail", width: 400, height: 225, aspect_ratio: "16:9", imagekit_transform: "n-thumb", usage_note: "Admin lists and search results", display_order: 4 },
+  ];
+  for (const row of rows) {
+    await prisma.imageVariant.upsert({ where: { variant_key: row.variant_key }, update: row, create: row });
+  }
+}
+
+async function seedPolicies() {
+  const keys = ["terms", "privacy", "refund", "instructor_agreement", "community_guidelines", "recording_consent"];
+  for (const key of keys) {
+    const existing = await prisma.policy.findFirst({ where: { policy_key: key, version: 1 } });
+    if (!existing) {
+      await prisma.policy.create({
+        data: {
+          policy_key: key,
+          title: key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
+          body_html: "<p>Placeholder policy text — replace before launch.</p>",
+          version: 1,
+          effective_from: new Date(),
+          is_active: true,
+        },
+      });
+    }
+  }
+}
+
+async function seedCmsPages() {
+  const pages = [
+    "terms-and-conditions",
+    "privacy-policy",
+    "refund-policy",
+    "about-us",
+    "contact",
+    "community-guidelines",
+    "recording-consent",
+  ];
+  for (const slug of pages) {
+    await prisma.cmsPage.upsert({
+      where: { slug },
+      update: {},
+      create: {
+        slug,
+        title: slug.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
+        body_html: "<p>Placeholder content — replace before launch.</p>",
+        status: "draft",
+        is_system_page: true,
+      },
+    });
+  }
+}
+
+async function seedSettings() {
+  const groups: Record<string, Record<string, string | boolean>> = {
+    brand: {
+      platform_name: "Webinarflix",
+      primary_colour: "#E50914",
+      font_stack: "system-ui,-apple-system,sans-serif",
+    },
+    localisation: {
+      default_timezone: "Africa/Lagos",
+      default_language: "en",
+      default_currency: "NGN",
+      geo_detection: true,
+    },
+    registration: {
+      free_registration: true,
+      email_verification: false,
+      guest_viewing: "soft_gate",
+      signup_flow: "multi_step",
+      session_timeout_days: "30",
+      sensitive_reauth_minutes: "15",
+    },
+    playback: {
+      subtitles_default_on: true,
+      autoplay_desktop: true,
+      autoplay_mobile: false,
+      quality_selector: true,
+      data_saver_available: true,
+      playback_speeds: "1,1.25,1.5,1.75,2",
+      skip_chapter: true,
+      rows_initial_web: "4",
+      rows_initial_mobile: "3",
+      cards_per_row: "15",
+      homepage_cache_minutes: "5",
+      live_poll_seconds: "30",
+    },
+    monetisation: {
+      payout_holdback_days: "14",
+      default_commission_pct: "30",
+      wht_applicable: true,
+    },
+    content_policy: {
+      review_required: false,
+      new_badge_days: "7",
+      ads_free_tier_only: true,
+    },
+    notifications: {
+      sender_name: "Webinarflix",
+      reminder_offsets: "1440,60,10",
+    },
+  };
+
+  for (const [group, entries] of Object.entries(groups)) {
+    for (const [key, value] of Object.entries(entries)) {
+      const setting_key = `${group}.${key}`;
+      await prisma.setting.upsert({
+        where: { setting_key },
+        update: {},
+        create: {
+          setting_key,
+          setting_value: String(value),
+          setting_group: group,
+          is_secret: false,
+        },
+      });
+    }
+  }
+
+  // Integration keys — secret-flagged, values left unset until the operator supplies them.
+  const secretKeys = [
+    ["integrations.imagekit_private_key", "integrations"],
+    ["integrations.paystack_secret_key", "integrations"],
+    ["integrations.paystack_public_key", "integrations"],
+    ["integrations.imagekit_public_key", "integrations"],
+    ["integrations.imagekit_url_endpoint", "integrations"],
+    ["integrations.bunny_stream_api_key", "integrations"],
+    ["integrations.smtp_password", "notifications"],
+    ["integrations.ga4_id", "integrations"],
+    ["integrations.meta_pixel_id", "integrations"],
+  ] as const;
+  for (const [setting_key, setting_group] of secretKeys) {
+    await prisma.setting.upsert({
+      where: { setting_key },
+      update: {},
+      create: { setting_key, setting_value: null, setting_group, is_secret: true },
+    });
+  }
+}
+
+async function seedModules() {
+  const core = ["sessions", "courses", "media_library", "payments", "analytics", "settings"];
+  const growth = ["transcripts", "chapters", "coupons", "promo_banners", "bulk_import", "community", "certificates", "subtitles"];
+  const enterprise = ["instructor_payouts", "compliance_reporting", "team_seats", "sponsorship", "french_locale", "live_audio_mode"];
+
+  const label = (key: string) => key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+
+  for (const flag_key of core) {
+    await prisma.appModule.upsert({
+      where: { flag_key },
+      update: {},
+      create: { flag_key, label: label(flag_key), tier: "core", is_enabled: true },
+    });
+  }
+  for (const flag_key of growth) {
+    await prisma.appModule.upsert({
+      where: { flag_key },
+      update: {},
+      create: { flag_key, label: label(flag_key), tier: "growth", is_enabled: false },
+    });
+  }
+  for (const flag_key of enterprise) {
+    await prisma.appModule.upsert({
+      where: { flag_key },
+      update: {},
+      create: { flag_key, label: label(flag_key), tier: "enterprise", is_enabled: false },
+    });
+  }
+}
+
+async function seedSetupSteps() {
+  const steps: Array<{ step_key: string; label: string; description: string; config_route: string }> = [
+    { step_key: "video_provider", label: "Connect video provider", description: "Connect Bunny Stream so sessions and replays can go live.", config_route: "/admin/settings/integrations" },
+    { step_key: "email_smtp", label: "Configure email delivery", description: "Set up SMTP so reminders and receipts actually send.", config_route: "/admin/settings/notifications" },
+    { step_key: "payments", label: "Connect Paystack", description: "Add your Paystack keys to accept payments.", config_route: "/admin/settings/integrations" },
+    { step_key: "plans", label: "Create subscription plans", description: "Set up at least one plan for subscribers.", config_route: "/admin/plans" },
+    { step_key: "branding", label: "Customise branding", description: "Set your platform name, logo and colours.", config_route: "/admin/settings/brand" },
+    { step_key: "first_speaker", label: "Add your first speaker", description: "Speakers appear on session and course pages.", config_route: "/admin/speakers/new" },
+    { step_key: "first_session", label: "Schedule your first session", description: "Create a live session or upload a replay.", config_route: "/admin/sessions/new" },
+    { step_key: "reminders", label: "Set the reminder schedule", description: "Choose when attendees get reminded before a session.", config_route: "/admin/settings/notifications" },
+    { step_key: "categories", label: "Create content categories", description: "Categories power browsing and the homepage tiles.", config_route: "/admin/categories" },
+    { step_key: "first_content", label: "Publish your first content", description: "Get your first session or course live.", config_route: "/admin/sessions" },
+  ];
+  let order = 1;
+  for (const step of steps) {
+    await prisma.setupStep.upsert({
+      where: { step_key: step.step_key },
+      update: {},
+      create: { ...step, category: "platform", display_order: order++, status: "pending" },
+    });
+  }
+}
+
+async function seedFooterLinks() {
+  const required = [
+    { label: "Terms of Service", url: "/pages/terms-and-conditions", column_group: "legal" },
+    { label: "Privacy Policy", url: "/pages/privacy-policy", column_group: "legal" },
+    { label: "Refund Policy", url: "/pages/refund-policy", column_group: "legal" },
+    { label: "Contact", url: "/pages/contact", column_group: "company" },
+  ];
+  for (const [i, row] of required.entries()) {
+    const existing = await prisma.footerLink.findFirst({ where: { label: row.label } });
+    if (!existing) {
+      await prisma.footerLink.create({ data: { ...row, is_required: true, display_order: i + 1 } });
+    }
+  }
+}
+
+async function seedNotificationEventKeys() {
+  // notification_preferences rows are per-user (user_id NOT NULL), so there is nothing
+  // global to seed here — the fixed list of event_keys lives in
+  // server/src/constants/notificationEvents.ts and is applied per-user at signup.
+}
+
+async function seedSuperAdmin() {
+  const email = "admin@webinarflix.dev";
+  const existing = await prisma.user.findUnique({ where: { email } });
+  if (existing) return existing;
+  const password_hash = await bcrypt.hash("ChangeMe123!", 10);
+  return prisma.user.create({
+    data: {
+      email,
+      password_hash,
+      full_name: "Platform Admin",
+      role: "super_admin",
+      is_active: true,
+      email_verified: true,
+    },
+  });
+}
+
+async function seedUiTranslations() {
+  const entries: Record<string, string> = {
+    "nav.dashboard": "Dashboard",
+    "nav.content": "Content",
+    "nav.live_sessions": "Live Sessions",
+    "nav.live_sessions.all": "All",
+    "nav.live_sessions.add_new": "Add New",
+    "nav.live_sessions.categories": "Categories",
+    "nav.courses": "Courses",
+    "nav.courses.all": "All",
+    "nav.courses.add_new": "Add New",
+    "nav.media_library": "Media Library",
+    "nav.speakers": "Speakers",
+    "nav.audience": "Audience",
+    "nav.users": "Users",
+    "nav.registrations": "Registrations",
+    "nav.subscriptions_orders": "Subscriptions & Orders",
+    "nav.bulk_import_export": "Bulk Import / Export",
+    "nav.community": "Community",
+    "nav.spaces": "Spaces",
+    "nav.posts_moderation": "Posts & Moderation",
+    "nav.revenue": "Revenue",
+    "nav.plans": "Plans",
+    "nav.coupons": "Coupons",
+    "nav.payouts": "Payouts",
+    "nav.sponsors": "Sponsors",
+    "nav.ads": "Ads",
+    "nav.advertisers": "Advertisers",
+    "nav.corporate_invoices": "Corporate Invoices",
+    "nav.analytics": "Analytics",
+    "nav.player_analytics": "Player Analytics",
+    "nav.subscriber_analytics": "Subscriber Analytics",
+    "nav.ppv_revenue_analytics": "PPV & Revenue Analytics",
+    "nav.site": "Site",
+    "nav.page_layout": "Page Layout",
+    "nav.pages": "Pages",
+    "nav.landing_pages": "Landing Pages",
+    "nav.promotions": "Promotions",
+    "nav.faqs": "FAQs",
+    "nav.contact_requests": "Contact Requests",
+    "nav.system": "System",
+    "nav.categories": "Categories",
+    "nav.settings": "Settings",
+    "nav.modules": "Modules",
+    "nav.instructor_applications": "Instructor Applications",
+    "nav.review_queue": "Review Queue",
+    "topbar.search_placeholder": "Search sessions, courses, speakers, users…",
+    "topbar.preview_site": "Preview Site",
+    "topbar.profile": "Profile",
+    "topbar.settings": "Settings",
+    "topbar.logout": "Log out",
+    "dashboard.setup_checklist": "Setup checklist",
+    "dashboard.setup_progress": "{done} of {total} steps complete",
+    "dashboard.setup_all_done": "All set — your platform is ready to go live.",
+    "dashboard.configure": "Configure",
+    "dashboard.reconfigure": "Reconfigure",
+    "dashboard.stat.sessions_this_week": "Sessions this week",
+    "dashboard.stat.show_up_rate": "Show-up rate (30 days)",
+    "dashboard.stat.active_subscriptions": "Active subscriptions",
+    "dashboard.stat.gross_margin": "Gross margin this month",
+    "dashboard.chart.registered_vs_paying": "Registered vs Paying Users",
+    "dashboard.table.next_sessions": "Next 5 sessions",
+    "dashboard.table.top_attendance": "Top 5 by attendance (last 30 days)",
+    "dashboard.table.title": "Title",
+    "dashboard.table.start_time": "Start time",
+    "dashboard.table.registrations": "Registrations",
+    "dashboard.table.status": "Status",
+    "dashboard.table.attendance": "Attendance",
+    "dashboard.table.show_up_pct": "Show-up %",
+    "empty.no_results": "No results",
+    "empty.retry": "Retry",
+    "common.loading": "Loading…",
+  };
+  for (const [translation_key, en] of Object.entries(entries)) {
+    await prisma.uiTranslation.upsert({
+      where: { translation_key },
+      update: { en },
+      create: { translation_key, en },
+    });
+  }
+}
+
+async function seedCategories() {
+  const cats = [
+    { name: "Business & Entrepreneurship", slug: "business-entrepreneurship" },
+    { name: "Technology", slug: "technology" },
+    { name: "Marketing & Growth", slug: "marketing-growth" },
+    { name: "Finance & Investing", slug: "finance-investing" },
+    { name: "Personal Development", slug: "personal-development" },
+  ];
+  for (const [i, c] of cats.entries()) {
+    await prisma.category.upsert({
+      where: { slug: c.slug },
+      update: {},
+      create: { ...c, display_order: i + 1, show_as_tile: true },
+    });
+  }
+}
+
+async function seedDemoContent() {
+  const count = await prisma.contentItem.count();
+  if (count > 0) return; // don't duplicate on re-run
+
+  const speaker = await prisma.speaker.upsert({
+    where: { slug: "ada-okafor" },
+    update: {},
+    create: {
+      full_name: "Ada Okafor",
+      slug: "ada-okafor",
+      title: "Growth Lead",
+      organisation: "Paystack",
+      bio: "Ada has spent a decade building growth teams across Nigerian fintech.",
+      is_active: true,
+    },
+  });
+
+  // A pool of demo viewer accounts to register against demo sessions — real rows,
+  // not an arbitrary counter, so show-up-rate math has something genuine to join over.
+  const demoUsers = [];
+  for (let i = 1; i <= 40; i++) {
+    const email = `demo-viewer-${i}@webinarflix.dev`;
+    const user = await prisma.user.upsert({
+      where: { email },
+      update: {},
+      create: { email, full_name: `Demo Viewer ${i}`, role: "viewer", email_verified: true },
+    });
+    demoUsers.push(user);
+  }
+
+  const now = new Date();
+  const inDays = (d: number) => new Date(now.getTime() + d * 86400000);
+
+  const demoSessions: Array<{ title: string; days: number; status: "registration_open" | "scheduled" | "ended"; regs: number; attended: number }> = [
+    { title: "Scaling Payments in West Africa", days: 1, status: "registration_open", regs: 34, attended: 0 },
+    { title: "Building a Growth Engine on a Naira Budget", days: 3, status: "registration_open", regs: 28, attended: 0 },
+    { title: "Fundraising for Francophone Startups", days: 5, status: "scheduled", regs: 21, attended: 0 },
+    { title: "Personal Branding for Consultants", days: 7, status: "scheduled", regs: 14, attended: 0 },
+    { title: "The Nigerian Creator Economy in 2026", days: 9, status: "scheduled", regs: 6, attended: 0 },
+    { title: "Masterclass: Pricing for African SaaS", days: -4, status: "ended", regs: 38, attended: 30 },
+    { title: "AMA: Raising a Seed Round in Lagos", days: -8, status: "ended", regs: 32, attended: 17 },
+  ];
+
+  for (const s of demoSessions) {
+    const slug = s.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+    const item = await prisma.contentItem.create({
+      data: {
+        content_type: "webinar",
+        title: s.title,
+        slug,
+        short_description: `Join us for a live session on ${s.title.toLowerCase()}.`,
+        status: s.status,
+        scheduled_start_at: inDays(s.days),
+        scheduled_duration_minutes: 60,
+        session_format: "webinar",
+        access_level: "registered",
+        price_mode: "free",
+        registration_count: s.regs,
+        created_at: inDays(s.days - 14),
+      },
+    });
+    await prisma.contentSpeaker.create({ data: { content_id: item.id, speaker_id: speaker.id, role: "host" } });
+
+    const regCount = Math.min(s.regs, demoUsers.length);
+    for (let i = 0; i < regCount; i++) {
+      const reg = await prisma.registration.create({
+        data: {
+          user_id: demoUsers[i].id,
+          content_id: item.id,
+          status: "confirmed",
+          registered_at: inDays(s.days - 3),
+        },
+      });
+      if (s.status === "ended" && i < s.attended) {
+        await prisma.attendance.create({
+          data: {
+            registration_id: reg.id,
+            attended: true,
+            watch_seconds: 2400,
+            joined_at: inDays(s.days),
+            left_at: inDays(s.days),
+          },
+        });
+      }
+    }
+  }
+
+  // A couple of active subscribers so subscription stat tiles have something to show.
+  let starterPlan = await prisma.plan.findFirst({ where: { name: "Starter" } });
+  if (!starterPlan) {
+    starterPlan = await prisma.plan.create({
+      data: { name: "Starter", price_ngn: 5000, billing_interval: "monthly", max_concurrent_streams: 1, seat_count: 1, is_active: true },
+    });
+  }
+  let proPlan = await prisma.plan.findFirst({ where: { name: "Pro" } });
+  if (!proPlan) {
+    proPlan = await prisma.plan.create({
+      data: { name: "Pro", price_ngn: 15000, billing_interval: "monthly", max_concurrent_streams: 2, seat_count: 1, is_active: true },
+    });
+  }
+
+  for (let i = 0; i < 12; i++) {
+    const plan = i % 3 === 0 ? proPlan : starterPlan;
+    await prisma.subscription.create({
+      data: {
+        user_id: demoUsers[i].id,
+        plan_id: plan.id,
+        status: "active",
+        current_period_end: inDays(30 - i),
+        created_at: inDays(-30 + i),
+      },
+    });
+  }
+}
+
+async function main() {
+  await seedSpeakerTypes();
+  await seedImageVariants();
+  await seedPolicies();
+  await seedCmsPages();
+  await seedSettings();
+  await seedModules();
+  await seedSetupSteps();
+  await seedFooterLinks();
+  await seedNotificationEventKeys();
+  await seedUiTranslations();
+  await seedCategories();
+  await seedSuperAdmin();
+  await seedDemoContent();
+
+  console.log("✅ Seed complete.");
+  console.log("   Super admin login: admin@webinarflix.dev / ChangeMe123!");
+}
+
+main()
+  .catch((e) => {
+    console.error("Seed failed:", e);
+    process.exit(1);
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
+  });

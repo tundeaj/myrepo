@@ -1,0 +1,14 @@
+node_modules/
+package-lock.json
+dist/
+build/
+.env
+.env.local
+*.log
+.DS_Store
+server/prisma/dev.db
+server/generated/
+server/prisma/migrations/
+.vite/
+coverage/
+*.tsbuildinfo
