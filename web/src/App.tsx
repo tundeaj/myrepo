@@ -7,12 +7,14 @@ import { AllSessions } from "./pages/sessions/AllSessions";
 import { AddEditSession } from "./pages/sessions/AddEditSession";
 import { AllCourses } from "./pages/courses/AllCourses";
 import { AddEditCourse } from "./pages/courses/AddEditCourse";
+import { AllMedia } from "./pages/library/AllMedia";
+import { UploadMedia } from "./pages/library/UploadMedia";
 import { ProtectedRoute } from "./lib/ProtectedRoute";
 
 // Routes not yet built — each will be replaced with a real page in future prompts
 const PLACEHOLDER_PATHS = [
   "sessions/categories",
-  "library",
+  // "library" — replaced by real pages below
   "speakers",
   "users",
   "registrations",
@@ -66,6 +68,10 @@ export function App() {
         <Route path="courses" element={<AllCourses />} />
         <Route path="courses/new" element={<AddEditCourse />} />
         <Route path="courses/:id/edit" element={<AddEditCourse />} />
+
+        {/* ── Media Library (Prompt 05) ── */}
+        <Route path="library" element={<AllMedia />} />
+        <Route path="library/upload" element={<UploadMedia />} />
 
         {/* ── Placeholder routes (future prompts) ── */}
         {PLACEHOLDER_PATHS.map((path) => (
