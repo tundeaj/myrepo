@@ -9,6 +9,13 @@ import { Home } from "./public/Home";
 // the public entry chunk carries the entire back office and blows the
 // "initial payload under 150KB" gate on its own.
 
+// Public pages beyond the homepage are split too. They share the Card, Row and
+// image helpers the homepage already loaded, so each is a small extra chunk.
+const Detail = lazy(() => import("./public/Detail").then((m) => ({ default: m.Detail })));
+const BrowseIndex = lazy(() => import("./public/Browse").then((m) => ({ default: m.BrowseIndex })));
+const BrowseCategory = lazy(() => import("./public/Browse").then((m) => ({ default: m.BrowseCategory })));
+const SpeakerProfile = lazy(() => import("./public/SpeakerProfile").then((m) => ({ default: m.SpeakerProfile })));
+
 const AdminLayout = lazy(() => import("./layout/AdminLayout").then((m) => ({ default: m.AdminLayout })));
 const Dashboard = lazy(() => import("./pages/Dashboard").then((m) => ({ default: m.Dashboard })));
 const PlaceholderPage = lazy(() => import("./pages/PlaceholderPage").then((m) => ({ default: m.PlaceholderPage })));
@@ -142,6 +149,14 @@ export function App() {
 
         {/* ── Public homepage (Prompt 09) ── */}
         <Route path="/" element={<Home />} />
+
+        {/* ── Public content surface (Prompt 11) ── */}
+        {/* These are the destinations the homepage has always linked to; until
+            now they fell through to the catch-all and bounced back to "/". */}
+        <Route path="/watch/:slug" element={<Detail />} />
+        <Route path="/browse" element={<BrowseIndex />} />
+        <Route path="/browse/:slug" element={<BrowseCategory />} />
+        <Route path="/speakers/:slug" element={<SpeakerProfile />} />
 
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

@@ -22,6 +22,7 @@ import { subscriberAnalyticsRouter } from "./routes/subscriberAnalytics.js";
 import { invoicesRouter } from "./routes/invoices.js";
 import { layoutRouter } from "./routes/layout.js";
 import { homepageRouter } from "./routes/homepage.js";
+import { contentRouter, publicCategoriesRouter, publicSpeakersRouter } from "./routes/content.js";
 import { transcriptsRouter } from "./routes/transcripts.js";
 import { calendarRouter, publicCalendarRouter } from "./routes/calendar.js";
 import { aiRouter } from "./routes/ai.js";
@@ -56,6 +57,12 @@ app.use("/api/analytics/subscribers", requireAuth, requireAdmin, subscriberAnaly
 app.use("/api/invoices", requireAuth, requireAdmin, invoicesRouter);
 app.use("/api/layout", requireAuth, requireAdmin, layoutRouter);
 app.use("/api/homepage", homepageRouter);
+// Public content surface (Prompt 11). Unauthenticated by design — these are the
+// pages the homepage links to. Mounted under /public-* so they cannot collide
+// with the admin-gated /api/categories and /api/speakers above.
+app.use("/api/content", contentRouter);
+app.use("/api/public-categories", publicCategoriesRouter);
+app.use("/api/public-speakers", publicSpeakersRouter);
 app.use("/api/transcripts", requireAuth, requireAdmin, transcriptsRouter);
 // Public: calendar apps poll the .ics URL with no way to send a bearer token.
 // The ics_token is the capability; the payload carries no personal data.

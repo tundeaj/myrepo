@@ -10,7 +10,7 @@ import { endOfWeek, daysAgo } from "./dates.js";
 // into the payload by default. stream_key, password_hash, account_number and
 // every is_secret setting are structurally unreachable from here.
 
-const CARD_SELECT = {
+export const CARD_SELECT = {
   id: true,
   slug: true,
   title: true,
@@ -26,7 +26,7 @@ const CARD_SELECT = {
   avg_rating: true,
 } as const;
 
-type RawCard = {
+export type RawCard = {
   id: number;
   slug: string;
   title: string;
@@ -86,7 +86,7 @@ export interface CategoryCard {
 
 /** Batch-hydrates speaker names, category names, audio availability and runtime
  *  for a page of content rows — four queries total regardless of card count. */
-async function decorateCards(raw: RawCard[]): Promise<ContentCard[]> {
+export async function decorateCards(raw: RawCard[]): Promise<ContentCard[]> {
   if (!raw.length) return [];
   const ids = raw.map((r) => r.id);
 
@@ -154,7 +154,7 @@ async function decorateCards(raw: RawCard[]): Promise<ContentCard[]> {
 }
 
 // Statuses a signed-out visitor may see in a row.
-const VISIBLE_STATUSES = ["scheduled", "registration_open", "starting_soon", "live", "ended", "replay_ready"] as const;
+export const VISIBLE_STATUSES = ["scheduled", "registration_open", "starting_soon", "live", "ended", "replay_ready"] as const;
 
 function visibleWhere(extra: Record<string, any> = {}) {
   return { is_active: true, status: { in: [...VISIBLE_STATUSES] }, ...extra };
@@ -380,7 +380,7 @@ const SETTING_FALLBACKS: Record<string, string> = {
   "integrations.imagekit_url_endpoint": "",
 };
 
-async function publicSettings(): Promise<Record<string, string>> {
+export async function publicSettings(): Promise<Record<string, string>> {
   const rows = await prisma.setting.findMany({
     where: { setting_key: { in: [...PUBLIC_SETTING_KEYS] }, is_secret: false },
     select: { setting_key: true, setting_value: true },
@@ -395,9 +395,9 @@ async function publicSettings(): Promise<Record<string, string>> {
 
 /** UI strings the public homepage renders through t(). Shipping them here is what
  *  keeps the i18n dictionary from costing a third request before first paint. */
-const PUBLIC_STRING_PREFIXES = ["home.", "nav.public.", "card.", "hero.", "common."];
+const PUBLIC_STRING_PREFIXES = ["home.", "nav.public.", "card.", "hero.", "common.", "detail.", "browse."];
 
-async function publicStrings(): Promise<Record<string, { en: string | null; fr: string | null }>> {
+export async function publicStrings(): Promise<Record<string, { en: string | null; fr: string | null }>> {
   const rows = await prisma.uiTranslation.findMany({
     where: { OR: PUBLIC_STRING_PREFIXES.map((p) => ({ translation_key: { startsWith: p } })) },
     select: { translation_key: true, en: true, fr: true },
