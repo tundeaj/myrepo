@@ -1,40 +1,48 @@
+import { lazy, Suspense } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
-import { AdminLayout } from "./layout/AdminLayout";
-import { Dashboard } from "./pages/Dashboard";
-import { PlaceholderPage } from "./pages/PlaceholderPage";
-import { Login } from "./pages/Login";
-import { AllSessions } from "./pages/sessions/AllSessions";
-import { AddEditSession } from "./pages/sessions/AddEditSession";
-import { AllCourses } from "./pages/courses/AllCourses";
-import { AddEditCourse } from "./pages/courses/AddEditCourse";
-import { AllMedia } from "./pages/library/AllMedia";
-import { UploadMedia } from "./pages/library/UploadMedia";
-import { Applications } from "./pages/instructors/Applications";
-import { AllInstructors } from "./pages/instructors/AllInstructors";
-import { ReviewQueue } from "./pages/instructors/ReviewQueue";
-import { InstructorLayout } from "./layout/InstructorLayout";
-import { InstructorDashboard } from "./pages/instructor/InstructorDashboard";
-import { MyContent } from "./pages/instructor/MyContent";
-import { MyMedia } from "./pages/instructor/MyMedia";
-import { MyLearners } from "./pages/instructor/MyLearners";
-import { Earnings } from "./pages/instructor/Earnings";
-import { PayoutDetails } from "./pages/instructor/PayoutDetails";
-import { Schedule } from "./pages/instructor/Schedule";
-import { Teach } from "./pages/Teach";
-import { SettingsHub } from "./pages/settings/SettingsHub";
-import { Modules } from "./pages/settings/Modules";
-import { ImageVariants } from "./pages/settings/ImageVariants";
-import { FooterLinks } from "./pages/settings/FooterLinks";
-import { Plans } from "./pages/plans/Plans";
-import { SubscriberAnalytics } from "./pages/analytics/SubscriberAnalytics";
-import { Invoices } from "./pages/revenue/Invoices";
-import { PageLayout } from "./pages/layout/PageLayout";
 import { ProtectedRoute } from "./lib/ProtectedRoute";
+import { Home } from "./public/Home";
+
+// The public homepage is the only eagerly-bundled route. Everything else —
+// the whole admin console, the instructor portal, Recharts — is split out, so a
+// visitor arriving at "/" downloads the homepage and nothing else. Without this
+// the public entry chunk carries the entire back office and blows the
+// "initial payload under 150KB" gate on its own.
+
+const AdminLayout = lazy(() => import("./layout/AdminLayout").then((m) => ({ default: m.AdminLayout })));
+const Dashboard = lazy(() => import("./pages/Dashboard").then((m) => ({ default: m.Dashboard })));
+const PlaceholderPage = lazy(() => import("./pages/PlaceholderPage").then((m) => ({ default: m.PlaceholderPage })));
+const Login = lazy(() => import("./pages/Login").then((m) => ({ default: m.Login })));
+const AllSessions = lazy(() => import("./pages/sessions/AllSessions").then((m) => ({ default: m.AllSessions })));
+const AddEditSession = lazy(() => import("./pages/sessions/AddEditSession").then((m) => ({ default: m.AddEditSession })));
+const AllCourses = lazy(() => import("./pages/courses/AllCourses").then((m) => ({ default: m.AllCourses })));
+const AddEditCourse = lazy(() => import("./pages/courses/AddEditCourse").then((m) => ({ default: m.AddEditCourse })));
+const AllMedia = lazy(() => import("./pages/library/AllMedia").then((m) => ({ default: m.AllMedia })));
+const UploadMedia = lazy(() => import("./pages/library/UploadMedia").then((m) => ({ default: m.UploadMedia })));
+const Applications = lazy(() => import("./pages/instructors/Applications").then((m) => ({ default: m.Applications })));
+const AllInstructors = lazy(() => import("./pages/instructors/AllInstructors").then((m) => ({ default: m.AllInstructors })));
+const ReviewQueue = lazy(() => import("./pages/instructors/ReviewQueue").then((m) => ({ default: m.ReviewQueue })));
+const InstructorLayout = lazy(() => import("./layout/InstructorLayout").then((m) => ({ default: m.InstructorLayout })));
+const InstructorDashboard = lazy(() => import("./pages/instructor/InstructorDashboard").then((m) => ({ default: m.InstructorDashboard })));
+const MyContent = lazy(() => import("./pages/instructor/MyContent").then((m) => ({ default: m.MyContent })));
+const MyMedia = lazy(() => import("./pages/instructor/MyMedia").then((m) => ({ default: m.MyMedia })));
+const MyLearners = lazy(() => import("./pages/instructor/MyLearners").then((m) => ({ default: m.MyLearners })));
+const Earnings = lazy(() => import("./pages/instructor/Earnings").then((m) => ({ default: m.Earnings })));
+const PayoutDetails = lazy(() => import("./pages/instructor/PayoutDetails").then((m) => ({ default: m.PayoutDetails })));
+const Schedule = lazy(() => import("./pages/instructor/Schedule").then((m) => ({ default: m.Schedule })));
+const Teach = lazy(() => import("./pages/Teach").then((m) => ({ default: m.Teach })));
+const SettingsHub = lazy(() => import("./pages/settings/SettingsHub").then((m) => ({ default: m.SettingsHub })));
+const Modules = lazy(() => import("./pages/settings/Modules").then((m) => ({ default: m.Modules })));
+const ImageVariants = lazy(() => import("./pages/settings/ImageVariants").then((m) => ({ default: m.ImageVariants })));
+const FooterLinks = lazy(() => import("./pages/settings/FooterLinks").then((m) => ({ default: m.FooterLinks })));
+const Plans = lazy(() => import("./pages/plans/Plans").then((m) => ({ default: m.Plans })));
+const SubscriberAnalytics = lazy(() => import("./pages/analytics/SubscriberAnalytics").then((m) => ({ default: m.SubscriberAnalytics })));
+const Invoices = lazy(() => import("./pages/revenue/Invoices").then((m) => ({ default: m.Invoices })));
+const PageLayout = lazy(() => import("./pages/layout/PageLayout").then((m) => ({ default: m.PageLayout })));
 
 // Routes not yet built — each will be replaced with a real page in future prompts
 const PLACEHOLDER_PATHS = [
   "sessions/categories",
-  // "library" — replaced by real pages below
   "speakers",
   "users",
   "registrations",
@@ -42,92 +50,101 @@ const PLACEHOLDER_PATHS = [
   "bulk-import",
   "community/spaces",
   "community/moderation",
-  // "plans" — replaced by real page below
   "coupons",
   "payouts",
   "sponsors",
   "ads",
   "advertisers",
-  // "invoices" — replaced by real page below
   "analytics/player",
-  // "analytics/subscribers" — replaced by real page below
   "analytics/ppv-revenue",
-  // "layout" — replaced by real page below
   "pages",
   "landing-pages",
   "promotions",
   "faqs",
   "contact-requests",
   "categories",
-  // "settings", "settings/modules" — replaced by real pages below
 ];
+
+function RouteFallback() {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-slate-950">
+      <div className="h-6 w-6 animate-spin rounded-full border-2 border-slate-700 border-t-brand" />
+    </div>
+  );
+}
 
 export function App() {
   return (
-    <Routes>
-      <Route path="/login" element={<Login />} />
-      <Route
-        path="/admin"
-        element={
-          <ProtectedRoute>
-            <AdminLayout />
-          </ProtectedRoute>
-        }
-      >
-        <Route index element={<Dashboard />} />
+    <Suspense fallback={<RouteFallback />}>
+      <Routes>
+        <Route path="/login" element={<Login />} />
 
-        {/* ── Sessions (Prompt 03) ── */}
-        <Route path="sessions" element={<AllSessions />} />
-        <Route path="sessions/new" element={<AddEditSession />} />
-        <Route path="sessions/:id/edit" element={<AddEditSession />} />
+        <Route
+          path="/admin"
+          element={
+            <ProtectedRoute>
+              <AdminLayout />
+            </ProtectedRoute>
+          }
+        >
+          <Route index element={<Dashboard />} />
 
-        {/* ── Courses (Prompt 04) ── */}
-        <Route path="courses" element={<AllCourses />} />
-        <Route path="courses/new" element={<AddEditCourse />} />
-        <Route path="courses/:id/edit" element={<AddEditCourse />} />
+          {/* ── Sessions (Prompt 03) ── */}
+          <Route path="sessions" element={<AllSessions />} />
+          <Route path="sessions/new" element={<AddEditSession />} />
+          <Route path="sessions/:id/edit" element={<AddEditSession />} />
 
-        {/* ── Media Library (Prompt 05) ── */}
-        <Route path="library" element={<AllMedia />} />
-        <Route path="library/upload" element={<UploadMedia />} />
+          {/* ── Courses (Prompt 04) ── */}
+          <Route path="courses" element={<AllCourses />} />
+          <Route path="courses/new" element={<AddEditCourse />} />
+          <Route path="courses/:id/edit" element={<AddEditCourse />} />
 
-        {/* ── Instructor management (Prompt 06, admin side) ── */}
-        <Route path="instructors" element={<AllInstructors />} />
-        <Route path="instructors/applications" element={<Applications />} />
-        <Route path="instructors/review" element={<ReviewQueue />} />
+          {/* ── Media Library (Prompt 05) ── */}
+          <Route path="library" element={<AllMedia />} />
+          <Route path="library/upload" element={<UploadMedia />} />
 
-        {/* ── Settings & Modules (Prompt 07) ── */}
-        <Route path="settings" element={<SettingsHub />} />
-        <Route path="settings/modules" element={<Modules />} />
-        <Route path="settings/images" element={<ImageVariants />} />
-        <Route path="settings/footer" element={<FooterLinks />} />
-        <Route path="plans" element={<Plans />} />
-        <Route path="analytics/subscribers" element={<SubscriberAnalytics />} />
-        <Route path="invoices" element={<Invoices />} />
+          {/* ── Instructor management (Prompt 06, admin side) ── */}
+          <Route path="instructors" element={<AllInstructors />} />
+          <Route path="instructors/applications" element={<Applications />} />
+          <Route path="instructors/review" element={<ReviewQueue />} />
 
-        {/* ── Homepage Row Builder (Prompt 08) ── */}
-        <Route path="layout" element={<PageLayout />} />
+          {/* ── Settings & Modules (Prompt 07) ── */}
+          <Route path="settings" element={<SettingsHub />} />
+          <Route path="settings/modules" element={<Modules />} />
+          <Route path="settings/images" element={<ImageVariants />} />
+          <Route path="settings/footer" element={<FooterLinks />} />
+          <Route path="plans" element={<Plans />} />
+          <Route path="analytics/subscribers" element={<SubscriberAnalytics />} />
+          <Route path="invoices" element={<Invoices />} />
 
-        {/* ── Placeholder routes (future prompts) ── */}
-        {PLACEHOLDER_PATHS.map((path) => (
-          <Route key={path} path={path} element={<PlaceholderPage />} />
-        ))}
-      </Route>
-      {/* ── Instructor portal (Prompt 06, instructor side) ── */}
-      <Route path="/instructor" element={<InstructorLayout />}>
-        <Route index element={<InstructorDashboard />} />
-        <Route path="content" element={<MyContent />} />
-        <Route path="media" element={<MyMedia />} />
-        <Route path="learners" element={<MyLearners />} />
-        <Route path="earnings" element={<Earnings />} />
-        <Route path="payout-details" element={<PayoutDetails />} />
-        <Route path="schedule" element={<Schedule />} />
-      </Route>
+          {/* ── Homepage Row Builder (Prompt 08) ── */}
+          <Route path="layout" element={<PageLayout />} />
 
-      {/* ── Public instructor application (Prompt 06) ── */}
-      <Route path="/teach" element={<Teach />} />
+          {/* ── Placeholder routes (future prompts) ── */}
+          {PLACEHOLDER_PATHS.map((path) => (
+            <Route key={path} path={path} element={<PlaceholderPage />} />
+          ))}
+        </Route>
 
-      <Route path="/" element={<Navigate to="/admin" replace />} />
-      <Route path="*" element={<Navigate to="/admin" replace />} />
-    </Routes>
+        {/* ── Instructor portal (Prompt 06, instructor side) ── */}
+        <Route path="/instructor" element={<InstructorLayout />}>
+          <Route index element={<InstructorDashboard />} />
+          <Route path="content" element={<MyContent />} />
+          <Route path="media" element={<MyMedia />} />
+          <Route path="learners" element={<MyLearners />} />
+          <Route path="earnings" element={<Earnings />} />
+          <Route path="payout-details" element={<PayoutDetails />} />
+          <Route path="schedule" element={<Schedule />} />
+        </Route>
+
+        {/* ── Public instructor application (Prompt 06) ── */}
+        <Route path="/teach" element={<Teach />} />
+
+        {/* ── Public homepage (Prompt 09) ── */}
+        <Route path="/" element={<Home />} />
+
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </Suspense>
   );
 }

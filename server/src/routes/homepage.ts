@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
-import { buildCacheForKey, cacheKey } from "../lib/homepageCache.js";
+import { buildCacheForKey, cacheKey, buildPersonalRows, buildLiveRows } from "../lib/homepageCache.js";
+import { verifyToken } from "../lib/jwt.js";
 import type { Request, Response, NextFunction } from "express";
 
 // Public, unauthenticated. This is the Stage 1 read described in PROMPT 09:
@@ -35,6 +36,54 @@ homepageRouter.get("/", async (req: Request, res: Response, next: NextFunction) 
 
     res.setHeader("Cache-Control", "public, max-age=60");
     res.type("application/json").send(entry.payload);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Stage 2 — every personal row in one authenticated call ──────────────────
+//
+// One call, not one per row. Auth is read directly rather than via requireAuth
+// so an expired token degrades to "no personal rows" instead of failing the page.
+
+homepageRouter.get("/personal", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const header = req.headers.authorization;
+    if (!header?.startsWith("Bearer ")) return res.json({ rows: [] });
+
+    let userId: number;
+    try {
+      userId = verifyToken(header.slice("Bearer ".length)).sub;
+    } catch {
+      return res.json({ rows: [] });
+    }
+
+    const surface = typeof req.query.surface === "string" && SURFACES.has(req.query.surface) ? req.query.surface : "home";
+    const platform = typeof req.query.platform === "string" && PLATFORMS.has(req.query.platform) ? req.query.platform : "web";
+    const audience = typeof req.query.audience === "string" && AUDIENCES.has(req.query.audience) ? req.query.audience : "registered";
+
+    const rows = await buildPersonalRows(userId, surface, platform, audience);
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json({ rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Stage 3 — live poll ─────────────────────────────────────────────────────
+//
+// Returns only Live Now and Starting Soon so the client can patch those two
+// carousels and the countdown timers without re-rendering the page.
+
+homepageRouter.get("/live", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const surface = typeof req.query.surface === "string" && SURFACES.has(req.query.surface) ? req.query.surface : "home";
+    const platform = typeof req.query.platform === "string" && PLATFORMS.has(req.query.platform) ? req.query.platform : "web";
+    const audience = typeof req.query.audience === "string" && AUDIENCES.has(req.query.audience) ? req.query.audience : "logged_out";
+
+    const rows = await buildLiveRows(surface, platform, audience);
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ rows, polled_at: new Date().toISOString() });
   } catch (err) {
     next(err);
   }

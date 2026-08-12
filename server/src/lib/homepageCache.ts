@@ -302,6 +302,92 @@ async function cacheTtlMinutes(): Promise<number> {
   return Number.isFinite(n) && n > 0 ? n : 5;
 }
 
+// ─── Hero, config, brand and strings ──────────────────────────────────────────
+//
+// All four ride inside the Stage 1 payload rather than being fetched separately.
+// PROMPT 09 allows exactly two API calls before first paint, and Stage 2 spends
+// the second one — so a third call for translations or settings would fail the
+// gate. Everything the first paint needs is in this one response.
+
+const HERO_LIMIT = 5;
+
+async function buildHero(): Promise<ContentCard[]> {
+  // Explicitly flagged hero items first; fall back to whatever is live, then to
+  // featured content, so the hero is never empty on a young platform.
+  const flagged = await prisma.contentItem.findMany({
+    where: visibleWhere({ show_in_hero: true }),
+    orderBy: { scheduled_start_at: "desc" },
+    take: HERO_LIMIT,
+    select: CARD_SELECT,
+  });
+  if (flagged.length) return decorateCards(flagged as RawCard[]);
+
+  const fallback = await prisma.contentItem.findMany({
+    where: visibleWhere({ OR: [{ status: "live" }, { is_featured: true }] }),
+    orderBy: [{ status: "asc" }, { scheduled_start_at: "desc" }],
+    take: HERO_LIMIT,
+    select: CARD_SELECT,
+  });
+  return decorateCards(fallback as RawCard[]);
+}
+
+/** Settings the public page needs at paint time. Nothing is_secret is reachable —
+ *  these keys are read individually rather than by loading the settings table. */
+const PUBLIC_SETTING_KEYS = [
+  "playback.live_poll_seconds",
+  "playback.rows_initial_web",
+  "playback.rows_initial_mobile",
+  "playback.cards_per_row",
+  "playback.autoplay_desktop",
+  "playback.autoplay_mobile",
+  "brand.platform_name",
+  "brand.logo_url",
+  "brand.primary_colour",
+  "brand.accent_colour",
+  "integrations.imagekit_url_endpoint",
+] as const;
+
+const SETTING_FALLBACKS: Record<string, string> = {
+  "playback.live_poll_seconds": "30",
+  "playback.rows_initial_web": "4",
+  "playback.rows_initial_mobile": "3",
+  "playback.cards_per_row": "15",
+  "playback.autoplay_desktop": "true",
+  "playback.autoplay_mobile": "false",
+  "brand.platform_name": "Webinarflix",
+  "brand.logo_url": "",
+  "brand.primary_colour": "#E50914",
+  "brand.accent_colour": "#F5C518",
+  "integrations.imagekit_url_endpoint": "",
+};
+
+async function publicSettings(): Promise<Record<string, string>> {
+  const rows = await prisma.setting.findMany({
+    where: { setting_key: { in: [...PUBLIC_SETTING_KEYS] }, is_secret: false },
+    select: { setting_key: true, setting_value: true },
+  });
+  const stored = new Map(rows.map((r) => [r.setting_key, r.setting_value]));
+  const out: Record<string, string> = {};
+  for (const key of PUBLIC_SETTING_KEYS) {
+    out[key] = stored.get(key) ?? SETTING_FALLBACKS[key] ?? "";
+  }
+  return out;
+}
+
+/** UI strings the public homepage renders through t(). Shipping them here is what
+ *  keeps the i18n dictionary from costing a third request before first paint. */
+const PUBLIC_STRING_PREFIXES = ["home.", "nav.public.", "card.", "hero.", "common."];
+
+async function publicStrings(): Promise<Record<string, { en: string | null; fr: string | null }>> {
+  const rows = await prisma.uiTranslation.findMany({
+    where: { OR: PUBLIC_STRING_PREFIXES.map((p) => ({ translation_key: { startsWith: p } })) },
+    select: { translation_key: true, en: true, fr: true },
+  });
+  const dict: Record<string, { en: string | null; fr: string | null }> = {};
+  for (const row of rows) dict[row.translation_key] = { en: row.en, fr: row.fr };
+  return dict;
+}
+
 export interface CachedRow {
   row_key: string | null;
   label: string | null;
@@ -360,8 +446,23 @@ export async function buildCacheForKey(surface: string, platform: string, audien
     });
   }
 
-  const ttl = await cacheTtlMinutes();
-  const payload = JSON.stringify({ surface, platform, audience, rows: built, generated_at: new Date().toISOString() });
+  const [ttl, hero, settings, strings] = await Promise.all([
+    cacheTtlMinutes(),
+    surface === "home" ? buildHero() : Promise.resolve([] as ContentCard[]),
+    publicSettings(),
+    publicStrings(),
+  ]);
+
+  const payload = JSON.stringify({
+    surface,
+    platform,
+    audience,
+    hero,
+    rows: built,
+    settings,
+    strings,
+    generated_at: new Date().toISOString(),
+  });
   const itemCount = built.reduce((sum, r) => sum + r.items.length, 0);
   const key = cacheKey(surface, platform, audience);
 
@@ -394,6 +495,182 @@ export async function activeCacheKeys(): Promise<{ surface: string; platform: st
     }
   }
   return combos;
+}
+
+// ─── Stage 2: personal rows ───────────────────────────────────────────────────
+//
+// One call returns every personal row for the signed-in viewer. The client
+// renders them into the slots Stage 1 already reserved, so nothing reflows.
+
+async function personalRowItems(rowType: string, userId: number, limit: number): Promise<ContentCard[]> {
+  const now = new Date();
+  const take = Math.min(Math.max(limit, 1), 30);
+
+  const cardsFor = async (ids: number[], extra: Record<string, any> = {}, orderBy: any = { scheduled_start_at: "desc" }) => {
+    if (!ids.length) return [];
+    const raw = await prisma.contentItem.findMany({
+      where: { id: { in: ids }, is_active: true, ...extra },
+      orderBy,
+      take,
+      select: CARD_SELECT,
+    });
+    return decorateCards(raw as RawCard[]);
+  };
+
+  const registeredContentIds = async () => {
+    const regs = await prisma.registration.findMany({
+      where: { user_id: userId, status: "confirmed" },
+      select: { content_id: true },
+    });
+    return regs.map((r) => r.content_id);
+  };
+
+  switch (rowType) {
+    case "my_upcoming": {
+      const ids = await registeredContentIds();
+      return cardsFor(ids, { scheduled_start_at: { gte: now }, status: { notIn: ["archived", "draft"] } }, { scheduled_start_at: "asc" });
+    }
+
+    case "continue_watching": {
+      const sessions = await prisma.playbackSession.findMany({
+        where: { user_id: userId, content_id: { not: null }, completion_pct: { gt: 3, lt: 95 } },
+        orderBy: { started_at: "desc" },
+        select: { content_id: true },
+        take: take * 2,
+      });
+      const ids = [...new Set(sessions.map((s) => s.content_id!))];
+      return cardsFor(ids, { content_type: { in: ["webinar", "video"] } });
+    }
+
+    case "missed_live": {
+      const regs = await prisma.registration.findMany({
+        where: { user_id: userId, status: "confirmed" },
+        select: { id: true, content_id: true },
+      });
+      if (!regs.length) return [];
+      const attended = await prisma.attendance.findMany({
+        where: { registration_id: { in: regs.map((r) => r.id) }, attended: true },
+        select: { registration_id: true },
+      });
+      const attendedIds = new Set(attended.map((a) => a.registration_id));
+      const missedIds = regs.filter((r) => !attendedIds.has(r.id)).map((r) => r.content_id);
+      return cardsFor(missedIds, { status: { in: ["ended", "replay_ready"] } });
+    }
+
+    case "my_courses": {
+      const ids = await registeredContentIds();
+      return cardsFor(ids, { content_type: "course" }, { created_at: "desc" });
+    }
+
+    case "continue_learning":
+    case "almost_done": {
+      // Course progress = completed lessons / total lessons, computed per enrolment.
+      const ids = await registeredContentIds();
+      if (!ids.length) return [];
+      const courses = await prisma.contentItem.findMany({
+        where: { id: { in: ids }, content_type: "course", is_active: true },
+        select: { id: true },
+      });
+      if (!courses.length) return [];
+
+      const modules = await prisma.courseModule.findMany({
+        where: { course_id: { in: courses.map((c) => c.id) } },
+        select: { id: true, course_id: true },
+      });
+      const lessons = modules.length
+        ? await prisma.courseLesson.findMany({ where: { module_id: { in: modules.map((m) => m.id) } }, select: { id: true, module_id: true } })
+        : [];
+      const progress = lessons.length
+        ? await prisma.lessonProgress.findMany({
+            where: { user_id: userId, lesson_id: { in: lessons.map((l) => l.id) }, completed: true },
+            select: { lesson_id: true },
+          })
+        : [];
+
+      const completedLessons = new Set(progress.map((p) => p.lesson_id));
+      const moduleCourse = new Map(modules.map((m) => [m.id, m.course_id]));
+      const totals = new Map<number, { total: number; done: number }>();
+      for (const lesson of lessons) {
+        const courseId = moduleCourse.get(lesson.module_id);
+        if (!courseId) continue;
+        const entry = totals.get(courseId) ?? { total: 0, done: 0 };
+        entry.total += 1;
+        if (completedLessons.has(lesson.id)) entry.done += 1;
+        totals.set(courseId, entry);
+      }
+
+      const matching = [...totals.entries()]
+        .filter(([, t]) => {
+          if (!t.total) return false;
+          const pct = (t.done / t.total) * 100;
+          return rowType === "almost_done" ? pct >= 75 && pct < 100 : pct > 0 && pct < 100;
+        })
+        .map(([id]) => id);
+
+      return cardsFor(matching, {}, { created_at: "desc" });
+    }
+
+    case "in_my_plan": {
+      const sub = await prisma.subscription.findFirst({ where: { user_id: userId, status: "active" }, select: { id: true } });
+      if (!sub) return [];
+      const raw = await prisma.contentItem.findMany({
+        where: visibleWhere({ access_level: "subscriber" }),
+        orderBy: { created_at: "desc" },
+        take,
+        select: CARD_SELECT,
+      });
+      return decorateCards(raw as RawCard[]);
+    }
+
+    default:
+      return [];
+  }
+}
+
+/** Every personal row for one viewer on one surface, in a single response. */
+export async function buildPersonalRows(userId: number, surface: string, platform: string, audience: string) {
+  const rows = await prisma.contentRow.findMany({
+    where: {
+      surface: surface as any,
+      is_enabled: true,
+      platform: { in: [platform as any, "all"] },
+      audience: { in: [audience as any, "all"] },
+    },
+    orderBy: { display_order: "asc" },
+  });
+
+  const personal = rows.filter((r) => isPersonalRow(r.row_type));
+  const out = [];
+  for (const row of personal) {
+    const items = await personalRowItems(row.row_type, userId, row.card_limit);
+    out.push({ row_key: row.row_key, row_type: row.row_type, items });
+  }
+  return out;
+}
+
+// ─── Stage 3: live poll ───────────────────────────────────────────────────────
+//
+// Deliberately narrow: only the two time-sensitive row types, so the poll stays
+// cheap and the client can patch just those carousels instead of re-rendering.
+
+export async function buildLiveRows(surface: string, platform: string, audience: string) {
+  const rows = await prisma.contentRow.findMany({
+    where: {
+      surface: surface as any,
+      is_enabled: true,
+      row_type: { in: ["live_now", "starting_soon"] },
+      platform: { in: [platform as any, "all"] },
+      audience: { in: [audience as any, "all"] },
+    },
+    orderBy: { display_order: "asc" },
+  });
+
+  const out = [];
+  for (const row of rows) {
+    const result = await buildRowItems(row.row_type, row.card_limit);
+    out.push({ row_key: row.row_key, row_type: row.row_type, items: result.items });
+  }
+  return out;
 }
 
 /** Full rebuild across every active combination — the scheduled job's entry point. */

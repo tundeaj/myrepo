@@ -27,15 +27,42 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setStatus("signed-out");
       return;
     }
-    api<{ user: AuthUser }>("/auth/me")
-      .then((res) => {
-        setUser(res.user);
-        setStatus("signed-in");
-      })
-      .catch(() => {
-        setToken(null);
-        setStatus("signed-out");
-      });
+
+    // Deferred to idle so token verification never competes with a page's own
+    // first-paint requests — the public homepage is allowed exactly two, and
+    // this would otherwise be a third for any signed-in visitor. Protected
+    // routes still gate on `status`, so nothing renders early as a result.
+    let cancelled = false;
+    const verify = () => {
+      if (cancelled) return;
+      api<{ user: AuthUser }>("/auth/me")
+        .then((res) => {
+          if (cancelled) return;
+          setUser(res.user);
+          setStatus("signed-in");
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setToken(null);
+          setStatus("signed-out");
+        });
+    };
+
+    const win = window as typeof window & {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+
+    const usedIdle = typeof win.requestIdleCallback === "function";
+    const handle = usedIdle
+      ? win.requestIdleCallback!(verify, { timeout: 2000 })
+      : window.setTimeout(verify, 0);
+
+    return () => {
+      cancelled = true;
+      if (usedIdle) win.cancelIdleCallback?.(handle);
+      else window.clearTimeout(handle);
+    };
   }, []);
 
   async function login(email: string, password: string) {

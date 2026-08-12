@@ -429,6 +429,33 @@ async function seedUiTranslations() {
     "empty.no_results": "No results",
     "empty.retry": "Retry",
     "common.loading": "Loading…",
+    "common.retry": "Try again",
+    // Public homepage strings. These prefixes (home. nav.public. card. hero.
+    // common.) are what buildCacheForKey ships inside the Stage 1 payload, so
+    // the public page never spends a request fetching translations.
+    "nav.public.home": "Home",
+    "nav.public.live": "Live",
+    "nav.public.courses": "Courses",
+    "nav.public.community": "Community",
+    "nav.public.sign_in": "Sign In",
+    "nav.public.get_started": "Get Started",
+    "nav.public.search": "Search",
+    "nav.public.notifications": "Notifications",
+    "nav.public.menu": "Menu",
+    "hero.join_live": "Join Live",
+    "hero.set_reminder": "Set Reminder",
+    "hero.register_free": "Register Free",
+    "hero.watch_replay": "Watch Replay",
+    "hero.more_details": "More details",
+    "hero.watching_now": "{count} watching now",
+    "hero.starts_in": "Starts in {time}",
+    "card.live": "LIVE",
+    "card.free": "Free",
+    "card.audio_available": "Audio version available",
+    "card.locked": "Included with a subscription",
+    "home.load_error": "We couldn't load the homepage just now.",
+    "home.scroll_left": "Scroll left",
+    "home.scroll_right": "Scroll right",
   };
   for (const [translation_key, en] of Object.entries(entries)) {
     await prisma.uiTranslation.upsert({
