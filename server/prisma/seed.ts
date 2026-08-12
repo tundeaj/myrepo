@@ -249,6 +249,88 @@ async function seedFooterLinks() {
   }
 }
 
+// A working default homepage. Ten enabled rows — deliberately under the twelve-row
+// warning threshold, so a fresh install doesn't open with a warning banner.
+async function seedContentRows() {
+  const rows: Array<{
+    row_key: string; label: string; label_fr: string; row_type: string;
+    card_style: string; audience?: string; card_limit?: number;
+  }> = [
+    { row_key: "live-now", label: "Live Now", label_fr: "En direct", row_type: "live_now", card_style: "landscape", card_limit: 10 },
+    { row_key: "starting-soon", label: "Starting Soon", label_fr: "Bientôt", row_type: "starting_soon", card_style: "landscape", card_limit: 10 },
+    { row_key: "my-upcoming", label: "Your Upcoming Sessions", label_fr: "Vos sessions à venir", row_type: "my_upcoming", card_style: "landscape", audience: "registered" },
+    { row_key: "continue-watching", label: "Continue Watching", label_fr: "Reprendre", row_type: "continue_watching", card_style: "landscape", audience: "registered" },
+    { row_key: "this-week", label: "This Week", label_fr: "Cette semaine", row_type: "this_week", card_style: "poster" },
+    { row_key: "just-added", label: "Just Added", label_fr: "Nouveautés", row_type: "just_added", card_style: "poster" },
+    { row_key: "top-ten", label: "Top 10 on Webinarflix", label_fr: "Top 10 sur Webinarflix", row_type: "top_ten", card_style: "numbered", card_limit: 10 },
+    { row_key: "browse-categories", label: "Browse by Category", label_fr: "Parcourir par catégorie", row_type: "category_tiles", card_style: "tile" },
+    { row_key: "free-this-week", label: "Free This Week", label_fr: "Gratuit cette semaine", row_type: "free_this_week", card_style: "poster" },
+    { row_key: "featured-speakers", label: "Featured Speakers", label_fr: "Intervenants en vedette", row_type: "featured_speakers", card_style: "speaker" },
+  ];
+
+  for (const [i, row] of rows.entries()) {
+    const existing = await prisma.contentRow.findFirst({ where: { row_key: row.row_key } });
+    if (existing) continue;
+    await prisma.contentRow.create({
+      data: {
+        row_key: row.row_key,
+        label: row.label,
+        label_fr: row.label_fr,
+        row_type: row.row_type as never,
+        surface: "home",
+        platform: "all",
+        audience: (row.audience ?? "all") as never,
+        card_style: row.card_style as never,
+        card_limit: row.card_limit ?? 15,
+        display_order: i + 1,
+        is_enabled: true,
+        hide_when_empty: true,
+      },
+    });
+  }
+}
+
+async function seedRowRules() {
+  const rules = [
+    {
+      rule_key: "live-first",
+      description: "Put Live Now first whenever anything is streaming — a live session is the most time-sensitive thing on the page.",
+      condition_type: "live_exists", condition_value: null, promote_row_key: "live-now", priority: 1,
+    },
+    {
+      rule_key: "session-imminent",
+      description: "Lift a viewer's own upcoming sessions to the top when one starts within two hours, so they don't miss it.",
+      condition_type: "session_within_hours", condition_value: 2, promote_row_key: "my-upcoming", priority: 2,
+    },
+    {
+      rule_key: "resume-first",
+      description: "Show Continue Watching first for anyone with something half-finished — resuming beats browsing.",
+      condition_type: "incomplete_progress", condition_value: null, promote_row_key: "continue-watching", priority: 3,
+    },
+    {
+      rule_key: "free-for-visitors",
+      description: "Lead signed-out visitors with Free This Week so the first thing they see costs nothing.",
+      condition_type: "logged_out", condition_value: null, promote_row_key: "free-this-week", priority: 5,
+    },
+  ];
+
+  for (const rule of rules) {
+    const existing = await prisma.rowRule.findFirst({ where: { rule_key: rule.rule_key } });
+    if (existing) continue;
+    await prisma.rowRule.create({
+      data: {
+        rule_key: rule.rule_key,
+        description: rule.description,
+        condition_type: rule.condition_type as never,
+        condition_value: rule.condition_value,
+        promote_row_key: rule.promote_row_key,
+        priority: rule.priority,
+        is_enabled: true,
+      },
+    });
+  }
+}
+
 async function seedNotificationEventKeys() {
   // notification_preferences rows are per-user (user_id NOT NULL), so there is nothing
   // global to seed here — the fixed list of event_keys lives in
@@ -498,6 +580,8 @@ async function main() {
   await seedModules();
   await seedSetupSteps();
   await seedFooterLinks();
+  await seedContentRows();
+  await seedRowRules();
   await seedNotificationEventKeys();
   await seedUiTranslations();
   await seedCategories();

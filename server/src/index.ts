@@ -20,6 +20,8 @@ import { footerLinksRouter } from "./routes/footerLinks.js";
 import { plansRouter } from "./routes/plans.js";
 import { subscriberAnalyticsRouter } from "./routes/subscriberAnalytics.js";
 import { invoicesRouter } from "./routes/invoices.js";
+import { layoutRouter } from "./routes/layout.js";
+import { homepageRouter } from "./routes/homepage.js";
 import { aiRouter } from "./routes/ai.js";
 import { requireAdmin, requireAuth } from "./middleware/auth.js";
 import { errorHandler, notFoundHandler } from "./lib/errors.js";
@@ -50,6 +52,8 @@ app.use("/api/footer-links", requireAuth, requireAdmin, footerLinksRouter);
 app.use("/api/plans", requireAuth, requireAdmin, plansRouter);
 app.use("/api/analytics/subscribers", requireAuth, requireAdmin, subscriberAnalyticsRouter);
 app.use("/api/invoices", requireAuth, requireAdmin, invoicesRouter);
+app.use("/api/layout", requireAuth, requireAdmin, layoutRouter);
+app.use("/api/homepage", homepageRouter);
 app.use("/api/ai", requireAuth, requireAdmin, aiRouter);
 
 app.use("/api", notFoundHandler);

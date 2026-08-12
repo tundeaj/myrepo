@@ -28,6 +28,7 @@ import { FooterLinks } from "./pages/settings/FooterLinks";
 import { Plans } from "./pages/plans/Plans";
 import { SubscriberAnalytics } from "./pages/analytics/SubscriberAnalytics";
 import { Invoices } from "./pages/revenue/Invoices";
+import { PageLayout } from "./pages/layout/PageLayout";
 import { ProtectedRoute } from "./lib/ProtectedRoute";
 
 // Routes not yet built — each will be replaced with a real page in future prompts
@@ -51,7 +52,7 @@ const PLACEHOLDER_PATHS = [
   "analytics/player",
   // "analytics/subscribers" — replaced by real page below
   "analytics/ppv-revenue",
-  "layout",
+  // "layout" — replaced by real page below
   "pages",
   "landing-pages",
   "promotions",
@@ -102,6 +103,9 @@ export function App() {
         <Route path="plans" element={<Plans />} />
         <Route path="analytics/subscribers" element={<SubscriberAnalytics />} />
         <Route path="invoices" element={<Invoices />} />
+
+        {/* ── Homepage Row Builder (Prompt 08) ── */}
+        <Route path="layout" element={<PageLayout />} />
 
         {/* ── Placeholder routes (future prompts) ── */}
         {PLACEHOLDER_PATHS.map((path) => (
