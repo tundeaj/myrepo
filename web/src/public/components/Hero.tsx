@@ -1,10 +1,15 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Link } from "react-router-dom";
 import { buildImageUrl, focalPosition, CARD_WIDTHS } from "../lib/images";
+import { useTeaserBudget } from "../lib/useTeaserBudget";
 import { usePublicT } from "../lib/publicI18n";
 import { formatCountdown, formatPrice, type ContentCard } from "../lib/types";
 
 const ROTATE_MS = 8000;
+
+// The still is shown alone for this long before the clip starts, so arrival is
+// calm rather than something moving the instant the page paints.
+const HERO_TEASER_DELAY_MS = 1500;
 
 // State-dependent call to action. The primary label and behaviour are driven by
 // content status, so a session that goes live mid-visit gets the right CTA on
@@ -32,6 +37,13 @@ export function Hero({ items }: { items: ContentCard[] }) {
   const [now, setNow] = useState(() => Date.now());
   const timerRef = useRef<number | null>(null);
 
+  // Teaser state. useTeaserBudget already requires a fine pointer, which is what
+  // implements "no autoplay video on mobile" — a touch device never qualifies.
+  const teaserBudget = useTeaserBudget();
+  const [teaserPlaying, setTeaserPlaying] = useState(false);
+  const [failedIds, setFailedIds] = useState<Set<number>>(new Set());
+  const videoRef = useRef<HTMLVideoElement>(null);
+
   // Rotation. Pauses on hover, and also whenever the tab is hidden — rotating
   // a hero nobody is looking at just burns battery.
   useEffect(() => {
@@ -55,9 +67,35 @@ export function Hero({ items }: { items: ContentCard[] }) {
     return () => window.clearInterval(id);
   }, []);
 
-  if (!items.length) return null;
+  const card = items.length ? items[Math.min(index, items.length - 1)] : null;
+  const teaserEligible = Boolean(card?.trailer_url) && teaserBudget && !(card && failedIds.has(card.id));
 
-  const card = items[Math.min(index, items.length - 1)];
+  const handleTeaserFail = useCallback(() => {
+    setTeaserPlaying(false);
+    if (card) setFailedIds((prev) => new Set(prev).add(card.id));
+  }, [card]);
+
+  // Start the clip a beat after the slide settles, and tear it down whenever the
+  // slide changes or the hero is paused — a paused hero should be still.
+  const [teaserArmed, setTeaserArmed] = useState(false);
+  useEffect(() => {
+    setTeaserArmed(false);
+    setTeaserPlaying(false);
+    if (!teaserEligible || paused) return;
+    const id = window.setTimeout(() => setTeaserArmed(true), HERO_TEASER_DELAY_MS);
+    return () => window.clearTimeout(id);
+  }, [card?.id, teaserEligible, paused]);
+
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el) return;
+    if (!teaserArmed) { el.pause(); return; }
+    const play = el.play();
+    if (play && typeof play.catch === "function") play.catch(handleTeaserFail);
+  }, [teaserArmed, handleTeaserFail]);
+
+  if (!card) return null;
+
   const cta = primaryCta(card, t);
   const countdown = card.status === "live" ? null : formatCountdown(card.scheduled_start_at, now);
   const heroSrc = buildImageUrl(card.master_image_url, CARD_WIDTHS.hero);
@@ -69,9 +107,8 @@ export function Hero({ items }: { items: ContentCard[] }) {
       onMouseEnter={() => setPaused(true)}
       onMouseLeave={() => setPaused(false)}
     >
-      {/* Full-bleed artwork. No autoplaying video anywhere — least of all on
-          mobile, where it would burn a metered connection before the visitor
-          has decided whether they care. */}
+      {/* Full-bleed artwork. The still always renders and always stays mounted:
+          the clip layers over it and any failure just reveals it again. */}
       {heroSrc ? (
         <img
           key={card.id}
@@ -86,6 +123,29 @@ export function Hero({ items }: { items: ContentCard[] }) {
         />
       ) : (
         <div className="absolute inset-0 bg-gradient-to-br from-slate-800 to-slate-950" />
+      )}
+
+      {/* Teaser clip. Mounted only once armed, muted and looping, and never on a
+          touch device — useTeaserBudget requires a fine pointer, which is how
+          "no autoplay video on mobile" is enforced. */}
+      {teaserArmed && card.trailer_url && (
+        <video
+          ref={videoRef}
+          key={card.id}
+          src={card.trailer_url}
+          preload="none"
+          muted
+          loop
+          playsInline
+          aria-hidden
+          onPlaying={() => setTeaserPlaying(true)}
+          onError={handleTeaserFail}
+          onStalled={handleTeaserFail}
+          className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-700 ${
+            teaserPlaying ? "opacity-100" : "opacity-0"
+          }`}
+          style={{ objectPosition: focalPosition(card) }}
+        />
       )}
 
       {/* Gradient scrim — dark enough at the bottom-left for text contrast */}

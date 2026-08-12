@@ -60,6 +60,10 @@ export interface ContentCard {
   category_names: string[];
   has_audio_only: boolean;
   duration_seconds: number | null;
+  /** Short hover-preview clip. Only ever set for UNPROTECTED trailer assets —
+   *  this payload is public, so a protected asset's URL must never appear in it.
+   *  null means the card falls back to its info overlay on hover. */
+  trailer_url: string | null;
 }
 
 export interface SpeakerCard {
@@ -98,20 +102,34 @@ async function decorateCards(raw: RawCard[]): Promise<ContentCard[]> {
   const speakerIds = [...new Set(speakerLinks.map((l) => l.speaker_id))];
   const categoryIds = [...new Set(categoryLinks.map((l) => l.category_id))];
   const mainAssetIds = [...new Set(mediaLinks.filter((m) => m.role === "main").map((m) => m.media_asset_id))];
+  const trailerAssetIds = [...new Set(mediaLinks.filter((m) => m.role === "trailer").map((m) => m.media_asset_id))];
 
-  const [speakers, categories, assets] = await Promise.all([
+  const [speakers, categories, assets, trailers] = await Promise.all([
     speakerIds.length ? prisma.speaker.findMany({ where: { id: { in: speakerIds } }, select: { id: true, full_name: true } }) : [],
     categoryIds.length ? prisma.category.findMany({ where: { id: { in: categoryIds } }, select: { id: true, name: true } }) : [],
     mainAssetIds.length ? prisma.mediaAsset.findMany({ where: { id: { in: mainAssetIds } }, select: { id: true, duration_seconds: true } }) : [],
+    // is_protected: false is a filter, not a post-check — a protected asset's
+    // playback URL must never be selected into a payload served to the public.
+    trailerAssetIds.length
+      ? prisma.mediaAsset.findMany({
+          where: { id: { in: trailerAssetIds }, is_protected: false, transcode_status: "ready" },
+          select: { id: true, mp4_url: true, hls_url: true },
+        })
+      : [],
   ]);
 
   const speakerName = new Map(speakers.map((s) => [s.id, s.full_name]));
   const categoryName = new Map(categories.map((c) => [c.id, c.name]));
   const assetDuration = new Map(assets.map((a) => [a.id, a.duration_seconds]));
+  // Prefer MP4: a short muted hover clip plays natively everywhere, whereas HLS
+  // needs a media-source shim outside Safari. When only HLS exists the browser
+  // that can't play it simply falls back to the info overlay.
+  const trailerUrl = new Map(trailers.map((a) => [a.id, a.mp4_url || a.hls_url || null]));
 
   return raw.map((r) => {
     const mine = mediaLinks.filter((m) => m.content_id === r.id);
     const mainAsset = mine.find((m) => m.role === "main");
+    const trailerAsset = mine.find((m) => m.role === "trailer");
     return {
       id: r.id,
       slug: r.slug,
@@ -130,6 +148,7 @@ async function decorateCards(raw: RawCard[]): Promise<ContentCard[]> {
       category_names: categoryLinks.filter((l) => l.content_id === r.id).map((l) => categoryName.get(l.category_id)).filter((n): n is string => Boolean(n)),
       has_audio_only: mine.some((m) => m.role === "audio_only"),
       duration_seconds: mainAsset ? assetDuration.get(mainAsset.media_asset_id) ?? null : null,
+      trailer_url: trailerAsset ? trailerUrl.get(trailerAsset.media_asset_id) ?? null : null,
     };
   });
 }

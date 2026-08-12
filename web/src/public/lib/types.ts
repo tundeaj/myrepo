@@ -20,6 +20,9 @@ export interface ContentCard {
   category_names: string[];
   has_audio_only: boolean;
   duration_seconds: number | null;
+  /** Short hover-preview clip. Only ever populated for unprotected trailer
+   *  assets; null means the card shows its info overlay instead. */
+  trailer_url: string | null;
   /** Present only on personal rows, where the viewer has partial progress. */
   progress_pct?: number;
 }

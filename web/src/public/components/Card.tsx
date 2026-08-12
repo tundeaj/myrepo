@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Link } from "react-router-dom";
 import { buildImageUrl, focalPosition, CARD_WIDTHS } from "../lib/images";
+import { useTeaserBudget, TEASER_HOVER_DELAY_MS } from "../lib/useTeaserBudget";
 import { usePublicT } from "../lib/publicI18n";
 import {
   formatCountdown, formatRuntime, formatPrice, isLocked,
@@ -70,11 +71,103 @@ function LiveBadge({ label }: { label: string }) {
   );
 }
 
+// ─── Hover teaser ─────────────────────────────────────────────────────────────
+//
+// Layered over the info overlay rather than replacing it: the overlay is always
+// rendered underneath, so any failure here — no trailer, a codec the browser
+// can't play, a stall, a constrained connection — degrades to the overlay with
+// nothing to coordinate. Nothing is fetched until the pointer has rested on the
+// card past TEASER_HOVER_DELAY_MS, so sweeping across a row costs no bytes.
+
+function HoverTeaser({ src, active, onFail }: { src: string; active: boolean; onFail: () => void }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [playing, setPlaying] = useState(false);
+
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el) return;
+
+    if (!active) {
+      el.pause();
+      setPlaying(false);
+      return;
+    }
+
+    // A stall on a connection that looked fine is still a bad preview — give it
+    // a couple of seconds, then hand back to the overlay.
+    const stallTimer = window.setTimeout(() => {
+      if (el.readyState < 3) onFail();
+    }, 2500);
+
+    const play = el.play();
+    if (play && typeof play.catch === "function") {
+      // Autoplay rejection (policy, codec, network) is expected, not exceptional.
+      play.catch(() => onFail());
+    }
+
+    return () => window.clearTimeout(stallTimer);
+  }, [active, onFail]);
+
+  return (
+    <video
+      ref={videoRef}
+      src={active ? src : undefined}
+      // preload="none" is what keeps an un-hovered row free of video requests.
+      preload="none"
+      muted
+      loop
+      playsInline
+      aria-hidden
+      onPlaying={() => setPlaying(true)}
+      onError={onFail}
+      onStalled={onFail}
+      className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${
+        playing ? "opacity-100" : "opacity-0"
+      }`}
+    />
+  );
+}
+
 // ─── Content card ─────────────────────────────────────────────────────────────
 
 function ContentCardView({ card, variant, rank, eager }: { card: ContentCard; variant: CardVariant; rank?: number; eager: boolean }) {
   const { t } = usePublicT();
   const [hovered, setHovered] = useState(false);
+  const teaserBudget = useTeaserBudget();
+
+  // Three gates before a byte of video is requested: the card has an
+  // unprotected trailer, the connection can afford it, and the pointer has
+  // actually settled. `teaserFailed` latches per card so a clip that already
+  // failed isn't retried on every subsequent hover.
+  const [teaserArmed, setTeaserArmed] = useState(false);
+  const [teaserFailed, setTeaserFailed] = useState(false);
+  const hoverTimer = useRef<number | null>(null);
+
+  const teaserEligible = Boolean(card.trailer_url) && teaserBudget && !teaserFailed;
+
+  function handleEnter() {
+    setHovered(true);
+    if (!teaserEligible) return;
+    hoverTimer.current = window.setTimeout(() => setTeaserArmed(true), TEASER_HOVER_DELAY_MS);
+  }
+
+  function handleLeave() {
+    setHovered(false);
+    setTeaserArmed(false);
+    if (hoverTimer.current) {
+      window.clearTimeout(hoverTimer.current);
+      hoverTimer.current = null;
+    }
+  }
+
+  useEffect(() => () => { if (hoverTimer.current) window.clearTimeout(hoverTimer.current); }, []);
+
+  // Stable identity: HoverTeaser's play effect depends on this, and an inline
+  // arrow would re-run it — and re-issue play() — on every parent render.
+  const handleTeaserFail = useCallback(() => {
+    setTeaserFailed(true);
+    setTeaserArmed(false);
+  }, []);
 
   const live = card.status === "live";
   const countdown = live ? null : formatCountdown(card.scheduled_start_at);
@@ -87,8 +180,10 @@ function ContentCardView({ card, variant, rank, eager }: { card: ContentCard; va
     <Link
       to={`/watch/${card.slug}`}
       className={`group relative flex-shrink-0 ${WIDTH_CLASS[variant]} focus:outline-none focus-visible:ring-2 focus-visible:ring-white/70 rounded-md`}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      onMouseEnter={handleEnter}
+      onMouseLeave={handleLeave}
+      onFocus={handleEnter}
+      onBlur={handleLeave}
     >
       <div className="flex items-end gap-1">
         {variant === "numbered" && rank != null && (
@@ -103,6 +198,12 @@ function ContentCardView({ card, variant, rank, eager }: { card: ContentCard; va
 
         <div className="relative flex-1 overflow-hidden rounded-md bg-slate-900" style={{ aspectRatio: ASPECT[variant] }}>
           <CardImage url={card.master_image_url} focalX={card.focal_x} focalY={card.focal_y} alt={card.title} variant={variant} eager={eager} />
+
+          {/* Teaser sits above the still and below the badges. It only mounts
+              once armed, so an un-hovered card holds no video element at all. */}
+          {teaserArmed && card.trailer_url && (
+            <HoverTeaser src={card.trailer_url} active={teaserArmed} onFail={handleTeaserFail} />
+          )}
 
           {/* Top-left state */}
           <div className="absolute left-1.5 top-1.5 flex flex-col items-start gap-1">
@@ -144,9 +245,11 @@ function ContentCardView({ card, variant, rank, eager }: { card: ContentCard; va
             </div>
           )}
 
-          {/* Desktop hover info overlay. Deliberately not an autoplaying video:
-              a teaser that starts on hover costs bandwidth on every pass and is
-              hostile on the metered connections this platform targets. */}
+          {/* Desktop hover overlay: the scrim and title. It sits above the
+              teaser so the title stays readable over a playing clip, and it is
+              the whole hover treatment whenever there is no clip — absent
+              trailer, connection budget refused, or playback failed. The video
+              layer is the optional one, so the fallback needs no branching. */}
           <div
             className={`pointer-events-none absolute inset-0 hidden flex-col justify-end bg-gradient-to-t from-black/95 via-black/50 to-transparent p-2 transition-opacity duration-150 sm:flex ${
               hovered ? "opacity-100" : "opacity-0"
