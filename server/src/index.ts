@@ -23,6 +23,9 @@ import { invoicesRouter } from "./routes/invoices.js";
 import { layoutRouter } from "./routes/layout.js";
 import { homepageRouter } from "./routes/homepage.js";
 import { contentRouter, publicCategoriesRouter, publicSpeakersRouter } from "./routes/content.js";
+import { signupRouter } from "./routes/signup.js";
+import { registrationsRouter } from "./routes/registrations.js";
+import { accountRouter } from "./routes/account.js";
 import { transcriptsRouter } from "./routes/transcripts.js";
 import { calendarRouter, publicCalendarRouter } from "./routes/calendar.js";
 import { aiRouter } from "./routes/ai.js";
@@ -63,6 +66,11 @@ app.use("/api/homepage", homepageRouter);
 app.use("/api/content", contentRouter);
 app.use("/api/public-categories", publicCategoriesRouter);
 app.use("/api/public-speakers", publicSpeakersRouter);
+// Viewer accounts (Prompt 12). /signup is public — it describes the form.
+// Registrations and account are the viewer's own data, scoped by token.
+app.use("/api/signup", signupRouter);
+app.use("/api/registrations", requireAuth, registrationsRouter);
+app.use("/api/account", requireAuth, accountRouter);
 app.use("/api/transcripts", requireAuth, requireAdmin, transcriptsRouter);
 // Public: calendar apps poll the .ics URL with no way to send a bearer token.
 // The ics_token is the capability; the payload carries no personal data.

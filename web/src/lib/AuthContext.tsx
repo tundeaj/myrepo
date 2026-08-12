@@ -13,6 +13,9 @@ interface AuthContextValue {
   user: AuthUser | null;
   status: "loading" | "signed-in" | "signed-out";
   login: (email: string, password: string) => Promise<void>;
+  /** Adopts a session the server just issued — registration, password reset and
+   *  email verification all sign the user in without a second round trip. */
+  adoptSession: (token: string, user: AuthUser) => void;
   logout: () => void;
 }
 
@@ -75,13 +78,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setStatus("signed-in");
   }
 
+  function adoptSession(token: string, nextUser: AuthUser) {
+    setToken(token);
+    setUser(nextUser);
+    setStatus("signed-in");
+  }
+
   function logout() {
+    // Fire-and-forget: with stateless JWTs there is nothing to wait for, and a
+    // failed call must never leave someone stuck looking signed in.
+    api("/auth/logout", { method: "POST" }).catch(() => undefined);
     setToken(null);
     setUser(null);
     setStatus("signed-out");
   }
 
-  return <AuthContext.Provider value={{ user, status, login, logout }}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={{ user, status, login, adoptSession, logout }}>
+      {children}
+    </AuthContext.Provider>
+  );
 }
 
 export function useAuth() {

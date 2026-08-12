@@ -377,6 +377,9 @@ export function Detail() {
     `/api/content/${encodeURIComponent(slug)}`,
   );
   const [related, setRelated] = useState<ContentCard[]>([]);
+  // Registering changes the access answer without changing anything else on the
+  // page, so the gate re-renders from this rather than a full refetch.
+  const [accessOverride, setAccessOverride] = useState<AccessResult | null>(null);
 
   useDocumentHead(data);
 
@@ -397,6 +400,7 @@ export function Detail() {
   if (error || !data) return <PublicError kind={error ?? "failed"} onRetry={retry} />;
 
   const { content, speakers, categories, curriculum, session_config, access } = data;
+  const liveAccess = accessOverride ?? access;
   const heroImage = buildImageUrl(content.master_image_url, 1600);
   const isLive = LIVE_STATUSES.has(content.status);
 
@@ -450,7 +454,12 @@ export function Detail() {
             )}
 
             <div className="pt-2">
-              <AccessGate access={access} isLive={isLive} />
+              <AccessGate
+                access={liveAccess}
+                isLive={isLive}
+                contentId={content.id}
+                onRegistered={setAccessOverride}
+              />
             </div>
           </div>
         </div>

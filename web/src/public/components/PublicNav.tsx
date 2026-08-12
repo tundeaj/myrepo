@@ -93,7 +93,9 @@ export function PublicNav({ platformName, logoUrl }: { platformName: string; log
             </Link>
           ) : (
             <div className="flex items-center gap-2">
-              <Link to="/login" className="text-sm text-slate-300 hover:text-white">{t("nav.public.sign_in")}</Link>
+              {/* /signin, not /login: the latter is the back-office entry and
+                  redirects into the admin console. */}
+              <Link to="/signin" className="text-sm text-slate-300 hover:text-white">{t("nav.public.sign_in")}</Link>
               <Link to="/register" className="rounded bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-500">
                 {t("nav.public.get_started")}
               </Link>

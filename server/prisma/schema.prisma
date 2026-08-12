@@ -345,6 +345,11 @@ enum ConsentMethod {
   import
 }
 
+enum AuthTokenPurpose {
+  password_reset
+  email_verification
+}
+
 enum SignupFieldType {
   text
   email
@@ -1465,6 +1470,11 @@ model ConsentRecord {
   user_id          Int
   policy_key       String?         @db.VarChar(60)
   policy_version   Int?
+  /// A withdrawal is a NEW row with granted=false, never an edit or a delete.
+  /// Without this column the table can only say "accepted", which makes the
+  /// append-only rule unimplementable. Current state for a policy is the newest
+  /// row by accepted_at.
+  granted          Boolean         @default(true)
   accepted_at      DateTime        @default(now())
   ip_address       String?         @db.VarChar(45)
   user_agent       String?         @db.VarChar(300)
@@ -1472,6 +1482,25 @@ model ConsentRecord {
 
   @@index([user_id, policy_key])
   @@map("consent_records")
+}
+
+/// Password-reset and email-verification tokens.
+///
+/// The token itself is never stored — only a SHA-256 hash of it. A leaked
+/// database read otherwise hands over live account-recovery links for every
+/// pending reset.
+model AuthToken {
+  id          Int             @id @default(autoincrement())
+  user_id     Int
+  token_hash  String          @unique @db.VarChar(64)
+  purpose     AuthTokenPurpose
+  expires_at  DateTime
+  consumed_at DateTime?
+  created_at  DateTime        @default(now())
+
+  @@index([user_id])
+  @@index([token_hash])
+  @@map("auth_tokens")
 }
 
 model SignupField {

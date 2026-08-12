@@ -19,11 +19,13 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.116.0",
     "@prisma/client": "^5.20.0",
+    "@types/nodemailer": "^8.0.1",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.21.0",
     "jsonwebtoken": "^9.0.2",
+    "nodemailer": "^9.0.5",
     "zod": "^3.23.8"
   },
   "devDependencies": {

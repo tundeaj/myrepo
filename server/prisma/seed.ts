@@ -466,6 +466,47 @@ async function seedUiTranslations() {
   }
 }
 
+/**
+ * The public registration form. `signup_fields` is the form's definition — the
+ * register endpoint validates against these rows rather than a hardcoded shape,
+ * so an admin adding a field doesn't need a deploy.
+ *
+ * Order matters twice over: it is the render order, and a multi-step form splits
+ * at the first optional field. Required credentials first, profile after.
+ */
+async function seedSignupFields() {
+  const fields = [
+    { field_key: "full_name", label: "Full name", field_type: "text" as const, is_required: true },
+    { field_key: "email", label: "Email address", field_type: "email" as const, is_required: true },
+    { field_key: "password", label: "Password", field_type: "password" as const, is_required: true, help_text: "At least 10 characters." },
+    { field_key: "country", label: "Country", field_type: "select" as const, is_required: true, options: JSON.stringify(["NG", "GH", "KE", "ZA", "GB", "US"]) },
+    { field_key: "industry", label: "Industry", field_type: "select" as const, is_required: false, options: JSON.stringify(["Technology", "Finance", "Healthcare", "Education", "Retail", "Media", "Public sector", "Other"]) },
+    { field_key: "job_role", label: "Job role", field_type: "text" as const, is_required: false },
+    { field_key: "company_name", label: "Company", field_type: "text" as const, is_required: false },
+    { field_key: "phone", label: "Phone number", field_type: "phone" as const, is_required: false, help_text: "Only used for session reminders." },
+  ];
+
+  for (const [i, f] of fields.entries()) {
+    const existing = await prisma.signupField.findFirst({
+      where: { field_key: f.field_key, context: "public" },
+    });
+    if (existing) continue;
+    await prisma.signupField.create({
+      data: {
+        field_key: f.field_key,
+        label: f.label,
+        field_type: f.field_type,
+        context: "public",
+        is_required: f.is_required,
+        is_enabled: true,
+        display_order: i + 1,
+        options: "options" in f ? f.options : null,
+        help_text: "help_text" in f ? f.help_text : null,
+      },
+    });
+  }
+}
+
 async function seedCategories() {
   const cats = [
     { name: "Business & Entrepreneurship", slug: "business-entrepreneurship" },
@@ -612,6 +653,7 @@ async function main() {
   await seedNotificationEventKeys();
   await seedUiTranslations();
   await seedCategories();
+  await seedSignupFields();
   await seedSuperAdmin();
   await seedDemoContent();
 

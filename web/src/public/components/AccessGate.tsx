@@ -1,21 +1,16 @@
+import { useState } from "react";
+import { Link, useLocation } from "react-router-dom";
+import { api } from "../../lib/api";
+import { useAuth } from "../../lib/AuthContext";
 import { formatPrice } from "../lib/types";
 
 /**
  * The one place the access ladder becomes a button.
  *
- * ⚠️ Every CTA here is currently inert, and says so. Nothing in this build can
- * actually be watched, registered for or bought: the player lands in Prompt 13
- * and accounts, registration and checkout in Prompt 12. There is also nowhere
- * honest to send someone — /signin doesn't exist yet, and /login redirects into
- * the admin console, which is wrong for a viewer.
- *
- * A button that looks live and silently does nothing is worse than a disabled
- * one with a sentence explaining why. When Prompt 12 lands, each state below
- * swaps its inert control for the real action and the note goes away.
- *
- * All eleven states are reachable today: the signed-out ones through the gated
- * levels, and the four "needs" states for any signed-in user, because
- * resolveAccess fails closed until the grant lookups exist.
+ * Prompt 11 shipped this with every CTA inert, because there was nothing behind
+ * them and nowhere honest to send anyone. Prompt 12 wires the two that now work:
+ * signing in, and registering for free content. Purchase and subscription stay
+ * inert until checkout lands — and still say so rather than pretending.
  */
 
 export type AccessReason =
@@ -40,28 +35,17 @@ export interface AccessResult {
   join_token: string | null;
 }
 
-/** Inert control plus the reason it's inert. One shape for every state, so no
- *  state can accidentally look more live than another. */
-function Pending({
-  label,
-  note,
-  emphasis = false,
-}: {
-  label: string;
-  note: string;
-  emphasis?: boolean;
-}) {
+const PRIMARY =
+  "inline-flex items-center justify-center rounded-lg bg-white px-6 py-3 text-sm font-semibold text-slate-900 transition hover:bg-slate-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/70 disabled:cursor-not-allowed disabled:opacity-60";
+const INERT =
+  "inline-flex cursor-not-allowed items-center justify-center rounded-lg border border-slate-600 px-6 py-3 text-sm font-medium text-slate-300 opacity-80";
+
+/** Still-unbuilt actions. Inert, and says why — a live-looking button that
+ *  silently does nothing is worse than a disabled one with a sentence. */
+function Pending({ label, note }: { label: string; note: string }) {
   return (
     <div className="space-y-2">
-      <button
-        type="button"
-        disabled
-        className={
-          emphasis
-            ? "inline-flex cursor-not-allowed items-center justify-center rounded-lg bg-white/90 px-6 py-3 text-sm font-semibold text-slate-900 opacity-80"
-            : "inline-flex cursor-not-allowed items-center justify-center rounded-lg border border-slate-600 px-6 py-3 text-sm font-medium text-slate-300 opacity-80"
-        }
-      >
+      <button type="button" disabled className={INERT}>
         {label}
       </button>
       <p className="max-w-sm text-xs text-slate-500">{note}</p>
@@ -69,52 +53,122 @@ function Pending({
   );
 }
 
-export function AccessGate({ access, isLive }: { access: AccessResult; isLive: boolean }) {
+export function AccessGate({
+  access,
+  isLive,
+  contentId,
+  onRegistered,
+}: {
+  access: AccessResult;
+  isLive: boolean;
+  contentId: number;
+  /** Called with the refreshed access result so the page can re-render its gate
+   *  without re-fetching the whole detail payload. */
+  onRegistered?: (next: AccessResult) => void;
+}) {
+  const { status } = useAuth();
+  const location = useLocation();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
   const price = formatPrice(access.price_ngn);
+  // Returning here after signing in is the difference between a flow and a maze.
+  const from = location.pathname + location.search;
+
+  async function register() {
+    setBusy(true);
+    setError(null);
+    try {
+      await api("/registrations", {
+        method: "POST",
+        body: JSON.stringify({ content_id: contentId }),
+      });
+      const refreshed = await api<{ access: AccessResult }>(`/registrations/access/${contentId}`);
+      onRegistered?.(refreshed.access);
+    } catch (err: any) {
+      setError(err?.message ?? "We couldn't register you. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   switch (access.reason) {
-    // ── Access granted: only `public` is reachable without an account ─────────
+    // ── Access granted ───────────────────────────────────────────────────────
     case "public":
     case "registered":
     case "entitled":
     case "subscribed":
     case "cohort":
       return (
-        <Pending
-          emphasis
-          label={isLive ? "Join live" : "Watch now"}
-          note="You have access to this. The player itself is the next piece of the build."
-        />
+        <div className="space-y-2">
+          <Pending
+            label={isLive ? "Join live" : "Watch now"}
+            note="You have access to this. The player itself is the next piece of the build."
+          />
+          {access.reason === "registered" && (
+            <Link
+              to="/account/registrations"
+              className="inline-block text-xs text-slate-400 underline-offset-4 hover:text-slate-200 hover:underline"
+            >
+              You're registered — manage your sessions
+            </Link>
+          )}
+        </div>
       );
 
     // ── Signed out, on any gated level ───────────────────────────────────────
     case "needs_signin":
       return (
-        <Pending
-          emphasis
-          label={price ? `Sign in to buy · ${price}` : "Sign in to continue"}
-          note={
-            price
-              ? "Accounts and checkout are being built. The price shown is final."
-              : "Accounts are being built. Anything marked public is open to everyone in the meantime."
-          }
-        />
+        <div className="space-y-2">
+          <Link to="/signin" state={{ from }} className={PRIMARY}>
+            {price ? `Sign in to buy · ${price}` : "Sign in to continue"}
+          </Link>
+          <p className="max-w-sm text-xs text-slate-500">
+            {price ? (
+              <>The price shown is final. Checkout is still being built.</>
+            ) : (
+              <>
+                New here?{" "}
+                <Link
+                  to="/register"
+                  state={{ from }}
+                  className="text-slate-300 underline-offset-4 hover:underline"
+                >
+                  Create a free account
+                </Link>
+                .
+              </>
+            )}
+          </p>
+        </div>
       );
 
-    // ── Signed in, but nothing grants access yet ─────────────────────────────
+    // ── Signed in, free to register ──────────────────────────────────────────
     case "needs_registration":
       return (
-        <Pending
-          emphasis
-          label="Register free"
-          note="Free to attend. Registration opens when accounts land in the next build."
-        />
+        <div className="space-y-2">
+          {status === "signed-in" ? (
+            <>
+              <button type="button" onClick={register} disabled={busy} className={PRIMARY}>
+                {busy ? "Registering…" : "Register free"}
+              </button>
+              <p className="max-w-sm text-xs text-slate-500">
+                Free to attend. We'll email you the joining details.
+              </p>
+              {error && <p className="max-w-sm text-xs text-red-400">{error}</p>}
+            </>
+          ) : (
+            <Link to="/signin" state={{ from }} className={PRIMARY}>
+              Sign in to register
+            </Link>
+          )}
+        </div>
       );
 
+    // ── Signed in, but it costs money — checkout lands in Prompt 13 ──────────
     case "needs_purchase":
       return (
         <Pending
-          emphasis
           label={price ? `Buy · ${price}` : "Buy"}
           note="A one-time purchase, yours to rewatch. Checkout is being built."
         />
@@ -123,7 +177,6 @@ export function AccessGate({ access, isLive }: { access: AccessResult; isLive: b
     case "needs_subscription":
       return (
         <Pending
-          emphasis
           label="Included with a subscription"
           note="Plans and subscriptions are being built."
         />

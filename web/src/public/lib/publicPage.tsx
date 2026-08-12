@@ -36,6 +36,25 @@ export class NotFoundError extends Error {
   }
 }
 
+/**
+ * POSTs unauthenticated JSON and surfaces the server's own `error` string.
+ *
+ * The auth endpoints deliberately return carefully-worded messages — the
+ * neutral "if that email has an account" reply, the single message covering
+ * every bad-token case — so the client must show what the server said rather
+ * than substituting its own wording and undoing the care taken there.
+ */
+export async function postPublic<T>(url: string, body: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const parsed = (await res.json().catch(() => ({}))) as T & { error?: string };
+  if (!res.ok) throw new Error(parsed.error ?? "Something went wrong. Try again.");
+  return parsed;
+}
+
 export function usePublicData<T extends PublicBootstrap>(url: string) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<"notfound" | "failed" | null>(null);

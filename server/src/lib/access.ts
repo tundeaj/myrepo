@@ -1,5 +1,6 @@
 import { prisma } from "./prisma.js";
 import { VISIBLE_STATUSES } from "./homepageCache.js";
+import { LIVE_STATUSES } from "../routes/plans.js";
 
 /**
  * The single access decision for the whole platform.
@@ -10,10 +11,10 @@ import { VISIBLE_STATUSES } from "./homepageCache.js";
  * a route that hand-rolls "is this public?" today is the hole the paywall leaks
  * through when the player lands.
  *
- * Prompt 11 implements the signed-out path completely — it is fully determinate.
- * The four signed-in branches fail closed until Prompt 12 adds the grant lookups:
- * they refuse with the right reason, so the gate renders correctly and no path
- * can leak access before the checks exist.
+ * Prompt 11 implemented the signed-out path; Prompt 12 filled the four signed-in
+ * branches behind the same signature, so nothing that called this had to change.
+ * Refusal remains the default in every branch: a lookup that finds nothing falls
+ * through to a refusal rather than past it.
  */
 
 export type AccessReason =
@@ -58,6 +59,19 @@ const ACCESS_SELECT = {
 function refuse(reason: AccessReason, preview = 0, price: number | null = null): AccessResult {
   return {
     can_view: false,
+    reason,
+    preview_seconds: preview,
+    price_ngn: price,
+    registration_id: null,
+    join_token: null,
+  };
+}
+
+/** Granted, with no registration attached. Only `registered` content carries a
+ *  join_token — it is the per-registration capability for one session. */
+function grant(reason: AccessReason, preview: number, price: number | null): AccessResult {
+  return {
+    can_view: true,
     reason,
     preview_seconds: preview,
     price_ngn: price,
@@ -112,33 +126,68 @@ export async function resolveAccess(
     return refuse("needs_signin", preview, price);
   }
 
-  // Signed in, on a gated level. Until Prompt 12 adds the grant lookups there is
-  // nothing that can say yes, so each level refuses with its own reason.
-  //
-  // These refuse rather than throw deliberately. Failing closed is the security
-  // property that matters — a refusal cannot leak access — and there are already
-  // real signed-in users (admins, instructors) browsing the public site today. A
-  // throw would 500 the detail page for every one of them while protecting
-  // nothing that this refusal doesn't already protect.
+  // Signed in, on a gated level. Each branch looks for the one thing that grants
+  // access at that level and refuses otherwise — the refusal is the default, so
+  // a lookup that returns nothing fails closed rather than falling through.
   switch (content.access_level) {
-    case "registered":
-      // TODO(prompt-12): grant on a confirmed registrations row. `waitlisted` and
-      // `cancelled` must not grant access.
-      return refuse("needs_registration", preview, price);
+    case "registered": {
+      // Only `confirmed` grants. A waitlisted viewer holds a place in a queue,
+      // not a ticket; a cancelled one held a ticket and gave it up.
+      const registration = await prisma.registration.findFirst({
+        where: { user_id: userId, content_id: contentId, status: "confirmed" },
+        select: { id: true, join_token: true },
+      });
+      if (!registration) return refuse("needs_registration", preview, price);
+      return {
+        can_view: true,
+        reason: "registered",
+        preview_seconds: preview,
+        price_ngn: price,
+        registration_id: registration.id,
+        join_token: registration.join_token,
+      };
+    }
 
-    case "subscriber":
-      // TODO(prompt-12): grant on a subscriptions row in LIVE_STATUSES — import it
-      // from routes/plans.ts rather than restating it, so the two cannot drift.
-      return refuse("needs_subscription", preview, price);
+    case "subscriber": {
+      // LIVE_STATUSES is imported, not restated. `past_due` and `paused` still
+      // grant: cutting a paying subscriber off the moment a card fails is how you
+      // turn a retry into a cancellation.
+      const subscription = await prisma.subscription.findFirst({
+        where: { user_id: userId, status: { in: [...LIVE_STATUSES] } },
+        select: { id: true },
+      });
+      if (!subscription) return refuse("needs_subscription", preview, price);
+      return grant("subscribed", preview, price);
+    }
 
-    case "purchase":
-      // TODO(prompt-12): grant on an entitlements row with expires_at null or future.
-      return refuse("needs_purchase", preview, price);
+    case "purchase": {
+      const entitlement = await prisma.entitlement.findFirst({
+        where: {
+          user_id: userId,
+          content_id: contentId,
+          OR: [{ expires_at: null }, { expires_at: { gt: new Date() } }],
+        },
+        select: { id: true },
+      });
+      if (!entitlement) return refuse("needs_purchase", preview, price);
+      return grant("entitled", preview, price);
+    }
 
-    case "cohort":
-      // TODO(prompt-12): grant on an entitlement with source='cohort'. Never
-      // inferable from a subscription — cohort places are granted, not bought.
-      return refuse("not_enrolled", preview, price);
+    case "cohort": {
+      // Deliberately narrow: source must be `cohort`. A subscription never
+      // implies a cohort place — those are granted by a human, not bought.
+      const place = await prisma.entitlement.findFirst({
+        where: {
+          user_id: userId,
+          content_id: contentId,
+          source: "cohort",
+          OR: [{ expires_at: null }, { expires_at: { gt: new Date() } }],
+        },
+        select: { id: true },
+      });
+      if (!place) return refuse("not_enrolled", preview, price);
+      return grant("cohort", preview, price);
+    }
 
     default:
       return refuse("unavailable");

@@ -16,6 +16,16 @@ const BrowseIndex = lazy(() => import("./public/Browse").then((m) => ({ default:
 const BrowseCategory = lazy(() => import("./public/Browse").then((m) => ({ default: m.BrowseCategory })));
 const SpeakerProfile = lazy(() => import("./public/SpeakerProfile").then((m) => ({ default: m.SpeakerProfile })));
 
+// Viewer accounts (Prompt 12). The three password/verification flows share one
+// chunk — a visitor who hits any of them is likely to touch another.
+const SignIn = lazy(() => import("./public/auth/SignIn").then((m) => ({ default: m.SignIn })));
+const Register = lazy(() => import("./public/auth/Register").then((m) => ({ default: m.Register })));
+const ForgotPassword = lazy(() => import("./public/auth/PasswordFlows").then((m) => ({ default: m.ForgotPassword })));
+const ResetPassword = lazy(() => import("./public/auth/PasswordFlows").then((m) => ({ default: m.ResetPassword })));
+const VerifyEmail = lazy(() => import("./public/auth/PasswordFlows").then((m) => ({ default: m.VerifyEmail })));
+const Account = lazy(() => import("./public/Account").then((m) => ({ default: m.Account })));
+const MyRegistrations = lazy(() => import("./public/Account").then((m) => ({ default: m.MyRegistrations })));
+
 const AdminLayout = lazy(() => import("./layout/AdminLayout").then((m) => ({ default: m.AdminLayout })));
 const Dashboard = lazy(() => import("./pages/Dashboard").then((m) => ({ default: m.Dashboard })));
 const PlaceholderPage = lazy(() => import("./pages/PlaceholderPage").then((m) => ({ default: m.PlaceholderPage })));
@@ -157,6 +167,17 @@ export function App() {
         <Route path="/browse" element={<BrowseIndex />} />
         <Route path="/browse/:slug" element={<BrowseCategory />} />
         <Route path="/speakers/:slug" element={<SpeakerProfile />} />
+
+        {/* ── Viewer accounts (Prompt 12) ── */}
+        {/* /signin is the viewer entry; /login stays the back-office one, which
+            redirects into the admin console. */}
+        <Route path="/signin" element={<SignIn />} />
+        <Route path="/register" element={<Register />} />
+        <Route path="/forgot-password" element={<ForgotPassword />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
+        <Route path="/verify-email" element={<VerifyEmail />} />
+        <Route path="/account" element={<Account />} />
+        <Route path="/account/registrations" element={<MyRegistrations />} />
 
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

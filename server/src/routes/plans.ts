@@ -8,7 +8,9 @@ export const plansRouter = Router();
 
 // A subscription "counts" against a plan for deletion-blocking and the
 // read-only subscriber count while it's still live or recoverable.
-const LIVE_STATUSES = ["active", "past_due", "paused"] as const;
+/** Subscription statuses that still grant access. Exported so lib/access.ts
+ *  uses this exact definition rather than a second copy that can drift. */
+export const LIVE_STATUSES = ["active", "past_due", "paused"] as const;
 
 // GET /plans — list with read-only subscriber counts
 plansRouter.get("/", async (_req: Request, res: Response, next: NextFunction) => {
