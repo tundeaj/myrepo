@@ -21,6 +21,13 @@ import { Earnings } from "./pages/instructor/Earnings";
 import { PayoutDetails } from "./pages/instructor/PayoutDetails";
 import { Schedule } from "./pages/instructor/Schedule";
 import { Teach } from "./pages/Teach";
+import { SettingsHub } from "./pages/settings/SettingsHub";
+import { Modules } from "./pages/settings/Modules";
+import { ImageVariants } from "./pages/settings/ImageVariants";
+import { FooterLinks } from "./pages/settings/FooterLinks";
+import { Plans } from "./pages/plans/Plans";
+import { SubscriberAnalytics } from "./pages/analytics/SubscriberAnalytics";
+import { Invoices } from "./pages/revenue/Invoices";
 import { ProtectedRoute } from "./lib/ProtectedRoute";
 
 // Routes not yet built — each will be replaced with a real page in future prompts
@@ -34,15 +41,15 @@ const PLACEHOLDER_PATHS = [
   "bulk-import",
   "community/spaces",
   "community/moderation",
-  "plans",
+  // "plans" — replaced by real page below
   "coupons",
   "payouts",
   "sponsors",
   "ads",
   "advertisers",
-  "invoices",
+  // "invoices" — replaced by real page below
   "analytics/player",
-  "analytics/subscribers",
+  // "analytics/subscribers" — replaced by real page below
   "analytics/ppv-revenue",
   "layout",
   "pages",
@@ -51,8 +58,7 @@ const PLACEHOLDER_PATHS = [
   "faqs",
   "contact-requests",
   "categories",
-  "settings",
-  "settings/modules",
+  // "settings", "settings/modules" — replaced by real pages below
 ];
 
 export function App() {
@@ -87,6 +93,15 @@ export function App() {
         <Route path="instructors" element={<AllInstructors />} />
         <Route path="instructors/applications" element={<Applications />} />
         <Route path="instructors/review" element={<ReviewQueue />} />
+
+        {/* ── Settings & Modules (Prompt 07) ── */}
+        <Route path="settings" element={<SettingsHub />} />
+        <Route path="settings/modules" element={<Modules />} />
+        <Route path="settings/images" element={<ImageVariants />} />
+        <Route path="settings/footer" element={<FooterLinks />} />
+        <Route path="plans" element={<Plans />} />
+        <Route path="analytics/subscribers" element={<SubscriberAnalytics />} />
+        <Route path="invoices" element={<Invoices />} />
 
         {/* ── Placeholder routes (future prompts) ── */}
         {PLACEHOLDER_PATHS.map((path) => (

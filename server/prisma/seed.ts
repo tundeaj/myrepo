@@ -76,17 +76,26 @@ async function seedCmsPages() {
   }
 }
 
+// Seeds every row the Settings Hub can show — values here are simply the field
+// defaults from server/src/lib/settingsSchema.ts. GET /settings falls back to
+// those defaults anyway when no row exists, so this only needs to seed the
+// handful of values that should differ from a blank install, plus the secret
+// key placeholders so "Change" buttons render correctly before configuration.
 async function seedSettings() {
   const groups: Record<string, Record<string, string | boolean>> = {
     brand: {
       platform_name: "Webinarflix",
       primary_colour: "#E50914",
-      font_stack: "system-ui,-apple-system,sans-serif",
+      accent_colour: "#F5C518",
+      font_family: "system-ui,-apple-system,sans-serif",
     },
     localisation: {
       default_timezone: "Africa/Lagos",
       default_language: "en",
+      enabled_languages: "en",
+      subtitle_languages: "en",
       default_currency: "NGN",
+      enabled_countries: "NG,GH",
       geo_detection: true,
     },
     registration: {
@@ -101,9 +110,12 @@ async function seedSettings() {
       subtitles_default_on: true,
       autoplay_desktop: true,
       autoplay_mobile: false,
-      quality_selector: true,
       data_saver_available: true,
       playback_speeds: "1,1.25,1.5,1.75,2",
+      watermark_enabled: false,
+      watermark_opacity: "30",
+      player_logo_position: "top_right",
+      player_logo_opacity: "70",
       skip_chapter: true,
       rows_initial_web: "4",
       rows_initial_mobile: "3",
@@ -115,15 +127,23 @@ async function seedSettings() {
       payout_holdback_days: "14",
       default_commission_pct: "30",
       wht_applicable: true,
+      wht_rate: "5",
     },
     content_policy: {
       review_required: false,
       new_badge_days: "7",
-      ads_free_tier_only: true,
     },
     notifications: {
       sender_name: "Webinarflix",
-      reminder_offsets: "1440,60,10",
+      sender_address: "no-reply@webinarflix.dev",
+      reminder_24h_enabled: true,
+      reminder_1h_enabled: true,
+      reminder_10m_enabled: true,
+    },
+    instructor: {
+      applications_open: true,
+      default_commission_pct: "30",
+      auto_approve_default: false,
     },
   };
 
@@ -143,17 +163,14 @@ async function seedSettings() {
     }
   }
 
-  // Integration keys — secret-flagged, values left unset until the operator supplies them.
+  // Integration and SMTP secrets — left unset until the operator supplies them.
+  // Public integration identifiers (publishable keys, endpoints, analytics IDs)
+  // are NOT secret and are safe to show back to the client.
   const secretKeys = [
+    ["integrations.bunny_stream_api_key", "integrations"],
     ["integrations.imagekit_private_key", "integrations"],
     ["integrations.paystack_secret_key", "integrations"],
-    ["integrations.paystack_public_key", "integrations"],
-    ["integrations.imagekit_public_key", "integrations"],
-    ["integrations.imagekit_url_endpoint", "integrations"],
-    ["integrations.bunny_stream_api_key", "integrations"],
-    ["integrations.smtp_password", "notifications"],
-    ["integrations.ga4_id", "integrations"],
-    ["integrations.meta_pixel_id", "integrations"],
+    ["notifications.smtp_password", "notifications"],
   ] as const;
   for (const [setting_key, setting_group] of secretKeys) {
     await prisma.setting.upsert({
@@ -299,6 +316,8 @@ async function seedUiTranslations() {
     "nav.categories": "Categories",
     "nav.settings": "Settings",
     "nav.modules": "Modules",
+    "nav.image_variants": "Image Variants",
+    "nav.footer_links": "Footer Links",
     "nav.instructors": "Instructors",
     "nav.instructor_applications": "Instructor Applications",
     "nav.review_queue": "Review Queue",

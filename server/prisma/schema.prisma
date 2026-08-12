@@ -907,6 +907,7 @@ model Subscription {
   status                       SubscriptionStatus  @default(active)
   current_period_end           DateTime?
   paused_until                 DateTime?
+  cancelled_at                 DateTime?
   paystack_subscription_code   String?             @db.VarChar(120)
   created_at                   DateTime            @default(now())
 

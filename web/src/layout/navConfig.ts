@@ -96,6 +96,8 @@ export const NAV_SECTIONS: NavSection[] = [
       { labelKey: "nav.categories", icon: "folder", path: "/admin/categories" },
       { labelKey: "nav.settings", icon: "settings", path: "/admin/settings" },
       { labelKey: "nav.modules", icon: "toggle", path: "/admin/settings/modules" },
+      { labelKey: "nav.image_variants", icon: "image", path: "/admin/settings/images" },
+      { labelKey: "nav.footer_links", icon: "layout", path: "/admin/settings/footer" },
       { labelKey: "nav.instructors", icon: "mic", path: "/admin/instructors" },
       { labelKey: "nav.instructor_applications", icon: "clipboard", path: "/admin/instructors/applications" },
       { labelKey: "nav.review_queue", icon: "eye", path: "/admin/instructors/review" },
