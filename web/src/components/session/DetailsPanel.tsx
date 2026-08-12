@@ -38,6 +38,7 @@ export function DetailsPanel({
   const [aiField, setAiField] = useState<"short_description" | "description_html" | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiPreview, setAiPreview] = useState<{ field: string; text: string } | null>(null);
+  const [aiError, setAiError] = useState<string | null>(null);
 
   const descCount = shortDescription.length;
   const descCountColor = descCount >= 250 ? "text-red-400" : descCount >= 220 ? "text-amber-400" : "text-slate-600";
@@ -67,17 +68,28 @@ export function DetailsPanel({
   }
 
   async function handleAiSuggest(field: "short_description" | "description_html") {
+    // The server needs a title for context and rejects the call without one.
+    // Say so here rather than spending a request to be told.
+    if (!title.trim()) {
+      setAiField(field);
+      setAiError("Add a title first — the AI needs something to write about.");
+      return;
+    }
+
     setAiField(field);
     setAiLoading(true);
     setAiPreview(null);
+    setAiError(null);
     try {
       const res = await api<{ suggestion: string }>("/ai/suggest", {
         method: "POST",
         body: JSON.stringify({ field, title, category: categoryName, speakerNames }),
       });
       setAiPreview({ field, text: res.suggestion });
-    } catch {
-      // silently fail — user can retry
+    } catch (err: any) {
+      // Rate limits and "not configured yet" are both things the user can act
+      // on — swallowing them leaves a button that just does nothing.
+      setAiError(err?.message ?? "Couldn't generate a suggestion. Try again.");
     } finally {
       setAiLoading(false);
     }
@@ -157,6 +169,9 @@ export function DetailsPanel({
           >
             {aiLoading && aiField === "short_description" ? "Generating…" : "✨ AI Suggest"}
           </button>
+          {aiError && aiField === "short_description" && (
+            <p className="mt-1.5 text-xs text-amber-400">{aiError}</p>
+          )}
           {aiPreview?.field === "short_description" && (
             <AiPreview text={aiPreview.text} onUse={useAiSuggestion} onDiscard={() => setAiPreview(null)} />
           )}
@@ -179,6 +194,9 @@ export function DetailsPanel({
           >
             {aiLoading && aiField === "description_html" ? "Generating…" : "✨ AI Suggest"}
           </button>
+          {aiError && aiField === "description_html" && (
+            <p className="mt-1.5 text-xs text-amber-400">{aiError}</p>
+          )}
           {aiPreview?.field === "description_html" && (
             <AiPreview text={aiPreview.text} onUse={useAiSuggestion} onDiscard={() => setAiPreview(null)} />
           )}

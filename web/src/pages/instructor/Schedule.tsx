@@ -1,4 +1,5 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+import { api } from "../../lib/api";
 import { useApi } from "../../hooks/useApi";
 import { Icon } from "../../components/Icon";
 import { EmptyState } from "../../components/EmptyState";
@@ -41,7 +42,7 @@ function buildIcs(session: ScheduleSession): string {
   ].join("\r\n");
 }
 
-function downloadIcs(session: ScheduleSession) {
+function downloadLocalIcs(session: ScheduleSession) {
   const blob = new Blob([buildIcs(session)], { type: "text/calendar" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -49,6 +50,25 @@ function downloadIcs(session: ScheduleSession) {
   a.download = `${session.slug || `session-${session.id}`}.ics`;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+/**
+ * Registers the session server-side and hands back a permanent subscribe URL.
+ * That link keeps working — calendar apps re-poll it, so a rescheduled session
+ * updates in place instead of leaving a stale entry. The locally-built file is
+ * the fallback: correct at the moment of download, but frozen.
+ */
+async function addToCalendar(session: ScheduleSession): Promise<string | null> {
+  try {
+    const res = await api<{ ics_url: string }>("/calendar/sync", {
+      method: "POST",
+      body: JSON.stringify({ content_id: session.id, provider: "ical" }),
+    });
+    return res.ics_url;
+  } catch {
+    downloadLocalIcs(session);
+    return null;
+  }
 }
 
 // ─── Grouping helpers ─────────────────────────────────────────────────────────
@@ -73,6 +93,18 @@ function dayLabel(key: string): string {
 
 export function Schedule() {
   const { data, loading, error, correlationId, retry } = useApi<{ sessions: ScheduleSession[] }>("/portal/schedule");
+  const [icsUrls, setIcsUrls] = useState<Record<number, string>>({});
+  const [busyId, setBusyId] = useState<number | null>(null);
+
+  async function handleAdd(session: ScheduleSession) {
+    setBusyId(session.id);
+    try {
+      const url = await addToCalendar(session);
+      if (url) setIcsUrls((prev) => ({ ...prev, [session.id]: url }));
+    } finally {
+      setBusyId(null);
+    }
+  }
 
   const grouped = useMemo(() => {
     const sessions = (data?.sessions ?? []).filter((s) => s.scheduled_start_at);
@@ -127,14 +159,26 @@ export function Schedule() {
                         {s.scheduled_duration_minutes ? ` · ${s.scheduled_duration_minutes} min` : ""}
                       </p>
                     </div>
-                    <button
-                      onClick={() => downloadIcs(s)}
-                      className="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
-                      title="Download .ics — works with Google Calendar, Outlook and Apple Calendar"
-                    >
-                      <Icon name="bell" className="h-3.5 w-3.5" />
-                      Add to calendar
-                    </button>
+                    <div className="flex flex-col items-end gap-1">
+                      <button
+                        onClick={() => handleAdd(s)}
+                        disabled={busyId === s.id}
+                        className="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+                        title="Subscribe in Google Calendar, Outlook or Apple Calendar"
+                      >
+                        <Icon name="bell" className="h-3.5 w-3.5" />
+                        {busyId === s.id ? "Adding…" : "Add to calendar"}
+                      </button>
+                      {icsUrls[s.id] && (
+                        <a
+                          href={icsUrls[s.id]}
+                          className="max-w-[220px] truncate text-[11px] text-brand hover:underline"
+                          title={icsUrls[s.id]}
+                        >
+                          Open subscribe link
+                        </a>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -144,8 +188,9 @@ export function Schedule() {
       )}
 
       <p className="text-xs text-slate-600">
-        "Add to calendar" downloads an .ics file that works with Google Calendar, Outlook and Apple Calendar.
-        The file contains only the session title, time and join link.
+        "Add to calendar" gives you a subscribe link that works with Google Calendar, Outlook and Apple
+        Calendar. Because your calendar re-checks the link, a rescheduled session updates in place. The
+        link carries only the session title, time and join URL — never your name or email.
       </p>
     </div>
   );

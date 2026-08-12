@@ -22,6 +22,8 @@ import { subscriberAnalyticsRouter } from "./routes/subscriberAnalytics.js";
 import { invoicesRouter } from "./routes/invoices.js";
 import { layoutRouter } from "./routes/layout.js";
 import { homepageRouter } from "./routes/homepage.js";
+import { transcriptsRouter } from "./routes/transcripts.js";
+import { calendarRouter, publicCalendarRouter } from "./routes/calendar.js";
 import { aiRouter } from "./routes/ai.js";
 import { requireAdmin, requireAuth } from "./middleware/auth.js";
 import { errorHandler, notFoundHandler } from "./lib/errors.js";
@@ -54,6 +56,11 @@ app.use("/api/analytics/subscribers", requireAuth, requireAdmin, subscriberAnaly
 app.use("/api/invoices", requireAuth, requireAdmin, invoicesRouter);
 app.use("/api/layout", requireAuth, requireAdmin, layoutRouter);
 app.use("/api/homepage", homepageRouter);
+app.use("/api/transcripts", requireAuth, requireAdmin, transcriptsRouter);
+// Public: calendar apps poll the .ics URL with no way to send a bearer token.
+// The ics_token is the capability; the payload carries no personal data.
+app.use("/api/calendar", publicCalendarRouter);
+app.use("/api/calendar", requireAuth, calendarRouter);
 app.use("/api/ai", requireAuth, requireAdmin, aiRouter);
 
 app.use("/api", notFoundHandler);

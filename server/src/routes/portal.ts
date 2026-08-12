@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { ApiError } from "../lib/errors.js";
 import { serializeContentItem, maskAccountNumber } from "../lib/serializers.js";
+import { verifyBankAccount, createTransferRecipient, listBanks, isPaystackConfigured } from "../lib/paystack.js";
 import type { Request, Response, NextFunction } from "express";
 
 // ─── Instructor portal — every endpoint is scoped SERVER-SIDE to the signed-in
@@ -444,8 +445,9 @@ portalRouter.get("/earnings", async (req: Request, res: Response, next: NextFunc
 });
 
 // ─── Payout details ───────────────────────────────────────────────────────────
-// Bank list is a fixed Paystack-style reference set. Account name resolution is
-// simulated here; in production this proxies Paystack's /bank/resolve endpoint.
+// Account resolution and recipient creation go through Paystack (see
+// lib/paystack.ts). The list below is the offline fallback used when Paystack
+// isn't configured, so the form still renders on a dev install.
 // ⚠️ We deliberately NEVER collect BVN or any national identity number.
 
 const NIGERIAN_BANKS = [
@@ -478,6 +480,16 @@ const NIGERIAN_BANKS = [
 ];
 
 portalRouter.get("/banks", async (_req: Request, res: Response) => {
+  // Live list when Paystack is configured — bank codes change more often than a
+  // hardcoded list gets updated. A lookup failure falls back rather than
+  // blocking the form.
+  if (isPaystackConfigured()) {
+    try {
+      return res.json({ banks: await listBanks() });
+    } catch {
+      // fall through to the static list
+    }
+  }
   res.json({ banks: NIGERIAN_BANKS });
 });
 
@@ -498,30 +510,30 @@ portalRouter.get("/payout-details", async (req: Request, res: Response, next: Ne
   }
 });
 
-// Step 1: resolve the account name (Paystack /bank/resolve in production)
+// Step 1 — FUNCTION D: resolve the account name via Paystack.
+// The name returned here comes from the bank. It is never typed by the
+// instructor, and a client-supplied name is never accepted in its place.
 portalRouter.post("/payout-details/verify", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const speaker = await getOwnSpeaker(req);
+    await getOwnSpeaker(req);
     const body = z.object({
       bank_code: z.string().min(1, "Select your bank."),
       account_number: z.string().regex(/^\d{10}$/, "Account number must be exactly 10 digits."),
     }).parse(req.body);
 
-    const bank = NIGERIAN_BANKS.find((b) => b.code === body.bank_code);
-    if (!bank) throw new ApiError(422, "Unknown bank. Select a bank from the list.");
+    const resolved = await verifyBankAccount(body.account_number, body.bank_code);
 
-    // Simulated resolution — production calls Paystack and returns the real name.
-    // The resolved name comes from the BANK, never typed by the instructor.
-    const user = speaker.user_id
-      ? await prisma.user.findFirst({ where: { id: speaker.user_id }, select: { full_name: true } })
-      : null;
-    const resolvedName = (user?.full_name ?? speaker.full_name).toUpperCase();
+    // Prefer Paystack's own name for the bank; fall back to the static list.
+    let bankName = NIGERIAN_BANKS.find((b) => b.code === body.bank_code)?.name ?? null;
+    if (isPaystackConfigured()) {
+      try {
+        bankName = (await listBanks()).find((b) => b.code === body.bank_code)?.name ?? bankName;
+      } catch {
+        // keep the fallback name
+      }
+    }
 
-    res.json({
-      ok: true,
-      account_name: resolvedName,
-      bank_name: bank.name,
-    });
+    res.json({ ok: true, account_name: resolved.account_name, bank_name: bankName });
   } catch (err) {
     if (err instanceof z.ZodError) return next(new ApiError(422, err.errors[0]?.message ?? "Validation error"));
     next(err);
@@ -535,22 +547,35 @@ portalRouter.post("/payout-details/confirm", async (req: Request, res: Response,
     const body = z.object({
       bank_code: z.string().min(1),
       account_number: z.string().regex(/^\d{10}$/, "Account number must be exactly 10 digits."),
-      account_name: z.string().min(1),
     }).parse(req.body);
 
-    const bank = NIGERIAN_BANKS.find((b) => b.code === body.bank_code);
-    if (!bank) throw new ApiError(422, "Unknown bank. Select a bank from the list.");
+    // Re-resolve rather than trusting a name posted by the client. The verify
+    // step is a preview for the human; this is the value that gets stored, and
+    // it has to come from the bank on this request.
+    const resolved = await verifyBankAccount(body.account_number, body.bank_code);
 
-    // Production: create a Paystack transfer recipient here.
-    const recipientCode = `RCP_sim_${speaker.id}_${Date.now()}`;
+    let bankName = NIGERIAN_BANKS.find((b) => b.code === body.bank_code)?.name ?? null;
+    if (isPaystackConfigured()) {
+      try {
+        bankName = (await listBanks()).find((b) => b.code === body.bank_code)?.name ?? bankName;
+      } catch {
+        // keep the fallback name
+      }
+    }
+
+    const recipientCode = await createTransferRecipient(
+      resolved.account_name,
+      body.account_number,
+      body.bank_code,
+    );
 
     const updated = await prisma.speaker.update({
       where: { id: speaker.id },
       data: {
-        bank_code: bank.code,
-        bank_name: bank.name,
+        bank_code: body.bank_code,
+        bank_name: bankName,
         account_number: body.account_number,
-        account_name_resolved: body.account_name,
+        account_name_resolved: resolved.account_name,
         paystack_recipient_code: recipientCode,
         payout_verified: true,
       },

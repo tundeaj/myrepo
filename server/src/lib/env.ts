@@ -19,10 +19,20 @@ export const env = {
   // Prompt 10 integrations — read here so their "configured?" boolean can be
   // surfaced to the client without ever leaking the value itself.
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? "",
+  /** Overridable so the model can be rolled forward without a code change. */
+  ANTHROPIC_MODEL: process.env.ANTHROPIC_MODEL ?? "claude-sonnet-5",
   IMAGEKIT_PRIVATE_KEY: process.env.IMAGEKIT_PRIVATE_KEY ?? "",
   IMAGEKIT_PUBLIC_KEY: process.env.IMAGEKIT_PUBLIC_KEY ?? "",
   IMAGEKIT_URL_ENDPOINT: process.env.IMAGEKIT_URL_ENDPOINT ?? "",
   PAYSTACK_SECRET_KEY: process.env.PAYSTACK_SECRET_KEY ?? "",
   PAYSTACK_PUBLIC_KEY: process.env.PAYSTACK_PUBLIC_KEY ?? "",
   VIDEO_PROVIDER_API_KEY: process.env.VIDEO_PROVIDER_API_KEY ?? "",
+  TRANSCRIPT_PROVIDER: process.env.TRANSCRIPT_PROVIDER ?? "",
+  TRANSCRIPT_API_KEY: process.env.TRANSCRIPT_API_KEY ?? "",
+  GOOGLE_CALENDAR_CLIENT_ID: process.env.GOOGLE_CALENDAR_CLIENT_ID ?? "",
+  GOOGLE_CALENDAR_CLIENT_SECRET: process.env.GOOGLE_CALENDAR_CLIENT_SECRET ?? "",
+  OUTLOOK_CLIENT_ID: process.env.OUTLOOK_CLIENT_ID ?? "",
+  OUTLOOK_CLIENT_SECRET: process.env.OUTLOOK_CLIENT_SECRET ?? "",
+  /** Absolute base used to build the permanent .ics URL handed to calendar apps. */
+  PUBLIC_BASE_URL: process.env.PUBLIC_BASE_URL ?? "http://localhost:4000",
 };

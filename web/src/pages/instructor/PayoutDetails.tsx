@@ -84,9 +84,11 @@ export function PayoutDetails() {
     setConfirming(true);
     setFormErr(null);
     try {
+      // The name isn't sent: the server re-resolves it with the bank on confirm,
+      // so what gets stored can't be influenced from here.
       const res = await api<{ payout: PayoutInfo }>("/portal/payout-details/confirm", {
         method: "POST",
-        body: JSON.stringify({ bank_code: bankCode, account_number: accountNumber, account_name: resolvedName }),
+        body: JSON.stringify({ bank_code: bankCode, account_number: accountNumber }),
       });
       setPayout(res.payout);
       setEditing(false);
