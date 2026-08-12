@@ -420,7 +420,10 @@ export function Detail() {
           <div className="absolute inset-0 bg-gradient-to-t from-[#0b0b0f] via-[#0b0b0f]/50 to-transparent" />
         </div>
 
-        <div className="mx-auto -mt-28 max-w-5xl px-6 pb-10 sm:-mt-36">
+        {/* relative z-10 is load-bearing: the gradient above is absolutely
+            positioned, so without a stacking context here it paints straight
+            over the title, meta and CTA that this block pulls up into it. */}
+        <div className="relative z-10 mx-auto -mt-28 max-w-5xl px-6 pb-10 sm:-mt-36">
           <div className="space-y-4">
             {categories.length > 0 && (
               <nav className="flex flex-wrap gap-2 text-xs">

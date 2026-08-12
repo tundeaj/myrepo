@@ -557,10 +557,13 @@ async function seedDemoContent() {
   const now = new Date();
   const inDays = (d: number) => new Date(now.getTime() + d * 86400000);
 
-  const demoSessions: Array<{ title: string; days: number; status: "registration_open" | "scheduled" | "ended"; regs: number; attended: number }> = [
-    { title: "Scaling Payments in West Africa", days: 1, status: "registration_open", regs: 34, attended: 0 },
-    { title: "Building a Growth Engine on a Naira Budget", days: 3, status: "registration_open", regs: 28, attended: 0 },
-    { title: "Fundraising for Francophone Startups", days: 5, status: "scheduled", regs: 21, attended: 0 },
+  // hero: at least one item must carry show_in_hero, or a fresh install paints a
+  // homepage with no hero at all — buildHero falls back to live-or-featured, and
+  // a new platform has neither.
+  const demoSessions: Array<{ title: string; days: number; status: "registration_open" | "scheduled" | "ended"; regs: number; attended: number; hero?: boolean; featured?: boolean }> = [
+    { title: "Scaling Payments in West Africa", days: 1, status: "registration_open", regs: 34, attended: 0, hero: true, featured: true },
+    { title: "Building a Growth Engine on a Naira Budget", days: 3, status: "registration_open", regs: 28, attended: 0, hero: true },
+    { title: "Fundraising for Francophone Startups", days: 5, status: "scheduled", regs: 21, attended: 0, featured: true },
     { title: "Personal Branding for Consultants", days: 7, status: "scheduled", regs: 14, attended: 0 },
     { title: "The Nigerian Creator Economy in 2026", days: 9, status: "scheduled", regs: 6, attended: 0 },
     { title: "Masterclass: Pricing for African SaaS", days: -4, status: "ended", regs: 38, attended: 30 },
@@ -581,6 +584,8 @@ async function seedDemoContent() {
         session_format: "webinar",
         access_level: "registered",
         price_mode: "free",
+        show_in_hero: s.hero ?? false,
+        is_featured: s.featured ?? false,
         registration_count: s.regs,
         created_at: inDays(s.days - 14),
       },

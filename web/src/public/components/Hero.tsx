@@ -152,8 +152,11 @@ export function Hero({ items }: { items: ContentCard[] }) {
       <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/55 to-transparent" />
       <div className="absolute inset-0 bg-gradient-to-r from-slate-950/85 via-slate-950/30 to-transparent" />
 
-      {/* Copy + CTAs */}
-      <div className="absolute inset-x-0 bottom-0 p-4 pb-6 sm:p-8 sm:pb-12 lg:max-w-2xl">
+      {/* Copy + CTAs.
+          Bottom padding has to exceed the negative top margin on <main> in
+          Home.tsx (-mt-8 / sm:-mt-16), which tucks the first row up under the
+          hero gradient. At sm:pb-12 the row header landed on top of the CTAs. */}
+      <div className="absolute inset-x-0 bottom-0 p-4 pb-14 sm:p-8 sm:pb-24 lg:max-w-2xl">
         {card.status === "live" && (
           <span className="mb-2 inline-flex items-center gap-1.5 rounded bg-red-600 px-2 py-1 text-[11px] font-bold tracking-wide text-white">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
