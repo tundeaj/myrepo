@@ -1,22 +1,28 @@
-# PROMPT 11 — VIEWER ACCOUNTS & ACCESS GATE
+# PROMPT 12 — VIEWER ACCOUNTS & ACCESS GATE
 
 *Drafted from the schema and settings already in the repo, not from the master prompt —
 the master prompt ends at Prompt 10. Every table, column, enum and setting referenced
 below already exists unless explicitly marked **NEW**.*
 
+*Was Prompt 11; renumbered when the detail page moved ahead of it. The content is
+unchanged apart from this section and the `resolveAccess` handover.*
+
 ---
 
-## Why this comes first
+## What this picks up
 
-Nothing downstream can be built without it. The detail page needs to know whether to
-show a Register button or a price. The player needs to know whether this viewer may
-watch. Checkout needs somewhere to attach an entitlement. All three questions reduce to
-"who is this person and what may they see", which is what this prompt builds.
+Prompt 11 built the public site's pages and wrote `resolveAccess` with its signed-out
+branch complete. This prompt gives the platform actual people: accounts, free
+registration, and the four signed-in branches of the access ladder that Prompt 11 left
+as explicit `TODO(prompt-12)` throws.
 
-**After Prompt 11 the homepage is still a dead end.** Cards link to `/watch/:slug`,
-tiles to `/browse/:slug`, speakers to `/speakers/:slug`; none of those routes exist and
-the catch-all bounces them to `/`. Prompt 12 fixes that. This prompt makes the fix
-possible.
+Everything downstream needs it. The detail page can currently only say "sign in to
+continue"; the player in Prompt 14 cannot issue a signed URL to nobody; checkout has no
+one to attach an entitlement to. All of it reduces to "who is this person and what may
+they see".
+
+⚠️ **The migration described below is the first one this project has ever applied against
+a real database.** Budget for that rather than assuming it is a formality.
 
 ---
 
@@ -128,29 +134,24 @@ Multi-step splits at the first optional field: credentials on step one, profile 
 two, and **step two is skippable**. `single_step` renders one form. The split is derived
 from the field list, not hardcoded, so an admin reordering fields moves the boundary.
 
-### C — Access resolution (`lib/access.ts`, NEW) — the core of this prompt
+### C — Access resolution (`lib/access.ts`) — finish the signed-in branches
 
-One function, used by every surface from here on:
+`lib/access.ts` already exists from Prompt 11, with its signature settled and its
+signed-out path complete. This prompt fills the four branches left as
+`TODO(prompt-12)` throws. **The signature does not change** — every caller written in
+Prompt 11 keeps working.
 
 ```ts
 resolveAccess(userId: number | null, contentId: number): Promise<AccessResult>
-
-type AccessResult = {
-  can_view: boolean;
-  reason: "public" | "registered" | "entitled" | "subscribed" | "cohort"
-        | "needs_signin" | "needs_registration" | "needs_purchase"
-        | "needs_subscription" | "not_enrolled" | "unavailable";
-  preview_seconds: number;      // from content_items.free_preview_seconds
-  price_ngn: number | null;     // null unless reason is needs_purchase
-  registration_id: number | null;
-  join_token: string | null;    // ONLY when can_view is true
-}
 ```
 
-Resolution order, by `content_items.access_level`:
+Already implemented, do not rewrite: `unavailable` for unpublished / inactive / expired;
+`public` for open content; `needs_signin` for every gated level when `userId` is null;
+`price_ngn` populated for `purchase` content whether or not anyone is signed in.
 
-- `public` — always viewable, signed in or not.
-- `registered` — needs a signed-in user **and** a confirmed `registrations` row.
+To implement now, by `content_items.access_level`, for a signed-in user:
+
+- `registered` — needs a confirmed `registrations` row.
   `waitlisted` and `cancelled` do not grant access.
 - `subscriber` — needs a `subscriptions` row with status in `active`, `past_due`,
   `paused`. Reuse `LIVE_STATUSES` from `routes/plans.ts` — one definition of "live
@@ -159,11 +160,13 @@ Resolution order, by `content_items.access_level`:
 - `cohort` — needs an entitlement with `source='cohort'`. Never inferable from a
   subscription; cohort membership is granted, not bought.
 
-Also: `status` must be `published`, and `expires_at` (if set) must be in the future.
-
 **This function is the only thing permitted to decide access.** No route re-implements
-the ladder. When Prompt 13 builds the player, the signed-URL endpoint calls this and
+the ladder. When Prompt 14 builds the player, the signed-URL endpoint calls this and
 nothing else — a second implementation is how a paywall develops a hole.
+
+Prompt 11 shipped the detail page against the signed-out branch alone. The moment these
+four land, every gated item on the public site starts resolving correctly with no change
+to the page — which is the test that the seam was drawn in the right place.
 
 ⚠️ `join_token` is a capability: possession is access to that session. It is returned
 only when `can_view` is true, and never appears in a list response.
@@ -173,7 +176,7 @@ only when `can_view` is true, and never appears in a list response.
 ```
 POST /registrations        { content_id, custom_answers? }
   Requires sign-in. Only for access_level in ('registered','public').
-  Paid tiers 400 — they go through checkout in Prompt 12, and an endpoint that
+  Paid tiers 400 — they go through checkout in Prompt 13, and an endpoint that
   hands out free access to paid content is the whole paywall.
   Capacity: if content_items.capacity is set and confirmed registrations have reached
   it, create with status='waitlisted' and say so plainly.
@@ -235,7 +238,7 @@ One `<AccessGate>` reading `resolveAccess`, rendering per `reason`:
 |---|---|
 | `needs_signin` | Sign in / Create account, returning to this page afterwards |
 | `needs_registration` | "Register Free" — one click when already signed in |
-| `needs_purchase` | Price and a Buy button (inert until Prompt 12) |
+| `needs_purchase` | Price and a Buy button (inert until Prompt 13) |
 | `needs_subscription` | Plan comparison from `plans`, cheapest qualifying first |
 | `not_enrolled` | "This is a cohort programme" + how to join. No purchase path. |
 | `unavailable` | Expired or unpublished — say which |
@@ -269,10 +272,10 @@ the same policy to individual items.
 
 ## OUT OF SCOPE
 
-Checkout, Paystack payment flows, orders and entitlement granting (**Prompt 12**);
-detail page, browse and speaker pages (**Prompt 12**); the player, signed URLs,
-concurrency limits and watermarking (**Prompt 13**). The gate renders a Buy button in
-this prompt; it does not yet do anything.
+Checkout, Paystack payment flows, orders and entitlement granting (**Prompt 13**); the
+player, signed URLs, concurrency limits and watermarking (**Prompt 14**). Detail, browse
+and speaker pages are already built — Prompt 11. The gate renders a Buy button in this
+prompt; it does not yet do anything.
 
 ---
 
