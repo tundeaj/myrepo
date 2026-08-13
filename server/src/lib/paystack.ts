@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHmac, timingSafeEqual } from "node:crypto";
 import { env } from "./env.js";
 import { ApiError } from "./errors.js";
 
@@ -16,7 +16,9 @@ const PAYSTACK_BASE = "https://api.paystack.co";
 
 function requireSecretKey(): string {
   if (!env.PAYSTACK_SECRET_KEY) {
-    throw new ApiError(503, "Payouts aren't configured yet. Add a Paystack secret key in Settings → Integrations.");
+    // Shared by payouts (money out) and checkout (money in) — worded for
+    // either, since a caller on one side shouldn't get an error about the other.
+    throw new ApiError(503, "Payments aren't configured yet. Add a Paystack secret key in Settings → Integrations.");
   }
   return env.PAYSTACK_SECRET_KEY;
 }
@@ -32,12 +34,20 @@ interface PaystackEnvelope<T> {
 }
 
 async function paystackFetch<T>(path: string, init: RequestInit, correlationId: string): Promise<T> {
+  // Resolved BEFORE the try block on purpose. requireSecretKey() throws its own
+  // ApiError("Payments aren't configured yet...") — if that construction sat
+  // inside the headers object below, it would be inside the try, and the catch
+  // meant for actual network failures would swallow it and report a misleading
+  // "Couldn't reach Paystack" instead. A missing key and a dead network are
+  // different problems with different fixes; they should not share a message.
+  const key = requireSecretKey();
+
   let res: Response;
   try {
     res = await fetch(`${PAYSTACK_BASE}${path}`, {
       ...init,
       headers: {
-        Authorization: `Bearer ${requireSecretKey()}`,
+        Authorization: `Bearer ${key}`,
         "Content-Type": "application/json",
         ...(init.headers as Record<string, string> | undefined),
       },
@@ -144,4 +154,113 @@ export async function listBanks(): Promise<PaystackBank[]> {
   return data
     .map((b) => ({ name: b.name, code: b.code }))
     .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// ─── FUNCTION 13 — Checkout ─────────────────────────────────────────────────
+//
+// Everything above is money going OUT (instructor payouts). Everything below
+// is money coming IN (a viewer buying something). Different direction, same
+// account, same paystackFetch — no reason for a second module.
+//
+// ⚠️ Nothing here ever writes an Entitlement or Subscription. Initializing a
+// transaction only gets a viewer to Paystack's checkout page; only a VERIFIED
+// transaction — confirmed independently with Paystack, never trusted from a
+// client redirect alone — creates access. See routes/checkout.ts.
+
+export interface InitializedTransaction {
+  authorization_url: string;
+  access_code: string;
+  reference: string;
+}
+
+/**
+ * Starts a Paystack Standard Checkout transaction. `amountNgn` is naira; Paystack
+ * wants kobo, so the conversion happens here rather than at every call site,
+ * where a missed ×100 would undercharge by two orders of magnitude.
+ */
+export async function initializeTransaction(params: {
+  email: string;
+  amountNgn: number;
+  reference: string;
+  callbackUrl: string;
+  metadata?: Record<string, unknown>;
+}): Promise<InitializedTransaction> {
+  const correlationId = randomUUID();
+  const data = await paystackFetch<{ authorization_url?: string; access_code?: string; reference?: string }>(
+    "/transaction/initialize",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        email: params.email,
+        amount: Math.round(params.amountNgn * 100),
+        currency: "NGN",
+        reference: params.reference,
+        callback_url: params.callbackUrl,
+        metadata: params.metadata ?? {},
+      }),
+    },
+    correlationId,
+  );
+
+  if (!data.authorization_url || !data.reference) {
+    throw new ApiError(502, `Paystack didn't return a checkout link. Quote reference ${correlationId}.`);
+  }
+  return {
+    authorization_url: data.authorization_url,
+    access_code: data.access_code ?? "",
+    reference: data.reference,
+  };
+}
+
+export interface VerifiedTransaction {
+  reference: string;
+  status: "success" | "failed" | "abandoned" | string;
+  /** Naira, converted back from Paystack's kobo. */
+  amount_ngn: number;
+  currency: string;
+  paid_at: string | null;
+  customer_email: string | null;
+}
+
+/**
+ * Independently asks Paystack whether a reference actually succeeded. This is
+ * the only source of truth for "was this paid" — a callback redirect or a
+ * webhook payload is a claim, this is the check. Called from both the
+ * browser-return callback and the webhook, and both paths must agree: the
+ * webhook exists because a viewer can close the tab before the callback fires.
+ */
+export async function verifyTransaction(reference: string): Promise<VerifiedTransaction> {
+  const correlationId = randomUUID();
+  const data = await paystackFetch<{
+    reference: string;
+    status: string;
+    amount: number;
+    currency: string;
+    paid_at: string | null;
+    customer?: { email?: string };
+  }>(`/transaction/verify/${encodeURIComponent(reference)}`, { method: "GET" }, correlationId);
+
+  return {
+    reference: data.reference,
+    status: data.status,
+    amount_ngn: data.amount / 100,
+    currency: data.currency,
+    paid_at: data.paid_at,
+    customer_email: data.customer?.email ?? null,
+  };
+}
+
+/**
+ * Verifies a webhook actually came from Paystack. Paystack signs the raw
+ * request body with HMAC-SHA512 using the same secret key used to call their
+ * API — there is no separate webhook secret to configure. `timingSafeEqual`
+ * rather than `===`: a signature check that returns early on the first
+ * mismatched byte leaks how much of the guess was correct, byte by byte.
+ */
+export function verifyWebhookSignature(rawBody: Buffer, signatureHeader: string | undefined): boolean {
+  if (!signatureHeader || !env.PAYSTACK_SECRET_KEY) return false;
+  const expected = createHmac("sha512", env.PAYSTACK_SECRET_KEY).update(rawBody).digest("hex");
+  const a = Buffer.from(expected, "utf8");
+  const b = Buffer.from(signatureHeader, "utf8");
+  return a.length === b.length && timingSafeEqual(a, b);
 }

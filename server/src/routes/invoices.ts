@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { ApiError } from "../lib/errors.js";
+import { computePeriodEnd } from "../lib/subscriptions.js";
 import type { Request, Response, NextFunction } from "express";
 
 export const invoicesRouter = Router();
@@ -167,10 +168,16 @@ invoicesRouter.post("/:id/confirm-payment", async (req: Request, res: Response, 
       });
     }
     if (order.plan_id) {
-      const periodEnd = new Date();
-      periodEnd.setMonth(periodEnd.getMonth() + 1);
+      // Was hardcoded to +1 month regardless of the plan's billing_interval —
+      // an annual plan paid by invoice was granted a one-month period.
+      const plan = await prisma.plan.findUnique({ where: { id: order.plan_id }, select: { billing_interval: true } });
       await prisma.subscription.create({
-        data: { user_id: order.user_id, plan_id: order.plan_id, status: "active", current_period_end: periodEnd },
+        data: {
+          user_id: order.user_id,
+          plan_id: order.plan_id,
+          status: "active",
+          current_period_end: computePeriodEnd(plan?.billing_interval ?? "monthly"),
+        },
       });
     }
 

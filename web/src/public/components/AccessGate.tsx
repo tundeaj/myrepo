@@ -8,9 +8,11 @@ import { formatPrice } from "../lib/types";
  * The one place the access ladder becomes a button.
  *
  * Prompt 11 shipped this with every CTA inert, because there was nothing behind
- * them and nowhere honest to send anyone. Prompt 12 wires the two that now work:
- * signing in, and registering for free content. Purchase and subscription stay
- * inert until checkout lands — and still say so rather than pretending.
+ * them and nowhere honest to send anyone. Prompt 12 wired sign-in and free
+ * registration. Prompt 13 wires purchase and subscription — both leave the SPA
+ * entirely for Paystack's hosted checkout page, which is why there is no
+ * "checking out…" state here: the next thing the viewer sees is Paystack, not
+ * this component. "Join live" / "Watch now" stay inert until the player lands.
  */
 
 export type AccessReason =
@@ -92,6 +94,30 @@ export function AccessGate({
     }
   }
 
+  async function buy() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api<{ free: boolean; authorization_url?: string; order?: unknown }>("/checkout/session", {
+        method: "POST",
+        body: JSON.stringify({ content_id: contentId }),
+      });
+      if (res.free) {
+        // A coupon took it to ₦0 — the server already settled the order and
+        // granted the entitlement. Nothing to redirect to; just refresh.
+        const refreshed = await api<{ access: AccessResult }>(`/registrations/access/${contentId}`);
+        onRegistered?.(refreshed.access);
+        return;
+      }
+      // Deliberately leaving the SPA: Paystack's checkout is a hosted page,
+      // and card entry does not belong inside this app's origin.
+      if (res.authorization_url) window.location.href = res.authorization_url;
+    } catch (err: any) {
+      setError(err?.message ?? "We couldn't start checkout. Try again.");
+      setBusy(false);
+    }
+  }
+
   switch (access.reason) {
     // ── Access granted ───────────────────────────────────────────────────────
     case "public":
@@ -125,7 +151,7 @@ export function AccessGate({
           </Link>
           <p className="max-w-sm text-xs text-slate-500">
             {price ? (
-              <>The price shown is final. Checkout is still being built.</>
+              <>The price shown is final. You'll pay on Paystack's secure checkout page.</>
             ) : (
               <>
                 New here?{" "}
@@ -165,21 +191,28 @@ export function AccessGate({
         </div>
       );
 
-    // ── Signed in, but it costs money — checkout lands in Prompt 13 ──────────
+    // ── Signed in, but it costs money ────────────────────────────────────────
     case "needs_purchase":
       return (
-        <Pending
-          label={price ? `Buy · ${price}` : "Buy"}
-          note="A one-time purchase, yours to rewatch. Checkout is being built."
-        />
+        <div className="space-y-2">
+          <button type="button" onClick={buy} disabled={busy} className={PRIMARY}>
+            {busy ? "Starting checkout…" : price ? `Buy · ${price}` : "Buy"}
+          </button>
+          <p className="max-w-sm text-xs text-slate-500">
+            A one-time purchase, yours to rewatch. You'll pay on Paystack's secure checkout page.
+          </p>
+          {error && <p className="max-w-sm text-xs text-red-400">{error}</p>}
+        </div>
       );
 
     case "needs_subscription":
       return (
-        <Pending
-          label="Included with a subscription"
-          note="Plans and subscriptions are being built."
-        />
+        <div className="space-y-2">
+          <Link to="/plans" className={PRIMARY}>
+            See plans
+          </Link>
+          <p className="max-w-sm text-xs text-slate-500">Included with a subscription.</p>
+        </div>
       );
 
     case "not_enrolled":

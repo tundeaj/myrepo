@@ -26,6 +26,11 @@ const VerifyEmail = lazy(() => import("./public/auth/PasswordFlows").then((m) =>
 const Account = lazy(() => import("./public/Account").then((m) => ({ default: m.Account })));
 const MyRegistrations = lazy(() => import("./public/Account").then((m) => ({ default: m.MyRegistrations })));
 
+// Checkout (Prompt 13). Paystack's checkout page itself is hosted off-site —
+// these two are only the pre-payment plan list and the post-payment return.
+const PublicPlans = lazy(() => import("./public/Plans").then((m) => ({ default: m.Plans })));
+const CheckoutCallback = lazy(() => import("./public/CheckoutCallback").then((m) => ({ default: m.CheckoutCallback })));
+
 const AdminLayout = lazy(() => import("./layout/AdminLayout").then((m) => ({ default: m.AdminLayout })));
 const Dashboard = lazy(() => import("./pages/Dashboard").then((m) => ({ default: m.Dashboard })));
 const PlaceholderPage = lazy(() => import("./pages/PlaceholderPage").then((m) => ({ default: m.PlaceholderPage })));
@@ -178,6 +183,10 @@ export function App() {
         <Route path="/verify-email" element={<VerifyEmail />} />
         <Route path="/account" element={<Account />} />
         <Route path="/account/registrations" element={<MyRegistrations />} />
+
+        {/* ── Checkout (Prompt 13) ── */}
+        <Route path="/plans" element={<PublicPlans />} />
+        <Route path="/checkout/callback" element={<CheckoutCallback />} />
 
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

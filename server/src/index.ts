@@ -29,12 +29,22 @@ import { accountRouter } from "./routes/account.js";
 import { transcriptsRouter } from "./routes/transcripts.js";
 import { calendarRouter, publicCalendarRouter } from "./routes/calendar.js";
 import { aiRouter } from "./routes/ai.js";
+import { checkoutRouter, checkoutWebhookRouter, publicPlansRouter } from "./routes/checkout.js";
 import { requireAdmin, requireAuth } from "./middleware/auth.js";
 import { errorHandler, notFoundHandler } from "./lib/errors.js";
 
 const app = express();
 
 app.use(cors({ origin: env.CORS_ORIGIN, credentials: true }));
+
+// Mounted at its exact path, BEFORE express.json() and separately from the
+// rest of /api/checkout: Paystack's webhook signature is HMAC-SHA512 over the
+// exact bytes of the request body, so express.raw() must be the only body
+// parser that ever touches this one route. Scoping it to /api/checkout would
+// consume the body for /api/checkout/session and /verify too, starving
+// express.json() of anything to parse on those.
+app.use("/api/checkout/webhook", express.raw({ type: "application/json", limit: "1mb" }), checkoutWebhookRouter);
+
 app.use(express.json({ limit: "5mb" }));
 
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
@@ -71,6 +81,10 @@ app.use("/api/public-speakers", publicSpeakersRouter);
 app.use("/api/signup", signupRouter);
 app.use("/api/registrations", requireAuth, registrationsRouter);
 app.use("/api/account", requireAuth, accountRouter);
+// checkoutRouter (session/verify) needs a signed-in buyer; the webhook above
+// is mounted separately, ahead of the JSON parser, and is intentionally public.
+app.use("/api/checkout", requireAuth, checkoutRouter);
+app.use("/api/public-plans", publicPlansRouter);
 app.use("/api/transcripts", requireAuth, requireAdmin, transcriptsRouter);
 // Public: calendar apps poll the .ics URL with no way to send a bearer token.
 // The ics_token is the capability; the payload carries no personal data.

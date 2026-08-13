@@ -73,7 +73,12 @@ async function latestToken(userId: number, purpose: "password_reset" | "email_ve
   return row;
 }
 
-const created = { users: [] as number[], content: [] as number[] };
+const created = {
+  users: [] as number[],
+  content: [] as number[],
+  plans: [] as number[],
+  coupons: [] as number[],
+};
 
 async function makeContent(accessLevel: string, extra: Record<string, unknown> = {}) {
   const item = await prisma.contentItem.create({
@@ -510,6 +515,248 @@ async function main() {
     draftRes.status === missingRes.status && draftRes.body.error === missingRes.body.error,
     { draft: draftRes.body.error, missing: missingRes.body.error });
 
+  // ─── Checkout ──────────────────────────────────────────────────────────────
+  //
+  // No PAYSTACK_SECRET_KEY is configured in this environment, so the paths
+  // that call out to Paystack (initializeTransaction, verifyTransaction on a
+  // real reference) can't be exercised end-to-end here — see
+  // scripts/checkoutWebhook.ts for the piece that needs its own process with a
+  // key set. Everything below is real and testable without one: validation,
+  // ownership scoping, and — because a 100%-off coupon never touches Paystack
+  // at all — the FULL settle-and-grant path, entitlement and subscription
+  // alike, run for real against the live database.
+  section("Checkout — validation");
+
+  const buyable = await makeContent("purchase", { slug: `e2e-buyable-${RUN}`, price_ngn: "4000" });
+  const pwyc = await makeContent("purchase", {
+    slug: `e2e-pwyc-${RUN}`,
+    price_mode: "pay_what_you_can",
+    minimum_price_ngn: "1000",
+    price_ngn: null,
+  });
+
+  // pub is `public` tier, from the access-ladder section above.
+  const wrongTier = await call("/api/checkout/session", {
+    method: "POST",
+    token: sessionToken,
+    body: { content_id: pub.id },
+  });
+  check("checkout refuses non-purchase-tier content", wrongTier.status === 400, wrongTier.body);
+
+  const belowMin = await call("/api/checkout/session", {
+    method: "POST",
+    token: sessionToken,
+    body: { content_id: pwyc.id, amount_ngn: 500 },
+  });
+  check("pay-what-you-can below the minimum is rejected", belowMin.status === 422, belowMin.body);
+
+  const missingContent = await call("/api/checkout/session", {
+    method: "POST",
+    token: sessionToken,
+    body: { content_id: 999999999 },
+  });
+  check("checkout for non-existent content is 404", missingContent.status === 404, missingContent.body);
+
+  const bothIds = await call("/api/checkout/session", {
+    method: "POST",
+    token: sessionToken,
+    body: { content_id: buyable.id, plan_id: 1 },
+  });
+  check("specifying both content_id and plan_id is rejected", bothIds.status === 422, bothIds.body);
+
+  const bogusCoupon = await call("/api/checkout/session", {
+    method: "POST",
+    token: sessionToken,
+    body: { content_id: buyable.id, coupon_code: `nope-${RUN}` },
+  });
+  check("an unknown coupon code is rejected", bogusCoupon.status === 422, bogusCoupon.body);
+  const ordersAfterBadCoupon = await prisma.order.count({ where: { user_id: user!.id, content_id: buyable.id } });
+  check("a rejected coupon leaves no abandoned order behind", ordersAfterBadCoupon === 0, ordersAfterBadCoupon);
+
+  const expiredCoupon = await prisma.coupon.create({
+    data: {
+      code: `EXP-${RUN}`,
+      discount_type: "percent",
+      discount_value: "100",
+      applies_to: "all",
+      valid_until: new Date(Date.now() - 86400000),
+      is_active: true,
+    },
+  });
+  created.coupons.push(expiredCoupon.id);
+  const expiredRes = await call("/api/checkout/session", {
+    method: "POST",
+    token: sessionToken,
+    body: { content_id: buyable.id, coupon_code: expiredCoupon.code },
+  });
+  check("an expired coupon is rejected", expiredRes.status === 422, expiredRes.body);
+
+  const highMinCoupon = await prisma.coupon.create({
+    data: {
+      code: `MIN-${RUN}`,
+      discount_type: "fixed",
+      discount_value: "500",
+      applies_to: "all",
+      min_order_ngn: "999999",
+      is_active: true,
+    },
+  });
+  created.coupons.push(highMinCoupon.id);
+  const highMinRes = await call("/api/checkout/session", {
+    method: "POST",
+    token: sessionToken,
+    body: { content_id: buyable.id, coupon_code: highMinCoupon.code },
+  });
+  check("a coupon below its minimum order is rejected", highMinRes.status === 422, highMinRes.body);
+
+  const wrongTargetCoupon = await prisma.coupon.create({
+    data: {
+      code: `PLANONLY-${RUN}`,
+      discount_type: "percent",
+      discount_value: "100",
+      applies_to: "plan",
+      is_active: true,
+    },
+  });
+  created.coupons.push(wrongTargetCoupon.id);
+  const wrongTargetRes = await call("/api/checkout/session", {
+    method: "POST",
+    token: sessionToken,
+    body: { content_id: buyable.id, coupon_code: wrongTargetCoupon.code },
+  });
+  check("a plan-only coupon is rejected for a content purchase", wrongTargetRes.status === 422, wrongTargetRes.body);
+
+  section("Checkout — the free path (settles without ever calling Paystack)");
+
+  const freeCoupon = await prisma.coupon.create({
+    data: {
+      code: `FREE-${RUN}`,
+      discount_type: "percent",
+      discount_value: "100",
+      applies_to: "all",
+      max_redemptions: 5,
+      is_active: true,
+    },
+  });
+  created.coupons.push(freeCoupon.id);
+
+  const freeCheckout = await call("/api/checkout/session", {
+    method: "POST",
+    token: sessionToken,
+    body: { content_id: buyable.id, coupon_code: freeCoupon.code },
+  });
+  check("a 100%-off coupon settles without a Paystack call", freeCheckout.status === 201 && freeCheckout.body.free === true, freeCheckout.body);
+  check("the order is marked paid immediately", freeCheckout.body.order?.status === "paid", freeCheckout.body.order);
+
+  const afterFreeBuy = await accessFor(buyable.slug, sessionToken);
+  check("the entitlement was actually granted", afterFreeBuy.can_view && afterFreeBuy.reason === "entitled", afterFreeBuy);
+
+  const couponAfter = await prisma.coupon.findUnique({ where: { id: freeCoupon.id } });
+  check("coupon redemption_count incremented exactly once", couponAfter?.redemption_count === 1, couponAfter?.redemption_count);
+
+  const alreadyOwned = await call("/api/checkout/session", {
+    method: "POST",
+    token: sessionToken,
+    body: { content_id: buyable.id },
+  });
+  check("buying something already owned is refused", alreadyOwned.status === 409, alreadyOwned.body);
+
+  section("Checkout — subscriptions (billing_interval respected)");
+
+  const annualPlan = await prisma.plan.create({
+    data: { name: `E2E Annual ${RUN}`, price_ngn: "50000", billing_interval: "annual", is_active: true },
+  });
+  created.plans.push(annualPlan.id);
+
+  const planCoupon = await prisma.coupon.create({
+    data: {
+      code: `PLANFREE-${RUN}`,
+      discount_type: "percent",
+      discount_value: "100",
+      applies_to: "plan",
+      target_id: annualPlan.id,
+      is_active: true,
+    },
+  });
+  created.coupons.push(planCoupon.id);
+
+  const planCheckout = await call("/api/checkout/session", {
+    method: "POST",
+    token: sessionToken,
+    body: { plan_id: annualPlan.id, coupon_code: planCoupon.code },
+  });
+  check("a 100%-off plan coupon settles a subscription", planCheckout.status === 201 && planCheckout.body.free === true, planCheckout.body);
+
+  const newSub = await prisma.subscription.findFirst({ where: { user_id: user!.id, plan_id: annualPlan.id } });
+  check("the subscription was created", newSub != null, newSub);
+  if (newSub?.current_period_end) {
+    const days = Math.round((newSub.current_period_end.getTime() - Date.now()) / 86400000);
+    // ~365 days, not the ~30 the pre-existing invoice-confirm bug produced for
+    // every plan regardless of billing_interval — see lib/subscriptions.ts.
+    check("an ANNUAL plan grants a ~1-year period, not ~1 month", days > 300, days);
+  } else {
+    check("an ANNUAL plan grants a ~1-year period, not ~1 month", false, "no current_period_end");
+  }
+
+  const dupeSubCheckout = await call("/api/checkout/session", {
+    method: "POST",
+    token: sessionToken,
+    body: { plan_id: annualPlan.id },
+  });
+  check("re-subscribing to a plan already held is refused", dupeSubCheckout.status === 409, dupeSubCheckout.body);
+
+  section("Checkout — ownership and unconfigured Paystack");
+
+  const otherUser = await prisma.user.create({
+    data: { email: `e2e-payer-${RUN}@example.test`, role: "viewer", email_verified: true, password_hash: null },
+  });
+  created.users.push(otherUser.id);
+
+  // Synthesised directly rather than through a real Paystack call — there is
+  // no key configured to make one. This still exercises the endpoint's actual
+  // WHERE clause; the row's origin doesn't matter to what is under test.
+  const foreignOrder = await prisma.order.create({
+    data: {
+      user_id: otherUser.id,
+      content_id: buyable.id,
+      amount_ngn: "4000",
+      status: "pending",
+      order_type: "direct",
+      paystack_reference: `e2e-fake-${RUN}`,
+    },
+  });
+  void foreignOrder;
+
+  const stolenVerify = await call(`/api/checkout/verify/e2e-fake-${RUN}`, { token: sessionToken });
+  check("verifying someone else's order reference is refused", stolenVerify.status === 404, stolenVerify.body);
+
+  const webhookRes = await call("/api/checkout/webhook", {
+    method: "POST",
+    body: { event: "charge.success", data: { reference: `e2e-fake-${RUN}` } },
+  });
+  check("the webhook refuses everything when no secret key is configured",
+    webhookRes.status === 400, webhookRes.body);
+
+  section("Public plans");
+
+  const inactivePlan = await prisma.plan.create({
+    data: { name: `E2E Inactive ${RUN}`, price_ngn: "1000", is_active: false },
+  });
+  created.plans.push(inactivePlan.id);
+
+  const publicPlans = await call("/api/public-plans");
+  const planIds = (publicPlans.body.plans ?? []).map((p: { id: number }) => p.id);
+  check("an inactive plan is not listed publicly", !planIds.includes(inactivePlan.id), planIds);
+  check("an active plan IS listed publicly", planIds.includes(annualPlan.id), planIds);
+  check("the public list carries no subscriber_count",
+    !JSON.stringify(publicPlans.body).includes("subscriber_count"));
+  // This exact gap shipped once: the endpoint returned {plans} with no
+  // settings/strings, and the client's shared bootstrap hook reads
+  // payload.settings unconditionally — so a response missing it doesn't 404,
+  // it throws client-side and the page renders "Something went wrong."
+  check("settings and strings ride along so the page can paint on one call",
+    publicPlans.body.settings != null && publicPlans.body.strings != null, publicPlans.body);
+
   // ─── Signup fields ─────────────────────────────────────────────────────────
   section("Signup fields");
 
@@ -525,12 +772,19 @@ async function main() {
 
   // ─── Cleanup ───────────────────────────────────────────────────────────────
   await prisma.registration.deleteMany({ where: { content_id: { in: created.content } } });
+  await prisma.order.deleteMany({
+    where: { OR: [{ user_id: { in: created.users } }, { content_id: { in: created.content } }, { plan_id: { in: created.plans } }] },
+  });
   await prisma.entitlement.deleteMany({ where: { user_id: { in: created.users } } });
-  await prisma.subscription.deleteMany({ where: { user_id: { in: created.users } } });
+  await prisma.subscription.deleteMany({
+    where: { OR: [{ user_id: { in: created.users } }, { plan_id: { in: created.plans } }] },
+  });
   await prisma.consentRecord.deleteMany({ where: { user_id: { in: created.users } } });
   await prisma.userPreference.deleteMany({ where: { user_id: { in: created.users } } });
   await prisma.authToken.deleteMany({ where: { user_id: { in: created.users } } });
   await prisma.contentItem.deleteMany({ where: { id: { in: created.content } } });
+  await prisma.plan.deleteMany({ where: { id: { in: created.plans } } });
+  await prisma.coupon.deleteMany({ where: { id: { in: created.coupons } } });
   await prisma.user.deleteMany({ where: { id: { in: created.users } } });
 
   console.log(`\n${"═".repeat(64)}`);
