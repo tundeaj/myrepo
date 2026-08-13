@@ -461,6 +461,7 @@ export function Detail() {
                 access={liveAccess}
                 isLive={isLive}
                 contentId={content.id}
+                slug={content.slug}
                 onRegistered={setAccessOverride}
               />
             </div>

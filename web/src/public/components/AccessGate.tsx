@@ -12,7 +12,7 @@ import { formatPrice } from "../lib/types";
  * registration. Prompt 13 wires purchase and subscription — both leave the SPA
  * entirely for Paystack's hosted checkout page, which is why there is no
  * "checking out…" state here: the next thing the viewer sees is Paystack, not
- * this component. "Join live" / "Watch now" stay inert until the player lands.
+ * this component. Prompt 14 wires "Join live" / "Watch now" to the real player.
  */
 
 export type AccessReason =
@@ -59,11 +59,14 @@ export function AccessGate({
   access,
   isLive,
   contentId,
+  slug,
   onRegistered,
 }: {
   access: AccessResult;
   isLive: boolean;
   contentId: number;
+  /** Where the player route lives — /watch/:slug/play. */
+  slug: string;
   /** Called with the refreshed access result so the page can re-render its gate
    *  without re-fetching the whole detail payload. */
   onRegistered?: (next: AccessResult) => void;
@@ -127,10 +130,9 @@ export function AccessGate({
     case "cohort":
       return (
         <div className="space-y-2">
-          <Pending
-            label={isLive ? "Join live" : "Watch now"}
-            note="You have access to this. The player itself is the next piece of the build."
-          />
+          <Link to={`/watch/${slug}/play`} className={PRIMARY}>
+            {isLive ? "Join live" : "Watch now"}
+          </Link>
           {access.reason === "registered" && (
             <Link
               to="/account/registrations"

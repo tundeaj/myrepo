@@ -78,6 +78,8 @@ const created = {
   content: [] as number[],
   plans: [] as number[],
   coupons: [] as number[],
+  mediaAssets: [] as number[],
+  playbackSessions: [] as number[],
 };
 
 async function makeContent(accessLevel: string, extra: Record<string, unknown> = {}) {
@@ -97,6 +99,26 @@ async function makeContent(accessLevel: string, extra: Record<string, unknown> =
   });
   created.content.push(item.id);
   return item;
+}
+
+/** makeContent plus a real, ready MediaAsset wired up as the main media —
+ *  what /playback/session needs to have anything to sign a URL for. */
+async function makePlayableContent(accessLevel: string, extra: Record<string, unknown> = {}) {
+  const item = await makeContent(accessLevel, extra);
+  const asset = await prisma.mediaAsset.create({
+    data: {
+      title: `E2E asset ${RUN}`,
+      asset_type: "video",
+      source_type: "upload",
+      mp4_url: `https://cdn.example.test/e2e-${RUN}.mp4`,
+      duration_seconds: 600,
+      transcode_status: "ready",
+      is_protected: true,
+    },
+  });
+  created.mediaAssets.push(asset.id);
+  await prisma.contentMedia.create({ data: { content_id: item.id, media_asset_id: asset.id, role: "main" } });
+  return { item, asset };
 }
 
 async function main() {
@@ -756,6 +778,182 @@ async function main() {
   // it throws client-side and the page renders "Something went wrong."
   check("settings and strings ride along so the page can paint on one call",
     publicPlans.body.settings != null && publicPlans.body.strings != null, publicPlans.body);
+
+  // ─── Playback ──────────────────────────────────────────────────────────────
+  section("Playback — access and signed URLs");
+
+  const { item: playablePublic } = await makePlayableContent("public", { slug: `e2e-play-public-${RUN}` });
+  const anonSession = await call("/api/playback/session", {
+    method: "POST",
+    body: { content_id: playablePublic.id, device_type: "desktop" },
+  });
+  check("an ANONYMOUS viewer can start a session for public content", anonSession.status === 201, anonSession.body);
+  check("the response carries a signed url", typeof anonSession.body.url === "string" && anonSession.body.url.includes("token="), anonSession.body.url);
+  check("public content plays fully, not as a preview", anonSession.body.can_view_fully === true, anonSession.body);
+  if (anonSession.body.playback_session_id) created.playbackSessions.push(anonSession.body.playback_session_id);
+
+  const anonHeartbeat = await call(`/api/playback/${anonSession.body.playback_session_id}/heartbeat`, {
+    method: "POST",
+    body: { watch_seconds: 30 },
+  });
+  check("an anonymous session accepts a heartbeat with no token", anonHeartbeat.status === 200, anonHeartbeat.body);
+  const anonEnd = await call(`/api/playback/${anonSession.body.playback_session_id}/end`, { method: "POST" });
+  check("an anonymous session can be ended with no token", anonEnd.status === 200, anonEnd.body);
+
+  const { item: playableGated } = await makePlayableContent("registered", {
+    slug: `e2e-play-gated-${RUN}`,
+    free_preview_seconds: 0,
+  });
+  const noAccessNoPreview = await call("/api/playback/session", {
+    method: "POST",
+    token: sessionToken,
+    body: { content_id: playableGated.id },
+  });
+  check("no access and no preview refuses to start a session", noAccessNoPreview.status === 403, noAccessNoPreview.body);
+
+  const { item: playablePreview } = await makePlayableContent("registered", {
+    slug: `e2e-play-preview-${RUN}`,
+    free_preview_seconds: 90,
+  });
+  const previewSession = await call("/api/playback/session", {
+    method: "POST",
+    token: sessionToken,
+    body: { content_id: playablePreview.id },
+  });
+  check("no access but a real preview window starts a session anyway", previewSession.status === 201, previewSession.body);
+  check("the session is marked as preview-only", previewSession.body.can_view_fully === false, previewSession.body);
+  check("preview_seconds matches the content's free_preview_seconds", previewSession.body.preview_seconds === 90, previewSession.body);
+  if (previewSession.body.playback_session_id) created.playbackSessions.push(previewSession.body.playback_session_id);
+  // Ended immediately: a preview session still counts against sessionToken's
+  // concurrency slot (enforceConcurrency runs for any signed-in caller,
+  // preview or not), and every session created below with the same token
+  // would otherwise silently start failing with 409 from here on.
+  await call(`/api/playback/${previewSession.body.playback_session_id}/end`, { method: "POST", token: sessionToken });
+
+  const noMedia = await makeContent("public", { slug: `e2e-play-nomedia-${RUN}` });
+  const noMediaSession = await call("/api/playback/session", {
+    method: "POST",
+    token: sessionToken,
+    body: { content_id: noMedia.id },
+  });
+  check("content with no media attached returns 404, not a broken player", noMediaSession.status === 404, noMediaSession.body);
+
+  const { item: notReadyItem } = await makePlayableContent("public", { slug: `e2e-play-notready-${RUN}` });
+  await prisma.mediaAsset.updateMany({
+    where: { id: { in: created.mediaAssets.slice(-1) } },
+    data: { transcode_status: "processing" },
+  });
+  const notReadySession = await call("/api/playback/session", {
+    method: "POST",
+    token: sessionToken,
+    body: { content_id: notReadyItem.id },
+  });
+  check("a still-processing asset refuses to start playback", notReadySession.status === 409, notReadySession.body);
+
+  section("Playback — ownership");
+
+  const { item: ownedItem } = await makePlayableContent("public", { slug: `e2e-play-owned-${RUN}` });
+  const ownerSession = await call("/api/playback/session", {
+    method: "POST",
+    token: sessionToken,
+    body: { content_id: ownedItem.id },
+  });
+  if (ownerSession.body.playback_session_id) created.playbackSessions.push(ownerSession.body.playback_session_id);
+
+  // A genuine second account with a genuine valid token — the case that
+  // matters is a VALID token for the WRONG user, not merely an absent one.
+  const impostorEmail = `e2e-impostor-${RUN}@example.test`;
+  const impostorReg = await call("/api/auth/register", {
+    method: "POST",
+    body: { email: impostorEmail, password: "correct-horse-battery", full_name: "Impostor", country: "NG" },
+  });
+  const impostorUser = await prisma.user.findUnique({ where: { email: impostorEmail } });
+  if (impostorUser) created.users.push(impostorUser.id);
+  const impostorToken = impostorReg.body.token as string;
+
+  const impostorHeartbeat = await call(`/api/playback/${ownerSession.body.playback_session_id}/heartbeat`, {
+    method: "POST",
+    token: impostorToken,
+    body: { watch_seconds: 5 },
+  });
+  check("a DIFFERENT real user's valid token cannot heartbeat someone else's session",
+    impostorHeartbeat.status === 404, impostorHeartbeat.body);
+
+  const impostorEndAttempt = await call(`/api/playback/${ownerSession.body.playback_session_id}/end`, {
+    method: "POST",
+    token: impostorToken,
+  });
+  check("a DIFFERENT real user's valid token cannot end someone else's session",
+    impostorEndAttempt.status === 404, impostorEndAttempt.body);
+
+  const noTokenHeartbeat = await call(`/api/playback/${ownerSession.body.playback_session_id}/heartbeat`, {
+    method: "POST",
+    body: { watch_seconds: 5 },
+  });
+  check("no token at all also cannot heartbeat someone else's owned session",
+    noTokenHeartbeat.status === 404, noTokenHeartbeat.body);
+
+  const ownerCanStillEnd = await call(`/api/playback/${ownerSession.body.playback_session_id}/end`, {
+    method: "POST",
+    token: sessionToken,
+  });
+  check("the actual owner can still end their own session", ownerCanStillEnd.status === 200, ownerCanStillEnd.body);
+
+  section("Playback — concurrency");
+
+  const { item: concurrencyItem } = await makePlayableContent("public", { slug: `e2e-play-conc-a-${RUN}` });
+  const { item: concurrencyItem2 } = await makePlayableContent("public", { slug: `e2e-play-conc-b-${RUN}` });
+
+  const firstStream = await call("/api/playback/session", {
+    method: "POST",
+    token: sessionToken,
+    body: { content_id: concurrencyItem.id },
+  });
+  check("first concurrent stream starts fine", firstStream.status === 201, firstStream.body);
+  if (firstStream.body.playback_session_id) created.playbackSessions.push(firstStream.body.playback_session_id);
+
+  const secondStream = await call("/api/playback/session", {
+    method: "POST",
+    token: sessionToken,
+    body: { content_id: concurrencyItem2.id },
+  });
+  check("a second concurrent stream is refused at the default limit of 1",
+    secondStream.status === 409, secondStream.body);
+
+  await call(`/api/playback/${firstStream.body.playback_session_id}/end`, { method: "POST", token: sessionToken });
+
+  const thirdStream = await call("/api/playback/session", {
+    method: "POST",
+    token: sessionToken,
+    body: { content_id: concurrencyItem2.id },
+  });
+  check("ending the first stream frees the slot for a new one", thirdStream.status === 201, thirdStream.body);
+  if (thirdStream.body.playback_session_id) created.playbackSessions.push(thirdStream.body.playback_session_id);
+  await call(`/api/playback/${thirdStream.body.playback_session_id}/end`, { method: "POST", token: sessionToken });
+
+  section("Playback — chapters, subtitles, settings");
+
+  const { item: richItem, asset: richAsset } = await makePlayableContent("public", {
+    slug: `e2e-play-rich-${RUN}`,
+    has_chapters: true,
+  });
+  await prisma.chapter.create({
+    data: { content_id: richItem.id, title: "Intro", start_seconds: 0, chapter_type: "intro", is_skippable: true },
+  });
+  await prisma.subtitleTrack.create({
+    data: { content_id: richItem.id, media_asset_id: richAsset.id, language: "en", label: "English", vtt_url: `https://cdn.example.test/e2e-${RUN}.vtt`, is_default: true },
+  });
+
+  const richSession = await call("/api/playback/session", {
+    method: "POST",
+    token: sessionToken,
+    body: { content_id: richItem.id },
+  });
+  check("chapters are included in the session response", richSession.body.chapters?.length === 1, richSession.body.chapters);
+  check("subtitles are included in the session response", richSession.body.subtitles?.length === 1, richSession.body.subtitles);
+  check("player settings ride along too", Array.isArray(richSession.body.settings?.playback_speeds), richSession.body.settings);
+  if (richSession.body.playback_session_id) created.playbackSessions.push(richSession.body.playback_session_id);
+  await call(`/api/playback/${richSession.body.playback_session_id}/end`, { method: "POST", token: sessionToken });
 
   // ─── Signup fields ─────────────────────────────────────────────────────────
   section("Signup fields");

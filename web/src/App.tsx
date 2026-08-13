@@ -31,6 +31,10 @@ const MyRegistrations = lazy(() => import("./public/Account").then((m) => ({ def
 const PublicPlans = lazy(() => import("./public/Plans").then((m) => ({ default: m.Plans })));
 const CheckoutCallback = lazy(() => import("./public/CheckoutCallback").then((m) => ({ default: m.CheckoutCallback })));
 
+// The player (Prompt 14). hls.js is a real, non-trivial dependency — kept off
+// every route except this one, same discipline as Recharts on the admin side.
+const Player = lazy(() => import("./public/Player").then((m) => ({ default: m.Player })));
+
 const AdminLayout = lazy(() => import("./layout/AdminLayout").then((m) => ({ default: m.AdminLayout })));
 const Dashboard = lazy(() => import("./pages/Dashboard").then((m) => ({ default: m.Dashboard })));
 const PlaceholderPage = lazy(() => import("./pages/PlaceholderPage").then((m) => ({ default: m.PlaceholderPage })));
@@ -187,6 +191,9 @@ export function App() {
         {/* ── Checkout (Prompt 13) ── */}
         <Route path="/plans" element={<PublicPlans />} />
         <Route path="/checkout/callback" element={<CheckoutCallback />} />
+
+        {/* ── Player (Prompt 14) ── */}
+        <Route path="/watch/:slug/play" element={<Player />} />
 
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

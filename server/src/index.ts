@@ -30,6 +30,7 @@ import { transcriptsRouter } from "./routes/transcripts.js";
 import { calendarRouter, publicCalendarRouter } from "./routes/calendar.js";
 import { aiRouter } from "./routes/ai.js";
 import { checkoutRouter, checkoutWebhookRouter, publicPlansRouter } from "./routes/checkout.js";
+import { playbackRouter } from "./routes/playback.js";
 import { requireAdmin, requireAuth } from "./middleware/auth.js";
 import { errorHandler, notFoundHandler } from "./lib/errors.js";
 
@@ -85,6 +86,11 @@ app.use("/api/account", requireAuth, accountRouter);
 // is mounted separately, ahead of the JSON parser, and is intentionally public.
 app.use("/api/checkout", requireAuth, checkoutRouter);
 app.use("/api/public-plans", publicPlansRouter);
+// Not requireAuth: public content and free previews play for signed-out
+// visitors too, and PlaybackSession.user_id is nullable for exactly this.
+// Each handler reads an OPTIONAL token itself — see optionalUserId() in the
+// route file, the same pattern routes/content.ts already uses.
+app.use("/api/playback", playbackRouter);
 app.use("/api/transcripts", requireAuth, requireAdmin, transcriptsRouter);
 // Public: calendar apps poll the .ics URL with no way to send a bearer token.
 // The ics_token is the capability; the payload carries no personal data.
