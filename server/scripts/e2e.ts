@@ -1241,6 +1241,30 @@ async function main() {
   const runAfterFailedProcess = await call(`/api/payouts/runs/${run2Id}`, { token: adminToken });
   check("a refused process attempt leaves the run 'approved', not stuck mid-way", runAfterFailedProcess.body.run?.status === "approved", runAfterFailedProcess.body.run);
 
+  // ─── Content search (admin picker) ─────────────────────────────────────────
+  section("Content search — admin picker");
+
+  const pickerViewerAttempt = await call("/api/content-search?q=e2e", { token: sessionToken });
+  check("a signed-in VIEWER cannot use the content search picker", pickerViewerAttempt.status === 403, pickerViewerAttempt.body);
+
+  const draftForPicker = await makeContent("public", { slug: `e2e-picker-draft-${RUN}`, status: "draft", title: `E2E Picker Draft ${RUN}` });
+
+  const byTitle = await call(`/api/content-search?q=${encodeURIComponent(`Picker Draft ${RUN}`)}`, { token: adminToken });
+  const byTitleIds = (byTitle.body.items ?? []).map((i: { id: number }) => i.id);
+  check("search matches by title", byTitleIds.includes(draftForPicker.id), byTitleIds);
+
+  const bySlug = await call(`/api/content-search?q=e2e-picker-draft-${RUN}`, { token: adminToken });
+  const bySlugIds = (bySlug.body.items ?? []).map((i: { id: number }) => i.id);
+  check("search matches by slug too", bySlugIds.includes(draftForPicker.id), bySlugIds);
+
+  check("draft content IS included — this is an admin tool, not the public surface", byTitleIds.includes(draftForPicker.id), byTitle.body);
+
+  const byIds = await call(`/api/content-search?ids=${draftForPicker.id}`, { token: adminToken });
+  check("resolving by id returns that exact item's display fields", byIds.body.items?.[0]?.id === draftForPicker.id, byIds.body);
+
+  const emptyQuery = await call("/api/content-search", { token: adminToken });
+  check("no query and no ids returns an empty list, not everything", (emptyQuery.body.items ?? []).length === 0, emptyQuery.body);
+
   // ─── Cleanup ───────────────────────────────────────────────────────────────
   await prisma.registration.deleteMany({ where: { content_id: { in: created.content } } });
   await prisma.order.deleteMany({

@@ -5,6 +5,7 @@ import { EmptyState } from "../../components/EmptyState";
 import { ErrorState } from "../../components/ErrorState";
 import { Skeleton } from "../../components/Skeleton";
 import { Icon } from "../../components/Icon";
+import { ContentPicker } from "../../components/ContentPicker";
 import { Toggle, inputClass, selectClass } from "../../components/session/Panel";
 import { formatNaira, formatCount, formatDateTimeLagos } from "../../lib/format";
 
@@ -245,9 +246,11 @@ function CouponSlideOver({ coupon, onClose, onSaved }: { coupon: Coupon | null; 
 
           {form.applies_to === "content" && (
             <div>
-              <label className="mb-1 block text-xs text-slate-400">Content ID</label>
-              <input type="number" min={1} value={form.target_id} onChange={(e) => set("target_id", e.target.value)} className={inputClass} placeholder="e.g. 42" />
-              <p className="mt-1 text-xs text-slate-600">Find the ID in the URL when editing that session or course — a search picker isn't built yet.</p>
+              <label className="mb-1 block text-xs text-slate-400">Content</label>
+              <ContentPicker
+                value={form.target_id ? Number(form.target_id) : null}
+                onChange={(id) => set("target_id", id != null ? String(id) : "")}
+              />
             </div>
           )}
 
