@@ -968,6 +968,126 @@ async function main() {
   check("settings and strings ride along so a deep link paints in one call",
     fields.body.settings != null && fields.body.strings != null);
 
+  // ─── Coupons admin ──────────────────────────────────────────────────────────
+  section("Coupons admin — auth");
+
+  const adminLogin = await call("/api/auth/login", {
+    method: "POST",
+    body: { email: "admin@webinarflix.dev", password: "ChangeMe123!" },
+  });
+  const adminToken = adminLogin.body.token as string;
+  check("the seeded super_admin can log in", adminLogin.status === 200 && typeof adminToken === "string", adminLogin.body);
+
+  const viewerListAttempt = await call("/api/coupons", { token: sessionToken });
+  check("a signed-in VIEWER cannot list coupons", viewerListAttempt.status === 403, viewerListAttempt.body);
+  const noTokenListAttempt = await call("/api/coupons");
+  check("no token at all cannot list coupons either", noTokenListAttempt.status === 401, noTokenListAttempt.body);
+
+  section("Coupons admin — validation");
+
+  const badPercent = await call("/api/coupons", {
+    method: "POST",
+    token: adminToken,
+    body: { code: `E2E-BADPCT-${RUN}`, discount_type: "percent", discount_value: 150, applies_to: "all" },
+  });
+  check("a percentage discount over 100 is rejected", badPercent.status === 422, badPercent.body);
+
+  const missingTarget = await call("/api/coupons", {
+    method: "POST",
+    token: adminToken,
+    body: { code: `E2E-NOTARGET-${RUN}`, discount_type: "fixed", discount_value: 500, applies_to: "content" },
+  });
+  check("\"applies to content\" with no target_id is rejected", missingTarget.status === 422, missingTarget.body);
+
+  const badWindow = await call("/api/coupons", {
+    method: "POST",
+    token: adminToken,
+    body: {
+      code: `E2E-BADWINDOW-${RUN}`,
+      discount_type: "fixed",
+      discount_value: 500,
+      applies_to: "all",
+      valid_from: "2030-01-01T00:00:00.000Z",
+      valid_until: "2029-01-01T00:00:00.000Z",
+    },
+  });
+  check("valid-from after valid-until is rejected", badWindow.status === 422, badWindow.body);
+
+  section("Coupons admin — CRUD");
+
+  const createRes = await call("/api/coupons", {
+    method: "POST",
+    token: adminToken,
+    body: { code: `e2e-admin-${RUN}`, discount_type: "percent", discount_value: 15, applies_to: "all", is_active: true },
+  });
+  check("a valid coupon is created", createRes.status === 201, createRes.body);
+  const adminCoupon = createRes.body.coupon;
+  if (adminCoupon?.id) created.coupons.push(adminCoupon.id);
+  check("the code is stored as typed, not silently forced uppercase",
+    adminCoupon?.code === `e2e-admin-${RUN}`, adminCoupon);
+  check("a fresh, active, unwindowed coupon is redeemable now", adminCoupon?.is_redeemable_now === true, adminCoupon);
+
+  // Same code, different case — applyCoupon() (routes/checkout.ts) looks codes
+  // up case-insensitively, so allowing both to exist would make that lookup
+  // pick one arbitrarily. This is the gap assertCodeAvailable() closes.
+  const caseClash = await call("/api/coupons", {
+    method: "POST",
+    token: adminToken,
+    body: { code: `E2E-ADMIN-${RUN}`, discount_type: "fixed", discount_value: 100, applies_to: "all" },
+  });
+  check("a code differing only by case is refused as a duplicate", caseClash.status === 409, caseClash.body);
+
+  const listRes = await call("/api/coupons", { token: adminToken });
+  const listedIds = (listRes.body.coupons ?? []).map((c: { id: number }) => c.id);
+  check("the new coupon appears in the admin list", listedIds.includes(adminCoupon?.id), listedIds);
+
+  const getRes = await call(`/api/coupons/${adminCoupon?.id}`, { token: adminToken });
+  check("fetching it by id round-trips the same coupon", getRes.body.coupon?.id === adminCoupon?.id, getRes.body);
+
+  const updateRes = await call(`/api/coupons/${adminCoupon?.id}`, {
+    method: "PUT",
+    token: adminToken,
+    body: { code: `e2e-admin-${RUN}`, discount_type: "percent", discount_value: 25, applies_to: "all", is_active: true },
+  });
+  check("updating a coupon persists the new discount value",
+    updateRes.status === 200 && Number(updateRes.body.coupon?.discount_value) === 25, updateRes.body);
+
+  const secondCoupon = await call("/api/coupons", {
+    method: "POST",
+    token: adminToken,
+    body: { code: `e2e-admin2-${RUN}`, discount_type: "fixed", discount_value: 200, applies_to: "all" },
+  });
+  if (secondCoupon.body.coupon?.id) created.coupons.push(secondCoupon.body.coupon.id);
+
+  const renameToClash = await call(`/api/coupons/${secondCoupon.body.coupon?.id}`, {
+    method: "PUT",
+    token: adminToken,
+    body: { code: `e2e-admin-${RUN}`, discount_type: "fixed", discount_value: 200, applies_to: "all" },
+  });
+  check("renaming a coupon onto another coupon's code is refused", renameToClash.status === 409, renameToClash.body);
+
+  section("Coupons admin — deletion is guarded by redemption history");
+
+  // Bumped directly rather than through a real checkout — applyCoupon()'s own
+  // redemption path is covered above under Checkout; what's under test here
+  // is coupons.ts refusing to delete once that count is nonzero.
+  await prisma.coupon.update({ where: { id: adminCoupon.id }, data: { redemption_count: 1 } });
+
+  const blockedDelete = await call(`/api/coupons/${adminCoupon.id}`, { method: "DELETE", token: adminToken });
+  check("deleting a redeemed coupon is refused", blockedDelete.status === 409, blockedDelete.body);
+
+  const deactivateInstead = await call(`/api/coupons/${adminCoupon.id}`, {
+    method: "PUT",
+    token: adminToken,
+    body: { code: `e2e-admin-${RUN}`, discount_type: "percent", discount_value: 25, applies_to: "all", is_active: false },
+  });
+  check("deactivating a redeemed coupon still works", deactivateInstead.status === 200 && deactivateInstead.body.coupon?.is_active === false, deactivateInstead.body);
+
+  const cleanDelete = await call(`/api/coupons/${secondCoupon.body.coupon?.id}`, { method: "DELETE", token: adminToken });
+  check("a never-redeemed coupon deletes outright", cleanDelete.status === 200, cleanDelete.body);
+  const afterDelete = await call(`/api/coupons/${secondCoupon.body.coupon?.id}`, { token: adminToken });
+  check("it's actually gone, not just hidden", afterDelete.status === 404, afterDelete.body);
+
   // ─── Cleanup ───────────────────────────────────────────────────────────────
   await prisma.registration.deleteMany({ where: { content_id: { in: created.content } } });
   await prisma.order.deleteMany({

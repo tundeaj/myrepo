@@ -19,7 +19,6 @@ const ROUTE_NOTES: Record<string, { title: string; icon: string; builtIn: string
   "/admin/community/spaces": { title: "Community Spaces", icon: "message", builtIn: "a future community prompt" },
   "/admin/community/moderation": { title: "Posts & Moderation", icon: "shield", builtIn: "a future community prompt" },
   "/admin/plans": { title: "Plans", icon: "wallet", builtIn: "Prompt 07 — Settings & Modules" },
-  "/admin/coupons": { title: "Coupons", icon: "tag", builtIn: "a future revenue-tools prompt" },
   "/admin/payouts": { title: "Payouts", icon: "credit", builtIn: "Prompt 06 — Instructor Portal" },
   "/admin/sponsors": { title: "Sponsors", icon: "briefcase", builtIn: "a future monetisation prompt" },
   "/admin/ads": { title: "Ads", icon: "megaphone", builtIn: "a future monetisation prompt" },

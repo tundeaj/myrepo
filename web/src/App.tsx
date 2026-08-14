@@ -62,6 +62,7 @@ const Modules = lazy(() => import("./pages/settings/Modules").then((m) => ({ def
 const ImageVariants = lazy(() => import("./pages/settings/ImageVariants").then((m) => ({ default: m.ImageVariants })));
 const FooterLinks = lazy(() => import("./pages/settings/FooterLinks").then((m) => ({ default: m.FooterLinks })));
 const Plans = lazy(() => import("./pages/plans/Plans").then((m) => ({ default: m.Plans })));
+const Coupons = lazy(() => import("./pages/coupons/Coupons").then((m) => ({ default: m.Coupons })));
 const SubscriberAnalytics = lazy(() => import("./pages/analytics/SubscriberAnalytics").then((m) => ({ default: m.SubscriberAnalytics })));
 const Invoices = lazy(() => import("./pages/revenue/Invoices").then((m) => ({ default: m.Invoices })));
 const PageLayout = lazy(() => import("./pages/layout/PageLayout").then((m) => ({ default: m.PageLayout })));
@@ -76,7 +77,6 @@ const PLACEHOLDER_PATHS = [
   "bulk-import",
   "community/spaces",
   "community/moderation",
-  "coupons",
   "payouts",
   "sponsors",
   "ads",
@@ -140,6 +140,7 @@ export function App() {
           <Route path="settings/images" element={<ImageVariants />} />
           <Route path="settings/footer" element={<FooterLinks />} />
           <Route path="plans" element={<Plans />} />
+          <Route path="coupons" element={<Coupons />} />
           <Route path="analytics/subscribers" element={<SubscriberAnalytics />} />
           <Route path="invoices" element={<Invoices />} />
 
