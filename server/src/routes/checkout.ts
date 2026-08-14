@@ -6,6 +6,7 @@ import { prisma } from "../lib/prisma.js";
 import { ApiError } from "../lib/errors.js";
 import { resolveAccess } from "../lib/access.js";
 import { computePeriodEnd } from "../lib/subscriptions.js";
+import { accrueEarnings } from "../lib/earnings.js";
 import {
   initializeTransaction,
   verifyTransaction,
@@ -280,6 +281,10 @@ async function finalizeOrder(orderId: number) {
     await prisma.entitlement.create({
       data: { user_id: order.user_id, content_id: order.content_id, source: "purchase" },
     });
+    // Direct-sale revenue share only — see lib/earnings.ts for why
+    // subscription revenue isn't accrued here too. Never blocks settlement:
+    // a speaker-accrual failure shouldn't undo access the buyer already paid for.
+    await accrueEarnings(order.id).catch((err) => console.error(`[order ${order.id}] earnings accrual failed:`, err));
   }
   if (order.plan_id) {
     const plan = await prisma.plan.findUnique({ where: { id: order.plan_id }, select: { billing_interval: true } });

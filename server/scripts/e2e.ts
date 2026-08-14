@@ -19,6 +19,19 @@
  */
 import { PrismaClient } from "@prisma/client";
 import { createHash } from "node:crypto";
+// Two direct imports, not HTTP — both for reasons that already have precedent
+// in this file. accrueEarnings() needs a genuinely PAID order with a nonzero
+// amount to test the real revenue-share math; getting one through the actual
+// HTTP checkout flow needs either a live Paystack key (not configured in this
+// environment) or a 100%-off coupon (which correctly produces a ₦0 order —
+// exercises the wiring, but proves nothing about the math). A manually-paid
+// Order row plus a direct call is the same move as the "foreignOrder" fixture
+// in the Checkout section: the row's origin doesn't matter to what's under
+// test. getSetting/getBoolSetting are imported so the test computes its
+// expected WHT numbers from whatever is ACTUALLY configured right now, not a
+// hardcoded assumption that could silently drift from a changed setting.
+import { accrueEarnings } from "../src/lib/earnings.js";
+import { getSetting, getBoolSetting } from "../src/lib/settingValue.js";
 
 const API = process.env.API ?? "http://127.0.0.1:4000";
 const prisma = new PrismaClient();
@@ -80,6 +93,8 @@ const created = {
   coupons: [] as number[],
   mediaAssets: [] as number[],
   playbackSessions: [] as number[],
+  speakers: [] as number[],
+  payoutRuns: [] as number[],
 };
 
 async function makeContent(accessLevel: string, extra: Record<string, unknown> = {}) {
@@ -119,6 +134,20 @@ async function makePlayableContent(accessLevel: string, extra: Record<string, un
   created.mediaAssets.push(asset.id);
   await prisma.contentMedia.create({ data: { content_id: item.id, media_asset_id: asset.id, role: "main" } });
   return { item, asset };
+}
+
+async function makeSpeaker(extra: Record<string, unknown> = {}) {
+  const speaker = await prisma.speaker.create({
+    data: {
+      full_name: `E2E Speaker ${created.speakers.length} ${RUN}`,
+      slug: `e2e-speaker-${created.speakers.length}-${RUN}`,
+      commission_pct: "30",
+      is_active: true,
+      ...extra,
+    },
+  });
+  created.speakers.push(speaker.id);
+  return speaker;
 }
 
 async function main() {
@@ -1088,6 +1117,130 @@ async function main() {
   const afterDelete = await call(`/api/coupons/${secondCoupon.body.coupon?.id}`, { token: adminToken });
   check("it's actually gone, not just hidden", afterDelete.status === 404, afterDelete.body);
 
+  // ─── Payouts admin ──────────────────────────────────────────────────────────
+  section("Payouts — accrual math");
+
+  const speakerA = await makeSpeaker({
+    commission_pct: "20",
+    payout_verified: true,
+    paystack_recipient_code: `RCP_e2e_${RUN}`,
+  });
+  const speakerB = await makeSpeaker({ commission_pct: "10" }); // stays payout-unverified on purpose
+  const payoutContent = await makeContent("purchase", { slug: `e2e-payout-content-${RUN}`, price_ngn: "10000" });
+  await prisma.contentSpeaker.create({ data: { content_id: payoutContent.id, speaker_id: speakerA.id, revenue_share_pct: "70" } });
+  await prisma.contentSpeaker.create({ data: { content_id: payoutContent.id, speaker_id: speakerB.id, revenue_share_pct: "30" } });
+
+  // A real PAID order, synthesised the same way "foreignOrder" is in the
+  // Checkout section above — no live Paystack key exists to get here through
+  // a real, nonzero-amount charge.
+  const paidOrder = await prisma.order.create({
+    data: { user_id: user!.id, content_id: payoutContent.id, amount_ngn: "10000", status: "paid", order_type: "direct" },
+  });
+  await accrueEarnings(paidOrder.id);
+
+  const accrued = await prisma.earningLine.findMany({ where: { order_id: paidOrder.id }, orderBy: { speaker_id: "asc" } });
+  check("one EarningLine per credited speaker", accrued.length === 2, accrued.length);
+  const lineA = accrued.find((l) => l.speaker_id === speakerA.id);
+  const lineB = accrued.find((l) => l.speaker_id === speakerB.id);
+  check("speaker A's gross reflects their revenue_share_pct of the order", Number(lineA?.gross_ngn) === 7000, lineA);
+  check("speaker B's gross reflects their revenue_share_pct of the order", Number(lineB?.gross_ngn) === 3000, lineB);
+  check("share_pct is captured on the line, not just applied silently", Number(lineA?.share_pct) === 70, lineA?.share_pct);
+  check("a fresh accrual starts as 'accruing', not already payable", accrued.every((l) => l.status === "accruing"), accrued);
+  const holdbackDays = accrued[0]?.holdback_until
+    ? Math.round((accrued[0].holdback_until.getTime() - Date.now()) / 86_400_000)
+    : null;
+  check("holdback_until is set roughly payout_holdback_days out", holdbackDays !== null && holdbackDays >= 12 && holdbackDays <= 15, holdbackDays);
+
+  const noShareContent = await makeContent("purchase", { slug: `e2e-noshare-content-${RUN}`, price_ngn: "5000" }); // no ContentSpeaker rows at all
+  const noShareOrder = await prisma.order.create({
+    data: { user_id: user!.id, content_id: noShareContent.id, amount_ngn: "5000", status: "paid", order_type: "direct" },
+  });
+  await accrueEarnings(noShareOrder.id); // must not throw
+  const noShareLines = await prisma.earningLine.count({ where: { order_id: noShareOrder.id } });
+  check("a content item with no credited speakers accrues nothing (and doesn't error)", noShareLines === 0, noShareLines);
+
+  // Clear the holdback by hand — same move as the "expired coupon" fixture
+  // above: simulates time passing without waiting for it.
+  await prisma.earningLine.updateMany({ where: { order_id: paidOrder.id }, data: { holdback_until: new Date(Date.now() - 1000) } });
+
+  section("Payouts admin — auth");
+
+  const viewerRunsAttempt = await call("/api/payouts/runs", { token: sessionToken });
+  check("a signed-in VIEWER cannot list payout runs", viewerRunsAttempt.status === 403, viewerRunsAttempt.body);
+  const noTokenRunsAttempt = await call("/api/payouts/runs");
+  check("no token at all cannot list payout runs either", noTokenRunsAttempt.status === 401, noTokenRunsAttempt.body);
+
+  section("Payouts admin — preview and run creation");
+
+  // Ground truth computed the same way the route does, from whatever is
+  // ACTUALLY configured right now — not a hardcoded 5%, in case a previous
+  // session changed monetisation.wht_rate.
+  const whtApplicable = await getBoolSetting("monetisation.wht_applicable", true);
+  const whtRate = Number(await getSetting("monetisation.wht_rate")) || 5;
+  const expectA = { gross: 7000, commission: 7000 * 0.2 };
+  const expectB = { gross: 3000, commission: 3000 * 0.1 };
+  for (const e of [expectA, expectB] as { gross: number; commission: number; net?: number }[]) {
+    const preWht = e.gross - e.commission;
+    const wht = whtApplicable ? Math.round(preWht * (whtRate / 100) * 100) / 100 : 0;
+    e.net = Math.round((preWht - wht) * 100) / 100;
+  }
+
+  const preview = await call("/api/payouts/eligible-preview", { token: adminToken });
+  const previewA = preview.body.speakers?.find((s: { speaker_id: number }) => s.speaker_id === speakerA.id);
+  const previewB = preview.body.speakers?.find((s: { speaker_id: number }) => s.speaker_id === speakerB.id);
+  check("the preview includes both credited speakers", previewA != null && previewB != null, preview.body);
+  check("speaker A's net matches commission + WHT applied correctly", previewA?.net_ngn === expectA.net, { previewA, expectA });
+  check("a payout-verified speaker with a recipient code is flagged payout_ready", previewA?.payout_ready === true, previewA);
+  check("an unverified speaker is flagged NOT payout_ready", previewB?.payout_ready === false, previewB);
+
+  const createRun1 = await call("/api/payouts/runs", { method: "POST", token: adminToken });
+  check("creating a run claims the eligible earnings", createRun1.status === 201, createRun1.body);
+  const run1Id = createRun1.body.run?.id;
+  if (run1Id) created.payoutRuns.push(run1Id);
+  check("the run's total_net_ngn matches the preview's total", createRun1.body.run?.total_net_ngn === expectA.net + expectB.net, createRun1.body.run);
+
+  const claimedLines = await prisma.earningLine.findMany({ where: { order_id: paidOrder.id } });
+  check("both earning lines are now claimed by the new run's payout line", claimedLines.every((l) => l.payout_line_id != null), claimedLines);
+
+  const previewAfterClaim = await call("/api/payouts/eligible-preview", { token: adminToken });
+  check("claimed earnings no longer appear in a fresh preview", (previewAfterClaim.body.speakers ?? []).length === 0, previewAfterClaim.body);
+
+  section("Payouts admin — cancel releases claimed earnings");
+
+  const cancelRes = await call(`/api/payouts/runs/${run1Id}/cancel`, { method: "POST", token: adminToken });
+  check("a draft run can be cancelled", cancelRes.status === 200, cancelRes.body);
+
+  const releasedLines = await prisma.earningLine.findMany({ where: { order_id: paidOrder.id } });
+  check("cancelling releases the earning lines instead of stranding them", releasedLines.every((l) => l.payout_line_id === null), releasedLines);
+
+  const getCancelledRun = await call(`/api/payouts/runs/${run1Id}`, { token: adminToken });
+  check("a cancelled run is actually gone, not just marked", getCancelledRun.status === 404, getCancelledRun.body);
+
+  section("Payouts admin — approve / process lifecycle");
+
+  const createRun2 = await call("/api/payouts/runs", { method: "POST", token: adminToken });
+  check("released earnings are claimable again by a new run", createRun2.status === 201, createRun2.body);
+  const run2Id = createRun2.body.run?.id;
+  if (run2Id) created.payoutRuns.push(run2Id);
+
+  const doubleCreate = await call("/api/payouts/runs", { method: "POST", token: adminToken });
+  check("a second run can't claim earnings the first run already holds", doubleCreate.status === 422, doubleCreate.body);
+
+  const approveRes = await call(`/api/payouts/runs/${run2Id}/approve`, { method: "POST", token: adminToken });
+  check("approving a draft run succeeds", approveRes.status === 200 && approveRes.body.run?.status === "approved", approveRes.body);
+
+  const reApprove = await call(`/api/payouts/runs/${run2Id}/approve`, { method: "POST", token: adminToken });
+  check("approving an already-approved run is refused", reApprove.status === 409, reApprove.body);
+
+  const cancelApproved = await call(`/api/payouts/runs/${run2Id}/cancel`, { method: "POST", token: adminToken });
+  check("an approved run can no longer be cancelled", cancelApproved.status === 409, cancelApproved.body);
+
+  const processRes = await call(`/api/payouts/runs/${run2Id}/process`, { method: "POST", token: adminToken });
+  check("processing refuses when Paystack isn't configured, same as checkout", processRes.status === 503, processRes.body);
+
+  const runAfterFailedProcess = await call(`/api/payouts/runs/${run2Id}`, { token: adminToken });
+  check("a refused process attempt leaves the run 'approved', not stuck mid-way", runAfterFailedProcess.body.run?.status === "approved", runAfterFailedProcess.body.run);
+
   // ─── Cleanup ───────────────────────────────────────────────────────────────
   await prisma.registration.deleteMany({ where: { content_id: { in: created.content } } });
   await prisma.order.deleteMany({
@@ -1100,6 +1253,11 @@ async function main() {
   await prisma.consentRecord.deleteMany({ where: { user_id: { in: created.users } } });
   await prisma.userPreference.deleteMany({ where: { user_id: { in: created.users } } });
   await prisma.authToken.deleteMany({ where: { user_id: { in: created.users } } });
+  await prisma.payoutLine.deleteMany({ where: { payout_run_id: { in: created.payoutRuns } } });
+  await prisma.payoutRun.deleteMany({ where: { id: { in: created.payoutRuns } } });
+  await prisma.earningLine.deleteMany({ where: { speaker_id: { in: created.speakers } } });
+  await prisma.contentSpeaker.deleteMany({ where: { content_id: { in: created.content } } });
+  await prisma.speaker.deleteMany({ where: { id: { in: created.speakers } } });
   await prisma.contentItem.deleteMany({ where: { id: { in: created.content } } });
   await prisma.plan.deleteMany({ where: { id: { in: created.plans } } });
   await prisma.coupon.deleteMany({ where: { id: { in: created.coupons } } });

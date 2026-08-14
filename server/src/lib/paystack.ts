@@ -156,6 +156,55 @@ export async function listBanks(): Promise<PaystackBank[]> {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+export interface TransferResult {
+  transfer_code: string;
+  /** Paystack transfers can come back "success" (same-session, no OTP
+   *  configured on the integration) or "otp" / "pending" (needs a second
+   *  step this app doesn't implement). Both are reported honestly to the
+   *  caller rather than assumed successful. */
+  status: string;
+}
+
+/**
+ * Sends money to a previously-created transfer recipient.
+ *
+ * ⚠️ Synchronous result only. Paystack also fires transfer.success /
+ * transfer.failed webhook events as a transfer's real status resolves
+ * (this can be asynchronous even after a "success" response, e.g. if a bank
+ * later reverses it) — routes/checkout.ts's webhook handles charge events for
+ * money coming in, but there is no equivalent handler for transfer events on
+ * the money-out side. A PayoutLine's status here reflects what Paystack said
+ * at initiation time, not a confirmed final state. Documented as a real,
+ * bounded gap — the same class as playback's CDN-edge note above.
+ */
+export async function initiateTransfer(
+  recipientCode: string,
+  amountNgn: number,
+  reason: string,
+  reference: string,
+): Promise<TransferResult> {
+  const correlationId = randomUUID();
+  const data = await paystackFetch<{ transfer_code?: string; status?: string }>(
+    "/transfer",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        source: "balance",
+        amount: Math.round(amountNgn * 100), // kobo, same conversion as checkout's amountNgn
+        recipient: recipientCode,
+        reason,
+        reference,
+      }),
+    },
+    correlationId,
+  );
+
+  if (!data.transfer_code) {
+    throw new ApiError(502, `Paystack didn't return a transfer code. Quote reference ${correlationId}.`);
+  }
+  return { transfer_code: data.transfer_code, status: data.status ?? "unknown" };
+}
+
 // ─── FUNCTION 13 — Checkout ─────────────────────────────────────────────────
 //
 // Everything above is money going OUT (instructor payouts). Everything below

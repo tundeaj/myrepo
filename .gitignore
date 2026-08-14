@@ -8,7 +8,6 @@ build/
 .DS_Store
 server/prisma/dev.db
 server/generated/
-server/prisma/migrations/
 .vite/
 coverage/
 *.tsbuildinfo

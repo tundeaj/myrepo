@@ -1027,10 +1027,17 @@ model EarningLine {
   holdback_until       DateTime?
   status               EarningStatus      @default(accruing)
   created_at           DateTime           @default(now())
+  /// Set the moment a payout run claims this line (status becomes payable →
+  /// still 'payable' until the run pays out, then flips to 'paid'). No
+  /// @relation, matching every other cross-model reference in this schema —
+  /// but without SOME marker here, two draft runs created back to back would
+  /// both aggregate the same unclaimed earning line and pay it out twice.
+  payout_line_id       Int?
 
   @@index([speaker_id])
   @@index([period_month])
   @@index([status])
+  @@index([payout_line_id])
   @@map("earning_lines")
 }
 
