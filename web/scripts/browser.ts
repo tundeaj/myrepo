@@ -290,6 +290,54 @@ async function run(browser: Browser) {
     }
   }
 
+  // ─── FAQs — admin page + public page ────────────────────────────────────────
+  // Both were PlaceholderPage/nonexistent until this gap-sweep pass — real
+  // browser coverage from day one this time, not bolted on after a crash
+  // was found the hard way (see the section above).
+  section("FAQs");
+
+  if (adminToken) {
+    const beforeAdminFaqErrors = pageErrors.length;
+    await page.goto(`${BASE}/admin/faqs`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(500);
+    const hasFaqAdminContent = await page.locator("text=/FAQs|Add FAQ|No FAQs yet/i").count();
+    check("/admin/faqs renders real content, not a blank crashed page", hasFaqAdminContent > 0, { hasFaqAdminContent });
+    check("/admin/faqs throws no uncaught render error", pageErrors.length === beforeAdminFaqErrors, pageErrors.slice(beforeAdminFaqErrors));
+
+    // A real fixture, created and torn down through the same API the admin
+    // page itself calls — proves the public page actually renders live
+    // server data, not just its own empty state.
+    const created = await fetch(`${API_BASE}/api/faqs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({
+        question: `Browser check FAQ ${Date.now()}?`,
+        answer_html: "<p>Its answer, rendered on the public page.</p>",
+        scope: "global",
+        category: "Browser check",
+        is_published: true,
+      }),
+    }).then((r) => r.json());
+    const faqId = created?.faq?.id;
+    check("a fixture FAQ is created for this check", typeof faqId === "number", created);
+
+    if (faqId) {
+      const beforePublicFaqErrors = pageErrors.length;
+      await page.goto(`${BASE}/faqs`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(500);
+      const questionLocator = page.locator(`text=${created.faq.question}`);
+      check("the public /faqs page renders the fixture's question", (await questionLocator.count()) > 0, created.faq.question);
+
+      await questionLocator.first().click();
+      await page.waitForTimeout(400);
+      const hasAnswer = await page.locator("text=Its answer, rendered on the public page.").count();
+      check("clicking the question expands its answer", hasAnswer > 0, { hasAnswer });
+      check("/faqs throws no uncaught render error", pageErrors.length === beforePublicFaqErrors, pageErrors.slice(beforePublicFaqErrors));
+
+      await fetch(`${API_BASE}/api/faqs/${faqId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    }
+  }
+
   check("no uncaught page errors across the run", pageErrors.length === 0, pageErrors);
 
   await page.close();

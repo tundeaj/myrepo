@@ -310,6 +310,65 @@ function RatingWidget({ contentId }: { contentId: number }) {
   );
 }
 
+interface ContentFaq {
+  id: number;
+  question: string | null;
+  answer_html: string | null;
+}
+
+/** FAQs an admin scoped to this exact content item (routes/faqs.ts's
+ *  scope: "content") — a different set from the standalone /faqs page,
+ *  which only ever shows scope: "global" ones. Shown to any visitor, not
+ *  gated on access, the same way the "Details" section above it is — an
+ *  FAQ answering "does this include X" is often exactly what someone
+ *  without access yet needs to decide whether to get it. */
+function ContentFaqs({ contentId }: { contentId: number }) {
+  const [faqs, setFaqs] = useState<ContentFaq[] | null>(null);
+  const [openId, setOpenId] = useState<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api<{ faqs: ContentFaq[] }>(`/public-faqs?content_id=${contentId}`)
+      .then((res) => { if (!cancelled) setFaqs(res.faqs); })
+      .catch(() => { if (!cancelled) setFaqs([]); });
+    return () => { cancelled = true; };
+  }, [contentId]);
+
+  if (!faqs?.length) return null;
+
+  return (
+    <section className="space-y-2">
+      <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Questions about this</h2>
+      <div>
+        {faqs.map((faq) => {
+          const open = openId === faq.id;
+          return (
+            <div key={faq.id} className="border-b border-slate-800 py-3">
+              <button
+                onClick={() => {
+                  const next = open ? null : faq.id;
+                  setOpenId(next);
+                  if (next != null) api(`/public-faqs/${faq.id}/view`, { method: "POST" }).catch(() => {});
+                }}
+                className="flex w-full items-center justify-between gap-4 text-left"
+              >
+                <span className="text-sm text-slate-200">{faq.question}</span>
+                <span className={`shrink-0 text-slate-500 transition-transform ${open ? "rotate-45" : ""}`}>+</span>
+              </button>
+              {open && (
+                <div
+                  className="mt-2 max-w-none text-sm leading-relaxed text-slate-400 [&_a]:text-brand [&_a]:underline [&_strong]:text-slate-200"
+                  dangerouslySetInnerHTML={{ __html: faq.answer_html ?? "" }}
+                />
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function Curriculum({ modules }: { modules: Module[] }) {
   const [open, setOpen] = useState<number | null>(modules[0]?.id ?? null);
 
@@ -551,6 +610,8 @@ export function Detail() {
         <Speakers speakers={speakers} />
 
         {liveAccess.can_view && getToken() && <RatingWidget contentId={content.id} />}
+
+        <ContentFaqs contentId={content.id} />
 
         {content.content_last_updated_at && (
           <p className="text-xs text-slate-600">

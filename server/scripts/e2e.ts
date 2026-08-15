@@ -95,6 +95,7 @@ const created = {
   playbackSessions: [] as number[],
   speakers: [] as number[],
   payoutRuns: [] as number[],
+  faqs: [] as number[],
 };
 
 async function makeContent(accessLevel: string, extra: Record<string, unknown> = {}) {
@@ -1358,6 +1359,93 @@ async function main() {
   const deleteAgain = await call(`/api/ratings/${ratableItem.id}`, { method: "DELETE", token: sessionToken });
   check("withdrawing a rating that no longer exists is refused", deleteAgain.status === 404, deleteAgain.body);
 
+  // ─── FAQs — admin CRUD + public read path ──────────────────────────────────
+  section("FAQs — admin CRUD + public read path");
+
+  const viewerFaqList = await call("/api/faqs", { token: sessionToken });
+  check("a signed-in VIEWER cannot list admin FAQs", viewerFaqList.status === 403, viewerFaqList.body);
+
+  const badScopeFaq = await call("/api/faqs", {
+    method: "POST",
+    token: adminToken,
+    body: { question: "Bad scope?", answer_html: "<p>x</p>", scope: "content" },
+  });
+  check("a content-scoped FAQ without a content_id is rejected", badScopeFaq.status === 422, badScopeFaq.body);
+
+  const unknownContentFaq = await call("/api/faqs", {
+    method: "POST",
+    token: adminToken,
+    body: { question: "Ghost content?", answer_html: "<p>x</p>", scope: "content", content_id: 999999999 },
+  });
+  check("a content-scoped FAQ pointing at content that doesn't exist is refused", unknownContentFaq.status === 404, unknownContentFaq.body);
+
+  const globalFaq = await call("/api/faqs", {
+    method: "POST",
+    token: adminToken,
+    body: { question: `What is E2E ${RUN}?`, answer_html: "<p>A global FAQ.</p>", scope: "global", category: "General", is_published: true },
+  });
+  check("a global FAQ is created", globalFaq.status === 201 && globalFaq.body.faq?.scope === "global", globalFaq.body);
+  const globalFaqId = globalFaq.body.faq?.id;
+  if (globalFaqId) created.faqs.push(globalFaqId);
+
+  const unpublishedFaq = await call("/api/faqs", {
+    method: "POST",
+    token: adminToken,
+    body: { question: `Unpublished E2E ${RUN}?`, answer_html: "<p>Draft.</p>", scope: "global", is_published: false },
+  });
+  const unpublishedFaqId = unpublishedFaq.body.faq?.id;
+  if (unpublishedFaqId) created.faqs.push(unpublishedFaqId);
+
+  const faqContentItem = await makeContent("public", { slug: `e2e-faq-content-${RUN}` });
+  const contentFaq = await call("/api/faqs", {
+    method: "POST",
+    token: adminToken,
+    body: { question: `Content-scoped E2E ${RUN}?`, answer_html: "<p>Scoped.</p>", scope: "content", content_id: faqContentItem.id, is_published: true },
+  });
+  check("a content-scoped FAQ is created", contentFaq.status === 201 && contentFaq.body.faq?.content_id === faqContentItem.id, contentFaq.body);
+  const contentFaqId = contentFaq.body.faq?.id;
+  if (contentFaqId) created.faqs.push(contentFaqId);
+
+  const adminFaqList = await call("/api/faqs", { token: adminToken });
+  const adminFaqIds = (adminFaqList.body.faqs ?? []).map((f: { id: number }) => f.id);
+  check("the admin list includes unpublished FAQs too", adminFaqIds.includes(unpublishedFaqId), adminFaqIds);
+
+  const publicGlobalFaqs = await call("/api/public-faqs");
+  const publicGlobalIds = (publicGlobalFaqs.body.faqs ?? []).map((f: { id: number }) => f.id);
+  check("the public global FAQ list includes the published one", publicGlobalIds.includes(globalFaqId), publicGlobalIds);
+  check("the public global FAQ list excludes the unpublished one", !publicGlobalIds.includes(unpublishedFaqId), publicGlobalIds);
+  check("the public global FAQ list excludes content-scoped ones", !publicGlobalIds.includes(contentFaqId), publicGlobalIds);
+
+  const publicContentFaqs = await call(`/api/public-faqs?content_id=${faqContentItem.id}`);
+  const publicContentIds = (publicContentFaqs.body.faqs ?? []).map((f: { id: number }) => f.id);
+  check("the public content-scoped FAQ list returns exactly that content's FAQ", publicContentIds.includes(contentFaqId) && !publicContentIds.includes(globalFaqId), publicContentIds);
+
+  const viewBump = await call(`/api/public-faqs/${globalFaqId}/view`, { method: "POST" });
+  check("recording a view on a published FAQ succeeds", viewBump.status === 200 && viewBump.body.views === 1, viewBump.body);
+
+  const viewUnpublished = await call(`/api/public-faqs/${unpublishedFaqId}/view`, { method: "POST" });
+  check("recording a view on an unpublished FAQ is refused", viewUnpublished.status === 404, viewUnpublished.body);
+
+  const helpfulYes = await call(`/api/public-faqs/${globalFaqId}/helpful`, { method: "POST", body: { helpful: true } });
+  check("marking a FAQ helpful increments helpful_yes", helpfulYes.status === 200 && helpfulYes.body.helpful_yes === 1, helpfulYes.body);
+
+  const helpfulNo = await call(`/api/public-faqs/${globalFaqId}/helpful`, { method: "POST", body: { helpful: false } });
+  check("marking a FAQ unhelpful increments helpful_no, not helpful_yes again", helpfulNo.status === 200 && helpfulNo.body.helpful_no === 1 && helpfulNo.body.helpful_yes === 1, helpfulNo.body);
+
+  const editFaq = await call(`/api/faqs/${globalFaqId}`, {
+    method: "PUT",
+    token: adminToken,
+    body: { question: "Edited question?", answer_html: "<p>Edited.</p>", scope: "global", is_published: true },
+  });
+  check("editing a FAQ succeeds", editFaq.status === 200 && editFaq.body.faq?.question === "Edited question?", editFaq.body);
+  check("editing a FAQ does not reset its already-collected view/helpful counters", editFaq.body.faq?.views === 1 && editFaq.body.faq?.helpful_yes === 1, editFaq.body.faq);
+
+  const deleteFaq = await call(`/api/faqs/${unpublishedFaqId}`, { method: "DELETE", token: adminToken });
+  check("deleting a FAQ succeeds", deleteFaq.status === 200, deleteFaq.body);
+  const deleteFaqAgain = await call(`/api/faqs/${unpublishedFaqId}`, { method: "DELETE", token: adminToken });
+  check("deleting an already-deleted FAQ is refused", deleteFaqAgain.status === 404, deleteFaqAgain.body);
+  created.faqs = created.faqs.filter((id) => id !== unpublishedFaqId); // already gone, cleanup would be a harmless no-op but keep the list honest
+
   // ─── Cleanup ───────────────────────────────────────────────────────────────
   await prisma.rating.deleteMany({ where: { content_id: { in: created.content } } });
   await prisma.streamSession.deleteMany({ where: { content_id: { in: created.content } } });
@@ -1377,6 +1465,7 @@ async function main() {
   await prisma.earningLine.deleteMany({ where: { speaker_id: { in: created.speakers } } });
   await prisma.contentSpeaker.deleteMany({ where: { content_id: { in: created.content } } });
   await prisma.speaker.deleteMany({ where: { id: { in: created.speakers } } });
+  await prisma.faq.deleteMany({ where: { id: { in: created.faqs } } });
   await prisma.contentItem.deleteMany({ where: { id: { in: created.content } } });
   await prisma.plan.deleteMany({ where: { id: { in: created.plans } } });
   await prisma.coupon.deleteMany({ where: { id: { in: created.coupons } } });
