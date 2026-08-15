@@ -46,7 +46,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
+          # No `cache: npm` — that option requires a committed lockfile to
+          # derive its cache key from, and package-lock.json is gitignored
+          # repository-wide (a pre-existing choice, documented as a known gap
+          # below rather than changed here). Confirmed by this workflow's own
+          # first real run: `cache: npm` with no lockfile present fails the
+          # setup-node step outright — "Dependencies lock file is not found"
+          # — before a single install or test ever runs.
 
       - name: Install dependencies
         run: npm install
