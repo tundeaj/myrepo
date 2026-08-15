@@ -10,6 +10,7 @@ import {
   type PublicBootstrap,
 } from "./lib/publicPage";
 import { AccessGate, type AccessResult } from "./components/AccessGate";
+import { api, getToken } from "../lib/api";
 import { Row } from "./components/Row";
 import { formatCountdown, formatRuntime, type ContentCard } from "./lib/types";
 
@@ -241,6 +242,68 @@ function Speakers({ speakers }: { speakers: DetailSpeaker[] }) {
               </p>
             </div>
           </Link>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Only rendered when the viewer is signed in AND already has access — rating
+ * something you can't watch isn't meaningful, and resolveAccess() (the
+ * backend's own gate on POST /ratings) would refuse it anyway. This mirrors
+ * that check client-side purely to avoid showing a control that's certain to
+ * 403, not as the actual enforcement — the server decides, same as every
+ * other access-gated action in this app.
+ */
+function RatingWidget({ contentId }: { contentId: number }) {
+  const [myScore, setMyScore] = useState<number | null>(null);
+  const [hoverScore, setHoverScore] = useState<number | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    api<{ rating: { score: number } | null }>(`/ratings/mine?content_id=${contentId}`)
+      .then((res) => { if (!cancelled) { setMyScore(res.rating?.score ?? null); setLoaded(true); } })
+      .catch(() => { if (!cancelled) setLoaded(true); });
+    return () => { cancelled = true; };
+  }, [contentId]);
+
+  async function rate(score: number) {
+    setSaving(true);
+    const previous = myScore;
+    setMyScore(score); // optimistic — a rating click should feel instant
+    try {
+      await api("/ratings", { method: "POST", body: JSON.stringify({ content_id: contentId, score }) });
+    } catch {
+      setMyScore(previous); // failed silently reverts rather than lying about what saved
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!loaded) return null;
+
+  return (
+    <section className="space-y-2">
+      <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+        {myScore ? "Your rating" : "Rate this"}
+      </h2>
+      <div className="flex items-center gap-1" onMouseLeave={() => setHoverScore(null)}>
+        {[1, 2, 3, 4, 5].map((n) => (
+          <button
+            key={n}
+            type="button"
+            disabled={saving}
+            onClick={() => rate(n)}
+            onMouseEnter={() => setHoverScore(n)}
+            className="text-2xl leading-none text-slate-700 transition-colors disabled:cursor-wait"
+            style={{ color: n <= (hoverScore ?? myScore ?? 0) ? "#fbbf24" : undefined }}
+            aria-label={`Rate ${n} star${n === 1 ? "" : "s"}`}
+          >
+            ★
+          </button>
         ))}
       </div>
     </section>
@@ -486,6 +549,8 @@ export function Detail() {
         )}
 
         <Speakers speakers={speakers} />
+
+        {liveAccess.can_view && getToken() && <RatingWidget contentId={content.id} />}
 
         {content.content_last_updated_at && (
           <p className="text-xs text-slate-600">

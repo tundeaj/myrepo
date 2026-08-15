@@ -21,6 +21,7 @@ import { plansRouter } from "./routes/plans.js";
 import { couponsRouter } from "./routes/coupons.js";
 import { payoutsRouter } from "./routes/payouts.js";
 import { contentSearchRouter } from "./routes/contentSearch.js";
+import { ratingsRouter } from "./routes/ratings.js";
 import { subscriberAnalyticsRouter } from "./routes/subscriberAnalytics.js";
 import { invoicesRouter } from "./routes/invoices.js";
 import { layoutRouter } from "./routes/layout.js";
@@ -88,6 +89,7 @@ app.use("/api/public-speakers", publicSpeakersRouter);
 app.use("/api/signup", signupRouter);
 app.use("/api/registrations", requireAuth, registrationsRouter);
 app.use("/api/account", requireAuth, accountRouter);
+app.use("/api/ratings", requireAuth, ratingsRouter);
 // checkoutRouter (session/verify) needs a signed-in buyer; the webhook above
 // is mounted separately, ahead of the JSON parser, and is intentionally public.
 app.use("/api/checkout", requireAuth, checkoutRouter);

@@ -1312,7 +1312,43 @@ async function main() {
   const emptyQuery = await call("/api/content-search", { token: adminToken });
   check("no query and no ids returns an empty list, not everything", (emptyQuery.body.items ?? []).length === 0, emptyQuery.body);
 
+  // ─── Ratings ────────────────────────────────────────────────────────────────
+  section("Ratings — submit, upsert, aggregate recompute");
+
+  const ratableItem = await makeContent("public", { slug: `e2e-rating-${RUN}` });
+  const unratableItem = await makeContent("purchase", { slug: `e2e-rating-noaccess-${RUN}` });
+
+  const noTokenRate = await call("/api/ratings", { method: "POST", body: { content_id: ratableItem.id, score: 5 } });
+  check("no token at all cannot submit a rating", noTokenRate.status === 401, noTokenRate.body);
+
+  const noAccessRate = await call("/api/ratings", { method: "POST", token: sessionToken, body: { content_id: unratableItem.id, score: 5 } });
+  check("rating something you don't have access to is refused", noAccessRate.status === 403, noAccessRate.body);
+
+  const badScore = await call("/api/ratings", { method: "POST", token: sessionToken, body: { content_id: ratableItem.id, score: 6 } });
+  check("a score outside 1-5 is rejected", badScore.status === 422, badScore.body);
+
+  const firstRate = await call("/api/ratings", { method: "POST", token: sessionToken, body: { content_id: ratableItem.id, score: 5 } });
+  check("a real rating is accepted", firstRate.status === 201 && firstRate.body.rating?.score === 5, firstRate.body);
+  check("the aggregate reflects the single rating", firstRate.body.avg_rating === 5 && firstRate.body.rating_count === 1, firstRate.body);
+
+  const myRating = await call(`/api/ratings/mine?content_id=${ratableItem.id}`, { token: sessionToken });
+  check("GET /ratings/mine returns the caller's own rating", myRating.body.rating?.score === 5, myRating.body);
+
+  const secondRate = await call("/api/ratings", { method: "POST", token: sessionToken, body: { content_id: ratableItem.id, score: 3 } });
+  check("rating the SAME item again updates it, not duplicates it", secondRate.status === 201 && secondRate.body.rating_count === 1, secondRate.body);
+  check("the aggregate recomputes to the new score", secondRate.body.avg_rating === 3, secondRate.body);
+
+  const afterUpdate = await prisma.contentItem.findUnique({ where: { id: ratableItem.id }, select: { avg_rating: true, rating_count: true } });
+  check("ContentItem.avg_rating/rating_count are actually persisted, not just returned", Number(afterUpdate?.avg_rating) === 3 && afterUpdate?.rating_count === 1, afterUpdate);
+
+  const deleteRating = await call(`/api/ratings/${ratableItem.id}`, { method: "DELETE", token: sessionToken });
+  check("withdrawing a rating succeeds", deleteRating.status === 200 && deleteRating.body.rating_count === 0, deleteRating.body);
+
+  const deleteAgain = await call(`/api/ratings/${ratableItem.id}`, { method: "DELETE", token: sessionToken });
+  check("withdrawing a rating that no longer exists is refused", deleteAgain.status === 404, deleteAgain.body);
+
   // ─── Cleanup ───────────────────────────────────────────────────────────────
+  await prisma.rating.deleteMany({ where: { content_id: { in: created.content } } });
   await prisma.streamSession.deleteMany({ where: { content_id: { in: created.content } } });
   await prisma.registration.deleteMany({ where: { content_id: { in: created.content } } });
   await prisma.order.deleteMany({
