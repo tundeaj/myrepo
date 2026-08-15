@@ -98,6 +98,9 @@ const created = {
   faqs: [] as number[],
   contactRequests: [] as number[],
   categories: [] as number[],
+  sponsors: [] as number[],
+  advertisers: [] as number[],
+  ads: [] as number[],
 };
 
 async function makeContent(accessLevel: string, extra: Record<string, unknown> = {}) {
@@ -1563,6 +1566,73 @@ async function main() {
   const deleteCatAgain = await call(`/api/categories/${catId}`, { method: "DELETE", token: adminToken });
   check("deleting an already-deleted category is refused", deleteCatAgain.status === 404, deleteCatAgain.body);
 
+  // ─── Sponsors — admin CRUD ──────────────────────────────────────────────────
+  section("Sponsors — admin CRUD");
+
+  const viewerSponsorCreate = await call("/api/sponsors", { method: "POST", token: sessionToken, body: { name: `E2E Sponsor Viewer ${RUN}` } });
+  check("a signed-in VIEWER cannot create a sponsor", viewerSponsorCreate.status === 403, viewerSponsorCreate.body);
+
+  const createSponsor = await call("/api/sponsors", { method: "POST", token: adminToken, body: { name: `E2E Sponsor ${RUN}`, contact_email: `sponsor-${RUN}@example.test` } });
+  check("a sponsor is created", createSponsor.status === 201 && createSponsor.body.sponsor?.is_active === true, createSponsor.body);
+  const sponsorId = createSponsor.body.sponsor?.id;
+  if (sponsorId) created.sponsors.push(sponsorId);
+
+  const badSponsorEmail = await call("/api/sponsors", { method: "POST", token: adminToken, body: { name: "Bad email sponsor", contact_email: "not-an-email" } });
+  check("a sponsor with a malformed contact email is rejected", badSponsorEmail.status === 422, badSponsorEmail.body);
+
+  const updateSponsor = await call(`/api/sponsors/${sponsorId}`, { method: "PUT", token: adminToken, body: { name: `E2E Sponsor Updated ${RUN}`, is_active: false } });
+  check("updating a sponsor succeeds", updateSponsor.status === 200 && updateSponsor.body.sponsor?.is_active === false, updateSponsor.body);
+
+  const sponsoredContent = await makeContent("public", { slug: `e2e-sponsored-${RUN}` });
+  await prisma.contentSponsor.create({ data: { content_id: sponsoredContent.id, sponsor_id: sponsorId } });
+
+  const deleteSponsorInUse = await call(`/api/sponsors/${sponsorId}`, { method: "DELETE", token: adminToken });
+  check("deleting a sponsor still linked to content is refused", deleteSponsorInUse.status === 409, deleteSponsorInUse.body);
+
+  await prisma.contentSponsor.deleteMany({ where: { sponsor_id: sponsorId, content_id: sponsoredContent.id } });
+  const deleteSponsorUnused = await call(`/api/sponsors/${sponsorId}`, { method: "DELETE", token: adminToken });
+  check("deleting a sponsor with no content links succeeds", deleteSponsorUnused.status === 200, deleteSponsorUnused.body);
+  created.sponsors = created.sponsors.filter((id) => id !== sponsorId);
+
+  // ─── Advertisers & Ads — admin CRUD ─────────────────────────────────────────
+  section("Advertisers & Ads — admin CRUD");
+
+  const viewerAdvCreate = await call("/api/advertisers", { method: "POST", token: sessionToken, body: { company_name: `E2E Adv Viewer ${RUN}` } });
+  check("a signed-in VIEWER cannot create an advertiser", viewerAdvCreate.status === 403, viewerAdvCreate.body);
+
+  const createAdvertiser = await call("/api/advertisers", { method: "POST", token: adminToken, body: { company_name: `E2E Advertiser ${RUN}` } });
+  check("an advertiser is created", createAdvertiser.status === 201 && createAdvertiser.body.advertiser?.company_name === `E2E Advertiser ${RUN}`, createAdvertiser.body);
+  const advertiserId = createAdvertiser.body.advertiser?.id;
+  if (advertiserId) created.advertisers.push(advertiserId);
+
+  const adWithUnknownAdvertiser = await call("/api/ads", { method: "POST", token: adminToken, body: { name: `E2E Ad Ghost ${RUN}`, ad_type: "pre_roll", advertiser_id: 999999999 } });
+  check("an ad pointing at an advertiser that doesn't exist is refused", adWithUnknownAdvertiser.status === 404, adWithUnknownAdvertiser.body);
+
+  const createAd = await call("/api/ads", { method: "POST", token: adminToken, body: { name: `E2E Ad ${RUN}`, ad_type: "pre_roll", duration_seconds: 15, advertiser_id: advertiserId } });
+  check("an ad is created and linked to its advertiser", createAd.status === 201 && createAd.body.ad?.advertiser_id === advertiserId, createAd.body);
+  const adId = createAd.body.ad?.id;
+  if (adId) created.ads.push(adId);
+
+  const adsList = await call("/api/ai/ads", { token: adminToken });
+  const preRollIds = (adsList.body.pre_roll ?? []).map((a: { id: number }) => a.id);
+  check("the new active ad shows up in AdvertisementPanel's own picker source (GET /ai/ads)", preRollIds.includes(adId), preRollIds);
+
+  const deleteAdvertiserInUse = await call(`/api/advertisers/${advertiserId}`, { method: "DELETE", token: adminToken });
+  check("deleting an advertiser a live ad still references is refused", deleteAdvertiserInUse.status === 409, deleteAdvertiserInUse.body);
+
+  const adContentTarget = await makeContent("public", { slug: `e2e-ad-assigned-${RUN}`, pre_roll_ad_id: adId });
+  const deleteAdInUse = await call(`/api/ads/${adId}`, { method: "DELETE", token: adminToken });
+  check("deleting an ad still assigned to a content item's pre-roll is refused", deleteAdInUse.status === 409, deleteAdInUse.body);
+
+  await prisma.contentItem.update({ where: { id: adContentTarget.id }, data: { pre_roll_ad_id: null } });
+  const deleteAdUnused = await call(`/api/ads/${adId}`, { method: "DELETE", token: adminToken });
+  check("deleting an ad no longer assigned anywhere succeeds", deleteAdUnused.status === 200, deleteAdUnused.body);
+  created.ads = created.ads.filter((id) => id !== adId);
+
+  const deleteAdvertiserNowUnused = await call(`/api/advertisers/${advertiserId}`, { method: "DELETE", token: adminToken });
+  check("deleting an advertiser with no ads left succeeds", deleteAdvertiserNowUnused.status === 200, deleteAdvertiserNowUnused.body);
+  created.advertisers = created.advertisers.filter((id) => id !== advertiserId);
+
   // ─── Cleanup ───────────────────────────────────────────────────────────────
   await prisma.rating.deleteMany({ where: { content_id: { in: created.content } } });
   await prisma.streamSession.deleteMany({ where: { content_id: { in: created.content } } });
@@ -1586,6 +1656,10 @@ async function main() {
   await prisma.contactRequest.deleteMany({ where: { id: { in: created.contactRequests } } });
   await prisma.contentCategory.deleteMany({ where: { category_id: { in: created.categories } } });
   await prisma.category.deleteMany({ where: { id: { in: created.categories } } });
+  await prisma.contentSponsor.deleteMany({ where: { sponsor_id: { in: created.sponsors } } });
+  await prisma.sponsor.deleteMany({ where: { id: { in: created.sponsors } } });
+  await prisma.ad.deleteMany({ where: { id: { in: created.ads } } });
+  await prisma.advertiser.deleteMany({ where: { id: { in: created.advertisers } } });
   await prisma.contentItem.deleteMany({ where: { id: { in: created.content } } });
   await prisma.plan.deleteMany({ where: { id: { in: created.plans } } });
   await prisma.coupon.deleteMany({ where: { id: { in: created.coupons } } });

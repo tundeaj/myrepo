@@ -396,6 +396,76 @@ async function run(browser: Browser) {
     }
   }
 
+  // ─── Sponsors, Advertisers, Ads ─────────────────────────────────────────────
+  section("Sponsors, Advertisers, Ads");
+
+  if (adminToken) {
+    const sponsorName = `Browser Check Sponsor ${Date.now()}`;
+    const createdSponsor = await fetch(`${API_BASE}/api/sponsors`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ name: sponsorName }),
+    }).then((r) => r.json());
+    const sponsorId = createdSponsor?.sponsor?.id;
+    check("a fixture sponsor is created for this check", typeof sponsorId === "number", createdSponsor);
+
+    if (sponsorId) {
+      const beforeSponsorErrors = pageErrors.length;
+      await page.goto(`${BASE}/admin/sponsors`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(500);
+      const hasSponsorRow = await page.locator(`text=${sponsorName}`).count();
+      check("/admin/sponsors renders the real fixture sponsor", hasSponsorRow > 0, { hasSponsorRow });
+      check("/admin/sponsors throws no uncaught render error", pageErrors.length === beforeSponsorErrors, pageErrors.slice(beforeSponsorErrors));
+      await fetch(`${API_BASE}/api/sponsors/${sponsorId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    }
+
+    const advertiserName = `Browser Check Advertiser ${Date.now()}`;
+    const createdAdvertiser = await fetch(`${API_BASE}/api/advertisers`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ company_name: advertiserName }),
+    }).then((r) => r.json());
+    const advertiserId = createdAdvertiser?.advertiser?.id;
+    check("a fixture advertiser is created for this check", typeof advertiserId === "number", createdAdvertiser);
+
+    if (advertiserId) {
+      const beforeAdvErrors = pageErrors.length;
+      await page.goto(`${BASE}/admin/advertisers`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(500);
+      const hasAdvRow = await page.locator(`text=${advertiserName}`).count();
+      check("/admin/advertisers renders the real fixture advertiser", hasAdvRow > 0, { hasAdvRow });
+      check("/admin/advertisers throws no uncaught render error", pageErrors.length === beforeAdvErrors, pageErrors.slice(beforeAdvErrors));
+
+      const adName = `Browser Check Ad ${Date.now()}`;
+      const createdAd = await fetch(`${API_BASE}/api/ads`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ name: adName, ad_type: "pre_roll", advertiser_id: advertiserId }),
+      }).then((r) => r.json());
+      const adId = createdAd?.ad?.id;
+      check("a fixture ad is created for this check", typeof adId === "number", createdAd);
+
+      if (adId) {
+        const beforeAdErrors = pageErrors.length;
+        await page.goto(`${BASE}/admin/ads`, { waitUntil: "networkidle" });
+        await page.waitForTimeout(500);
+        const hasAdRow = await page.locator(`text=${adName}`).count();
+        check("/admin/ads renders the real fixture ad", hasAdRow > 0, { hasAdRow });
+        check("/admin/ads throws no uncaught render error", pageErrors.length === beforeAdErrors, pageErrors.slice(beforeAdErrors));
+
+        // Also confirm the AdvertisementPanel picker in the session editor
+        // itself now offers this ad — the whole point of building this.
+        await page.goto(`${BASE}/admin/sessions/new`, { waitUntil: "networkidle" });
+        await page.waitForTimeout(500);
+        const hasAdOption = await page.locator(`option:has-text("${adName}")`).count();
+        check("the session editor's Advertisement panel now offers the real fixture ad", hasAdOption > 0, { hasAdOption });
+
+        await fetch(`${API_BASE}/api/ads/${adId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+      }
+      await fetch(`${API_BASE}/api/advertisers/${advertiserId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    }
+  }
+
   check("no uncaught page errors across the run", pageErrors.length === 0, pageErrors);
 
   await page.close();

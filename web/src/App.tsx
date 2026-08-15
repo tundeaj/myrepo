@@ -68,6 +68,9 @@ const Coupons = lazy(() => import("./pages/coupons/Coupons").then((m) => ({ defa
 const Faqs = lazy(() => import("./pages/faqs/Faqs").then((m) => ({ default: m.Faqs })));
 const ContactRequests = lazy(() => import("./pages/contact/ContactRequests").then((m) => ({ default: m.ContactRequests })));
 const Categories = lazy(() => import("./pages/categories/Categories").then((m) => ({ default: m.Categories })));
+const Sponsors = lazy(() => import("./pages/sponsors/Sponsors").then((m) => ({ default: m.Sponsors })));
+const Advertisers = lazy(() => import("./pages/advertisers/Advertisers").then((m) => ({ default: m.Advertisers })));
+const Ads = lazy(() => import("./pages/ads/Ads").then((m) => ({ default: m.Ads })));
 const Payouts = lazy(() => import("./pages/payouts/Payouts").then((m) => ({ default: m.Payouts })));
 const SubscriberAnalytics = lazy(() => import("./pages/analytics/SubscriberAnalytics").then((m) => ({ default: m.SubscriberAnalytics })));
 const Invoices = lazy(() => import("./pages/revenue/Invoices").then((m) => ({ default: m.Invoices })));
@@ -83,9 +86,6 @@ const PLACEHOLDER_PATHS = [
   "bulk-import",
   "community/spaces",
   "community/moderation",
-  "sponsors",
-  "ads",
-  "advertisers",
   "analytics/player",
   "analytics/ppv-revenue",
   "pages",
@@ -146,6 +146,9 @@ export function App() {
           <Route path="faqs" element={<Faqs />} />
           <Route path="contact-requests" element={<ContactRequests />} />
           <Route path="categories" element={<Categories />} />
+          <Route path="sponsors" element={<Sponsors />} />
+          <Route path="advertisers" element={<Advertisers />} />
+          <Route path="ads" element={<Ads />} />
           <Route path="payouts" element={<Payouts />} />
           <Route path="analytics/subscribers" element={<SubscriberAnalytics />} />
           <Route path="invoices" element={<Invoices />} />
