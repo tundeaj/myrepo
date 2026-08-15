@@ -19,7 +19,7 @@ import { imageVariantsRouter } from "./routes/imageVariants.js";
 import { footerLinksRouter } from "./routes/footerLinks.js";
 import { plansRouter } from "./routes/plans.js";
 import { couponsRouter } from "./routes/coupons.js";
-import { payoutsRouter } from "./routes/payouts.js";
+import { payoutsRouter, payoutsWebhookRouter } from "./routes/payouts.js";
 import { contentSearchRouter } from "./routes/contentSearch.js";
 import { ratingsRouter } from "./routes/ratings.js";
 import { subscriberAnalyticsRouter } from "./routes/subscriberAnalytics.js";
@@ -49,6 +49,10 @@ app.use(cors({ origin: env.CORS_ORIGIN, credentials: true }));
 // consume the body for /api/checkout/session and /verify too, starving
 // express.json() of anything to parse on those.
 app.use("/api/checkout/webhook", express.raw({ type: "application/json", limit: "1mb" }), checkoutWebhookRouter);
+// Same reasoning, money-out side: Paystack's transfer.failed/transfer.reversed
+// events are HMAC-signed over the raw body, so express.raw() must be the only
+// body parser that ever touches this route too.
+app.use("/api/payouts/webhook", express.raw({ type: "application/json", limit: "1mb" }), payoutsWebhookRouter);
 
 app.use(express.json({ limit: "5mb" }));
 
@@ -73,6 +77,8 @@ app.use("/api/footer-links", requireAuth, requireAdmin, footerLinksRouter);
 app.use("/api/plans", requireAuth, requireAdmin, plansRouter);
 app.use("/api/coupons", requireAuth, requireAdmin, couponsRouter);
 app.use("/api/payouts", requireAuth, requireAdmin, payoutsRouter);
+// The webhook above is mounted separately, ahead of the JSON parser, and is
+// intentionally public — Paystack has no admin session to send.
 app.use("/api/content-search", requireAuth, requireAdmin, contentSearchRouter);
 app.use("/api/analytics/subscribers", requireAuth, requireAdmin, subscriberAnalyticsRouter);
 app.use("/api/invoices", requireAuth, requireAdmin, invoicesRouter);

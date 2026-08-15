@@ -102,6 +102,12 @@ jobs:
           PAYSTACK_SECRET_KEY: sk_test_ci_dummy_key
         run: npx tsx scripts/checkoutWebhook.ts
 
+      - name: Payouts transfer webhook suite (isolated process, own key)
+        working-directory: server
+        env:
+          PAYSTACK_SECRET_KEY: sk_test_ci_dummy_key
+        run: npx tsx scripts/payoutsWebhook.ts
+
       # This sandbox's own runtime has a pre-installed Chromium and is
       # explicitly not supposed to run `playwright install` (see CLAUDE.md /
       # session instructions) — that restriction is about this repo's own

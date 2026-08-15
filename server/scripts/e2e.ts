@@ -1241,6 +1241,17 @@ async function main() {
   const runAfterFailedProcess = await call(`/api/payouts/runs/${run2Id}`, { token: adminToken });
   check("a refused process attempt leaves the run 'approved', not stuck mid-way", runAfterFailedProcess.body.run?.status === "approved", runAfterFailedProcess.body.run);
 
+  // Same reasoning as the checkout webhook's own "unconfigured" assertion —
+  // this shared dev server has no PAYSTACK_SECRET_KEY, so this can only prove
+  // the webhook rejects everything here. Proving a validly-signed transfer
+  // event is ACCEPTED, and does the right thing, needs its own process with
+  // its own key — see scripts/payoutsWebhook.ts.
+  const payoutsWebhookRes = await call("/api/payouts/webhook", {
+    method: "POST",
+    body: { event: "transfer.failed", data: { transfer_code: `e2e-fake-${RUN}` } },
+  });
+  check("the payouts webhook refuses everything when no secret key is configured", payoutsWebhookRes.status === 400, payoutsWebhookRes.body);
+
   // ─── Live sessions — go-live / end-live ────────────────────────────────────
   section("Live sessions — go-live / end-live");
 

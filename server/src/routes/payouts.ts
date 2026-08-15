@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { prisma } from "../lib/prisma.js";
 import { ApiError } from "../lib/errors.js";
 import { getSetting, getBoolSetting } from "../lib/settingValue.js";
-import { initiateTransfer, isPaystackConfigured } from "../lib/paystack.js";
+import { initiateTransfer, isPaystackConfigured, verifyWebhookSignature } from "../lib/paystack.js";
 import type { Request, Response, NextFunction } from "express";
 
 /**
@@ -276,10 +276,10 @@ payoutsRouter.post("/runs/:id/approve", async (req: Request, res: Response, next
 
 // POST /payouts/runs/:id/process — the one step that actually moves money.
 //
-// ⚠️ Synchronous-result only — see the module doc on lib/paystack.ts's
-// initiateTransfer(). A line marked "paid" here reflects Paystack accepting
-// the transfer request at initiation, not a confirmed bank-side settlement;
-// this app has no transfer.success/transfer.failed webhook handler.
+// A line marked "paid" here reflects Paystack accepting the transfer request
+// at initiation, not a confirmed bank-side settlement — see the module doc
+// on lib/paystack.ts's initiateTransfer(). payoutsWebhookRouter below is
+// what catches a transfer that later actually fails or gets reversed.
 payoutsRouter.post("/runs/:id/process", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = Number(req.params.id);
@@ -342,5 +342,83 @@ payoutsRouter.post("/runs/:id/process", async (req: Request, res: Response, next
     res.json({ run: serializeRun(updated) });
   } catch (err) {
     next(err);
+  }
+});
+
+// ─── POST /payouts/webhook — Paystack's transfer status webhook ───────────
+//
+// Public: Paystack calls this directly, with no admin session. Mounted with
+// express.raw() in index.ts, BEFORE the global express.json() — same
+// reasoning as checkoutWebhookRouter in routes/checkout.ts: the signature is
+// computed over the exact bytes Paystack sent.
+//
+// This closes the gap initiateTransfer()'s module doc names explicitly:
+// /runs/:id/process only ever recorded what Paystack said AT INITIATION —
+// a transfer that later actually fails, or gets reversed by the receiving
+// bank, had no way to ever reach this app before now.
+//
+// PayoutLine is documented on its own model as APPEND-ONLY once
+// status = 'paid' — a paid line is this app's audit trail that a transfer
+// really was accepted and initiated, and that fact doesn't stop being true
+// just because the money later bounced. So a failed/reversed transfer never
+// rewrites the PayoutLine row. Instead it flips the EarningLines that line
+// paid out from 'paid' to 'reversed' — a status EarningStatus has carried
+// since Prompt 01-C's schema but nothing had ever written until now.
+// Reversed earnings are deliberately NOT released back into
+// computeEligibleLines()'s pool automatically (that only ever looks for
+// status: 'payable') — a bounced transfer usually means something is wrong
+// with the speaker's bank details, and silently re-queuing the same amount
+// for another automatic attempt would just repeat whatever already failed.
+// Getting a reversed earning back into a payable state is left as a manual,
+// investigate-first step: not implemented here, stated as a real gap.
+export const payoutsWebhookRouter = Router();
+
+// Root, not "/webhook": mounted at the exact path "/api/payouts/webhook" in
+// index.ts, not the shared "/api/payouts" prefix — for the same reason
+// checkoutWebhookRouter isn't mounted on "/api/checkout" (see that file).
+payoutsWebhookRouter.post("/", async (req: Request, res: Response) => {
+  const signature = req.headers["x-paystack-signature"];
+  const rawBody = req.body as Buffer;
+
+  if (!verifyWebhookSignature(rawBody, typeof signature === "string" ? signature : undefined)) {
+    return res.status(400).json({ error: "Invalid signature." });
+  }
+
+  let payload: { event?: string; data?: { transfer_code?: string } };
+  try {
+    payload = JSON.parse(rawBody.toString("utf8"));
+  } catch {
+    return res.status(400).json({ error: "Malformed payload." });
+  }
+
+  // Acknowledge immediately regardless of outcome from here — same reasoning
+  // as the checkout webhook: Paystack retries on non-2xx, and an event we
+  // don't handle, or a transfer_code we don't have on file, is not an error
+  // on our side.
+  res.json({ received: true });
+
+  if (payload.event !== "transfer.failed" && payload.event !== "transfer.reversed") return;
+  const transferCode = payload.data?.transfer_code;
+  if (!transferCode) return;
+
+  try {
+    const line = await prisma.payoutLine.findFirst({ where: { payment_reference: transferCode } });
+    // Only a line this app itself marked 'paid' is something this event can
+    // apply to — an unrecognised reference, or a line already 'failed', has
+    // nothing here to correct.
+    if (!line || line.status !== "paid") return;
+
+    await prisma.earningLine.updateMany({
+      where: { payout_line_id: line.id, status: "paid" },
+      data: { status: "reversed" },
+    });
+
+    console.error(
+      `[payouts webhook] transfer ${transferCode} (payout_line ${line.id}, speaker ${line.speaker_id}) ` +
+        `reported "${payload.event}" by Paystack — its earnings are now marked reversed. The PayoutLine ` +
+        `itself is left as-paid per its append-only invariant; this needs manual review, not an automatic re-run.`,
+    );
+  } catch (err) {
+    console.error("[payouts webhook] failed to process transfer event:", err);
   }
 });
