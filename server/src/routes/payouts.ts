@@ -4,6 +4,7 @@ import { prisma } from "../lib/prisma.js";
 import { ApiError } from "../lib/errors.js";
 import { getSetting, getBoolSetting } from "../lib/settingValue.js";
 import { initiateTransfer, isPaystackConfigured, verifyWebhookSignature } from "../lib/paystack.js";
+import { computeSubscriptionAccrual, runSubscriptionAccrual } from "../lib/earnings.js";
 import type { Request, Response, NextFunction } from "express";
 
 /**
@@ -126,6 +127,67 @@ async function sweepHoldback(): Promise<void> {
     data: { status: "payable" },
   });
 }
+
+// ─── Subscription revenue accrual — a manually-triggered admin tool, not an
+// automatic job (this app has no scheduler). See lib/earnings.ts's own
+// module doc for the full reasoning: it's OFF by default
+// (monetisation.subscription_accrual_enabled), and even once enabled it only
+// ever runs when an admin explicitly asks it to, for a period they name.
+
+const PERIOD_MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
+
+function parsePeriodMonth(raw: unknown): string {
+  if (typeof raw !== "string" || !PERIOD_MONTH_RE.test(raw)) {
+    throw new ApiError(400, "period_month must be in \"YYYY-MM\" form.");
+  }
+  return raw;
+}
+
+// GET /payouts/subscription-accrual-preview?period_month=YYYY-MM — read-only,
+// same computation the real run would do, so what an admin sees here is
+// exactly what Run would produce.
+payoutsRouter.get("/subscription-accrual-preview", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const periodMonth = parsePeriodMonth(req.query.period_month);
+    const enabled = await getBoolSetting("monetisation.subscription_accrual_enabled", false);
+    const subscribers = await computeSubscriptionAccrual(periodMonth);
+    const withNames = await withSpeakerlessUserNames(subscribers);
+    res.json({
+      enabled,
+      period_month: periodMonth,
+      subscribers: withNames,
+      total_ngn: withNames.reduce((sum, s) => sum + s.content.reduce((cSum, c) => cSum + c.share_of_period_amount_ngn, 0), 0),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+async function withSpeakerlessUserNames<T extends { user_id: number }>(subscribers: T[]) {
+  const users = await prisma.user.findMany({
+    where: { id: { in: subscribers.map((s) => s.user_id) } },
+    select: { id: true, full_name: true, email: true },
+  });
+  const byId = new Map(users.map((u) => [u.id, u]));
+  return subscribers.map((s) => ({ ...s, subscriber_name: byId.get(s.user_id)?.full_name ?? byId.get(s.user_id)?.email ?? `User #${s.user_id}` }));
+}
+
+// POST /payouts/subscription-accrual — the real run. Refused outright while
+// the feature is switched off, same shape as the Paystack-not-configured
+// 503 the direct-sale process step already uses.
+payoutsRouter.post("/subscription-accrual", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const periodMonth = parsePeriodMonth(req.body?.period_month);
+    const enabled = await getBoolSetting("monetisation.subscription_accrual_enabled", false);
+    if (!enabled) {
+      throw new ApiError(503, "Subscription revenue accrual is turned off. Enable it in Settings → Monetisation first — and read what it means before you do.");
+    }
+    const result = await runSubscriptionAccrual(periodMonth);
+    res.json({ period_month: periodMonth, ...result });
+  } catch (err) {
+    next(err);
+  }
+});
 
 // GET /payouts/runs
 payoutsRouter.get("/runs", async (_req: Request, res: Response, next: NextFunction) => {

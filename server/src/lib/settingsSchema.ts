@@ -110,6 +110,22 @@ export const SETTINGS_FIELDS: Record<string, SettingField[]> = {
     { key: "monetisation.default_commission_pct", label: "Default commission %", helper: "Platform's default share of revenue for new instructors.", control: "number", default: "30", min: 0, max: 100 },
     { key: "monetisation.wht_applicable", label: "Withholding tax applicable", helper: "Deduct WHT from instructor payouts by default.", control: "toggle", default: "true" },
     { key: "monetisation.wht_rate", label: "WHT rate (%)", helper: "Withholding tax rate applied to payouts when applicable.", control: "number", default: "5", min: 0, max: 30 },
+    {
+      key: "monetisation.subscription_accrual_enabled",
+      label: "Subscription revenue accrual",
+      helper: "Let an admin run subscription-watch-time revenue accrual from Payouts. Off by default — this app has no per-period renewal billing record, so a plan's current price stands in for what a subscriber was actually charged; understand that before turning this on.",
+      control: "toggle",
+      default: "false",
+    },
+    {
+      key: "monetisation.subscription_min_watch_seconds",
+      label: "Minimum watch time to count (seconds)",
+      helper: "A subscriber must have watched at least this long of a subscriber-tier item in the period for it to earn its speakers anything.",
+      control: "number",
+      default: "60",
+      min: 0,
+      max: 3600,
+    },
   ],
   content_policy: [
     { key: "content_policy.review_required", label: "Review required before publish", helper: "Instructor-submitted content must be approved before it goes live.", control: "toggle", default: "false" },

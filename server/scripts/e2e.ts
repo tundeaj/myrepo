@@ -1729,6 +1729,107 @@ async function main() {
     await setCommentMode(null);
   }
 
+  // ─── Subscription revenue accrual — another policy decision exposed as a
+  // real admin setting (monetisation.subscription_accrual_enabled /
+  // subscription_min_watch_seconds), not hardcoded — and, unlike direct-sale
+  // accrual, never run automatically: this app has no scheduler, so it's a
+  // manually-triggered admin action from Payouts, gated behind an explicit
+  // "on" switch that defaults to off ──────────────────────────────────────────
+  section("Payouts — subscription revenue accrual");
+
+  async function setMonetisationSettings(values: Record<string, string | boolean | null>) {
+    const res = await call("/api/settings/monetisation", { method: "PUT", token: adminToken, body: { values } });
+    if (res.status !== 200) throw new Error(`Failed to set monetisation settings: ${JSON.stringify(res.body)}`);
+  }
+
+  try {
+    const periodMonth = new Date().toISOString().slice(0, 7);
+
+    const badPeriod = await call("/api/payouts/subscription-accrual-preview?period_month=not-a-period", { token: adminToken });
+    check("an invalid period_month format is rejected on preview", badPeriod.status === 400, badPeriod.body);
+
+    const viewerPreview = await call(`/api/payouts/subscription-accrual-preview?period_month=${periodMonth}`, { token: sessionToken });
+    check("a signed-in VIEWER cannot see the subscription accrual preview", viewerPreview.status === 403, viewerPreview.body);
+
+    // The feature defaults to off — proven before anything else in this
+    // section turns it on.
+    const disabledRun = await call("/api/payouts/subscription-accrual", { method: "POST", token: adminToken, body: { period_month: periodMonth } });
+    check("running accrual while the feature is off (its real default) is refused", disabledRun.status === 503, disabledRun.body);
+
+    await setMonetisationSettings({ "monetisation.subscription_accrual_enabled": true, "monetisation.subscription_min_watch_seconds": "120" });
+
+    // Fixtures: a monthly subscriber who watched one qualifying (≥120s) and
+    // one sub-threshold (<120s) piece of subscriber-tier content, plus a
+    // credited speaker on each so there's somewhere for the money to go.
+    const accrualUser = await prisma.user.create({ data: { email: `e2e-accrual-${RUN}@example.test`, role: "viewer", email_verified: true, password_hash: null } });
+    created.users.push(accrualUser.id);
+
+    const monthlyPlan = await prisma.plan.create({ data: { name: `E2E Monthly ${RUN}`, price_ngn: "3000", billing_interval: "monthly", is_active: true } });
+    created.plans.push(monthlyPlan.id);
+    await prisma.subscription.create({ data: { user_id: accrualUser.id, plan_id: monthlyPlan.id, status: "active", current_period_end: new Date(Date.now() + 30 * 86_400_000) } });
+
+    const accrualSpeaker = await prisma.speaker.create({ data: { full_name: `E2E Accrual Speaker ${RUN}`, slug: `e2e-accrual-speaker-${RUN}` } });
+    created.speakers.push(accrualSpeaker.id);
+
+    const qualifyingContent = await makeContent("subscriber", { slug: `e2e-accrual-qualifying-${RUN}` });
+    await prisma.contentSpeaker.create({ data: { content_id: qualifyingContent.id, speaker_id: accrualSpeaker.id, revenue_share_pct: 100 } });
+    const qualifyingSession = await prisma.playbackSession.create({ data: { user_id: accrualUser.id, content_id: qualifyingContent.id, watch_seconds: 300, started_at: new Date() } });
+    created.playbackSessions.push(qualifyingSession.id);
+
+    const belowThresholdContent = await makeContent("subscriber", { slug: `e2e-accrual-below-threshold-${RUN}` });
+    await prisma.contentSpeaker.create({ data: { content_id: belowThresholdContent.id, speaker_id: accrualSpeaker.id, revenue_share_pct: 100 } });
+    const belowThresholdSession = await prisma.playbackSession.create({ data: { user_id: accrualUser.id, content_id: belowThresholdContent.id, watch_seconds: 30, started_at: new Date() } });
+    created.playbackSessions.push(belowThresholdSession.id);
+
+    const preview = await call(`/api/payouts/subscription-accrual-preview?period_month=${periodMonth}`, { token: adminToken });
+    check("the preview reports the feature as enabled now", preview.body.enabled === true, preview.body.enabled);
+    const previewSub = (preview.body.subscribers ?? []).find((s: { user_id: number }) => s.user_id === accrualUser.id);
+    check("the subscriber appears in the preview", Boolean(previewSub), preview.body.subscribers);
+    check("only the qualifying (≥ threshold) content counts — the below-threshold watch is excluded entirely", previewSub?.content.length === 1 && previewSub.content[0].content_id === qualifyingContent.id, previewSub?.content);
+    check("a single qualifying item gets the subscriber's full period amount", previewSub?.content[0].share_of_period_amount_ngn === 3000, previewSub?.content[0]);
+    check("nothing is marked already_accrued before the first real run", previewSub?.content[0].already_accrued === false, previewSub?.content[0]);
+
+    const run1 = await call("/api/payouts/subscription-accrual", { method: "POST", token: adminToken, body: { period_month: periodMonth } });
+    check("the real accrual run succeeds once enabled", run1.status === 200 && run1.body.created === 1, run1.body);
+    check("the run total matches the previewed amount", run1.body.total_ngn === 3000, run1.body);
+
+    const createdLine = await prisma.earningLine.findFirst({ where: { speaker_id: accrualSpeaker.id, content_id: qualifyingContent.id, period_month: periodMonth } });
+    check("a real EarningLine was written with attribution_basis 'subscription_watch_share'", createdLine?.attribution_basis === "subscription_watch_share", createdLine?.attribution_basis);
+    check("watch_hours reflects the real qualifying watch time (300s = 0.08h, rounded)", Number(createdLine?.watch_hours) === Math.round((300 / 3600) * 100) / 100, createdLine?.watch_hours);
+    check("earned_ngn matches the speaker's 100% share of the period amount", Number(createdLine?.earned_ngn) === 3000, createdLine?.earned_ngn);
+
+    // Re-running the SAME period is idempotent — no duplicate line, no
+    // double-paying the same subscriber+content+period combination.
+    const run2 = await call("/api/payouts/subscription-accrual", { method: "POST", token: adminToken, body: { period_month: periodMonth } });
+    check("re-running the same period creates nothing new", run2.status === 200 && run2.body.created === 0, run2.body);
+    check("re-running the same period reports the combo as already accrued", run2.body.skipped_already_accrued === 1, run2.body);
+    const lineCountAfterRerun = await prisma.earningLine.count({ where: { speaker_id: accrualSpeaker.id, content_id: qualifyingContent.id, period_month: periodMonth } });
+    check("still exactly one EarningLine for that combo, not two", lineCountAfterRerun === 1, lineCountAfterRerun);
+
+    // Annual plan: a whole year's price shouldn't land in one calendar month.
+    const annualUser = await prisma.user.create({ data: { email: `e2e-accrual-annual-${RUN}@example.test`, role: "viewer", email_verified: true, password_hash: null } });
+    created.users.push(annualUser.id);
+    const annualPlanFixture = await prisma.plan.create({ data: { name: `E2E Annual ${RUN}`, price_ngn: "24000", billing_interval: "annual", is_active: true } });
+    created.plans.push(annualPlanFixture.id);
+    await prisma.subscription.create({ data: { user_id: annualUser.id, plan_id: annualPlanFixture.id, status: "active", current_period_end: new Date(Date.now() + 365 * 86_400_000) } });
+    const annualContent = await makeContent("subscriber", { slug: `e2e-accrual-annual-${RUN}` });
+    await prisma.contentSpeaker.create({ data: { content_id: annualContent.id, speaker_id: accrualSpeaker.id, revenue_share_pct: 100 } });
+    const annualSession = await prisma.playbackSession.create({ data: { user_id: annualUser.id, content_id: annualContent.id, watch_seconds: 300, started_at: new Date() } });
+    created.playbackSessions.push(annualSession.id);
+
+    const annualPreview = await call(`/api/payouts/subscription-accrual-preview?period_month=${periodMonth}`, { token: adminToken });
+    const annualSub = (annualPreview.body.subscribers ?? []).find((s: { user_id: number }) => s.user_id === annualUser.id);
+    check("an annual plan's period amount is its price divided by 12, not the full year", annualSub?.period_amount_ngn === 2000, annualSub?.period_amount_ngn);
+  } finally {
+    // Same reasoning as the ratings-comments settings reset: these are
+    // shared, global rows, not per-fixture ones `created` tracks — always
+    // put the feature back to its off-by-default state.
+    await setMonetisationSettings({
+      "monetisation.subscription_accrual_enabled": null,
+      "monetisation.subscription_min_watch_seconds": null,
+    });
+  }
+
   // ─── Cleanup ───────────────────────────────────────────────────────────────
   await prisma.rating.deleteMany({ where: { content_id: { in: created.content } } });
   await prisma.streamSession.deleteMany({ where: { content_id: { in: created.content } } });
@@ -1746,6 +1847,10 @@ async function main() {
   await prisma.payoutLine.deleteMany({ where: { payout_run_id: { in: created.payoutRuns } } });
   await prisma.payoutRun.deleteMany({ where: { id: { in: created.payoutRuns } } });
   await prisma.earningLine.deleteMany({ where: { speaker_id: { in: created.speakers } } });
+  // Pre-existing gap, closed here: created.playbackSessions has been tracked
+  // since Prompt 14 but nothing ever actually deleted the rows it names —
+  // every past e2e run has left its playback session fixtures behind.
+  await prisma.playbackSession.deleteMany({ where: { id: { in: created.playbackSessions } } });
   await prisma.contentSpeaker.deleteMany({ where: { content_id: { in: created.content } } });
   await prisma.speaker.deleteMany({ where: { id: { in: created.speakers } } });
   await prisma.faq.deleteMany({ where: { id: { in: created.faqs } } });

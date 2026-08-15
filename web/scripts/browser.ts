@@ -543,6 +543,38 @@ async function run(browser: Browser) {
     });
   }
 
+  // ─── Subscription revenue accrual — the decision gate, and the panel it
+  // unlocks ─────────────────────────────────────────────────────────────────
+  // The deep computation (watch-time weighting, idempotency, annual-plan
+  // proration) already has 17 real assertions against the live API in
+  // scripts/e2e.ts — this checks what's specifically this layer's job: the
+  // setting renders as a real control, and the panel it gates renders
+  // correctly against this dev server's REAL current state, which is
+  // "disabled" (the honest default) — proving the off-state actually
+  // disables the Run button, not just that the page doesn't crash.
+  section("Subscription revenue accrual");
+
+  if (adminToken) {
+    const beforeMonetisationErrors = pageErrors.length;
+    await page.goto(`${BASE}/admin/settings?group=monetisation`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(500);
+    const hasAccrualControl = await page.locator("text=Subscription revenue accrual").count();
+    check("the subscription-accrual decision gate renders as a real Settings Hub control", hasAccrualControl > 0, { hasAccrualControl });
+    check("/admin/settings?group=monetisation throws no uncaught render error", pageErrors.length === beforeMonetisationErrors, pageErrors.slice(beforeMonetisationErrors));
+
+    const beforePayoutsErrors = pageErrors.length;
+    await page.goto(`${BASE}/admin/payouts`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(500);
+    await page.locator('button:has-text("Subscription Accrual")').click();
+    await page.waitForTimeout(600);
+    const hasOffWarning = await page.locator("text=/turned off/i").count();
+    check("the panel honestly shows the feature's real current (off) state", hasOffWarning > 0, { hasOffWarning });
+    const runButton = page.locator('button:has-text("Run Accrual")');
+    const runDisabled = await runButton.isDisabled().catch(() => null);
+    check("Run is actually disabled while the feature is off, not just visually", runDisabled === true, { runDisabled });
+    check("/admin/payouts (Subscription Accrual panel) throws no uncaught render error", pageErrors.length === beforePayoutsErrors, pageErrors.slice(beforePayoutsErrors));
+  }
+
   check("no uncaught page errors across the run", pageErrors.length === 0, pageErrors);
 
   await page.close();
