@@ -371,6 +371,31 @@ async function run(browser: Browser) {
     if (created) await fetch(`${API_BASE}/api/contact-requests/${created.id}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
   }
 
+  // ─── Categories — admin CRUD ────────────────────────────────────────────────
+  section("Categories");
+
+  if (adminToken) {
+    const catName = `Browser Check Cat ${Date.now()}`;
+    const createdCat = await fetch(`${API_BASE}/api/categories`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ name: catName }),
+    }).then((r) => r.json());
+    const catId = createdCat?.category?.id;
+    check("a fixture category is created for this check", typeof catId === "number", createdCat);
+
+    if (catId) {
+      const beforeCatErrors = pageErrors.length;
+      await page.goto(`${BASE}/admin/categories`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(500);
+      const hasCatRow = await page.locator(`text=${catName}`).count();
+      check("/admin/categories renders the real fixture category", hasCatRow > 0, { hasCatRow });
+      check("/admin/categories throws no uncaught render error", pageErrors.length === beforeCatErrors, pageErrors.slice(beforeCatErrors));
+
+      await fetch(`${API_BASE}/api/categories/${catId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    }
+  }
+
   check("no uncaught page errors across the run", pageErrors.length === 0, pageErrors);
 
   await page.close();

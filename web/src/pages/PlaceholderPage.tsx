@@ -30,7 +30,6 @@ const ROUTE_NOTES: Record<string, { title: string; icon: string; builtIn: string
   "/admin/pages": { title: "Pages", icon: "file", builtIn: "a future CMS prompt" },
   "/admin/landing-pages": { title: "Landing Pages", icon: "layout", builtIn: "a future CMS prompt" },
   "/admin/promotions": { title: "Promotions", icon: "megaphoneOutline", builtIn: "a future CMS prompt" },
-  "/admin/categories": { title: "Categories", icon: "folder", builtIn: "a future content-taxonomy prompt" },
   "/admin/settings": { title: "Settings", icon: "settings", builtIn: "Prompt 07 — Settings & Modules" },
   "/admin/settings/modules": { title: "Modules", icon: "toggle", builtIn: "Prompt 07 — Settings & Modules" },
   "/admin/instructors/applications": { title: "Instructor Applications", icon: "clipboard", builtIn: "Prompt 06 — Instructor Portal" },

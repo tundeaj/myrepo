@@ -67,6 +67,7 @@ const Plans = lazy(() => import("./pages/plans/Plans").then((m) => ({ default: m
 const Coupons = lazy(() => import("./pages/coupons/Coupons").then((m) => ({ default: m.Coupons })));
 const Faqs = lazy(() => import("./pages/faqs/Faqs").then((m) => ({ default: m.Faqs })));
 const ContactRequests = lazy(() => import("./pages/contact/ContactRequests").then((m) => ({ default: m.ContactRequests })));
+const Categories = lazy(() => import("./pages/categories/Categories").then((m) => ({ default: m.Categories })));
 const Payouts = lazy(() => import("./pages/payouts/Payouts").then((m) => ({ default: m.Payouts })));
 const SubscriberAnalytics = lazy(() => import("./pages/analytics/SubscriberAnalytics").then((m) => ({ default: m.SubscriberAnalytics })));
 const Invoices = lazy(() => import("./pages/revenue/Invoices").then((m) => ({ default: m.Invoices })));
@@ -90,7 +91,6 @@ const PLACEHOLDER_PATHS = [
   "pages",
   "landing-pages",
   "promotions",
-  "categories",
 ];
 
 function RouteFallback() {
@@ -145,6 +145,7 @@ export function App() {
           <Route path="coupons" element={<Coupons />} />
           <Route path="faqs" element={<Faqs />} />
           <Route path="contact-requests" element={<ContactRequests />} />
+          <Route path="categories" element={<Categories />} />
           <Route path="payouts" element={<Payouts />} />
           <Route path="analytics/subscribers" element={<SubscriberAnalytics />} />
           <Route path="invoices" element={<Invoices />} />

@@ -97,6 +97,7 @@ const created = {
   payoutRuns: [] as number[],
   faqs: [] as number[],
   contactRequests: [] as number[],
+  categories: [] as number[],
 };
 
 async function makeContent(accessLevel: string, extra: Record<string, unknown> = {}) {
@@ -1515,6 +1516,53 @@ async function main() {
   check("deleting an already-deleted contact request is refused", deleteContactAgain.status === 404, deleteContactAgain.body);
   created.contactRequests = created.contactRequests.filter((id) => id !== contactId); // already gone, keep the cleanup list honest
 
+  // ─── Categories — admin CRUD ────────────────────────────────────────────────
+  section("Categories — admin CRUD");
+
+  const viewerCatCreate = await call("/api/categories", { method: "POST", token: sessionToken, body: { name: `E2E Cat Viewer ${RUN}` } });
+  check("a signed-in VIEWER cannot create a category", viewerCatCreate.status === 403, viewerCatCreate.body);
+
+  const quickCreate = await call("/api/categories", { method: "POST", token: adminToken, body: { name: `E2E Cat ${RUN}` } });
+  check("the classification panel's quick-create (name only) still works unchanged", quickCreate.status === 201 && quickCreate.body.category?.is_active === true, quickCreate.body);
+  const catId = quickCreate.body.category?.id;
+  if (catId) created.categories.push(catId);
+
+  const activeList = await call("/api/categories", { token: adminToken });
+  const activeIds = (activeList.body.categories ?? []).map((c: { id: number }) => c.id);
+  check("the default (active-only) list includes the new category", activeIds.includes(catId), activeIds.slice(0, 5));
+
+  const updateCat = await call(`/api/categories/${catId}`, {
+    method: "PUT",
+    token: adminToken,
+    body: { name: `E2E Cat Renamed ${RUN}`, is_active: false, display_order: 5, show_as_tile: true },
+  });
+  check("updating a category succeeds", updateCat.status === 200 && updateCat.body.category?.name === `E2E Cat Renamed ${RUN}`, updateCat.body);
+
+  const catAfterUpdate = await prisma.category.findUnique({ where: { id: catId } });
+  check("the slug does NOT change on rename — existing /browse/:slug links keep working", catAfterUpdate?.slug === quickCreate.body.category?.slug, { before: quickCreate.body.category?.slug, after: catAfterUpdate?.slug });
+
+  const activeListAfterDeactivate = await call("/api/categories", { token: adminToken });
+  const activeIdsAfter = (activeListAfterDeactivate.body.categories ?? []).map((c: { id: number }) => c.id);
+  check("a deactivated category drops out of the default (active-only) list", !activeIdsAfter.includes(catId), activeIdsAfter.slice(0, 5));
+
+  const allList = await call("/api/categories?all=1", { token: adminToken });
+  const allIds = (allList.body.categories ?? []).map((c: { id: number }) => c.id);
+  check("?all=1 still includes the deactivated category, for the admin page", allIds.includes(catId), allIds.slice(0, 5));
+
+  const catTaggedContent = await makeContent("public", { slug: `e2e-cat-tagged-${RUN}` });
+  await prisma.contentCategory.create({ data: { content_id: catTaggedContent.id, category_id: catId } });
+
+  const deleteInUse = await call(`/api/categories/${catId}`, { method: "DELETE", token: adminToken });
+  check("deleting a category still tagged to content is refused", deleteInUse.status === 409, deleteInUse.body);
+
+  await prisma.contentCategory.deleteMany({ where: { category_id: catId, content_id: catTaggedContent.id } });
+  const deleteUnused = await call(`/api/categories/${catId}`, { method: "DELETE", token: adminToken });
+  check("deleting a category with nothing tagged to it succeeds", deleteUnused.status === 200, deleteUnused.body);
+  created.categories = created.categories.filter((id) => id !== catId); // already gone, keep the cleanup list honest
+
+  const deleteCatAgain = await call(`/api/categories/${catId}`, { method: "DELETE", token: adminToken });
+  check("deleting an already-deleted category is refused", deleteCatAgain.status === 404, deleteCatAgain.body);
+
   // ─── Cleanup ───────────────────────────────────────────────────────────────
   await prisma.rating.deleteMany({ where: { content_id: { in: created.content } } });
   await prisma.streamSession.deleteMany({ where: { content_id: { in: created.content } } });
@@ -1536,6 +1584,8 @@ async function main() {
   await prisma.speaker.deleteMany({ where: { id: { in: created.speakers } } });
   await prisma.faq.deleteMany({ where: { id: { in: created.faqs } } });
   await prisma.contactRequest.deleteMany({ where: { id: { in: created.contactRequests } } });
+  await prisma.contentCategory.deleteMany({ where: { category_id: { in: created.categories } } });
+  await prisma.category.deleteMany({ where: { id: { in: created.categories } } });
   await prisma.contentItem.deleteMany({ where: { id: { in: created.content } } });
   await prisma.plan.deleteMany({ where: { id: { in: created.plans } } });
   await prisma.coupon.deleteMany({ where: { id: { in: created.coupons } } });
