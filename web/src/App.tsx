@@ -71,6 +71,7 @@ const Categories = lazy(() => import("./pages/categories/Categories").then((m) =
 const Sponsors = lazy(() => import("./pages/sponsors/Sponsors").then((m) => ({ default: m.Sponsors })));
 const Advertisers = lazy(() => import("./pages/advertisers/Advertisers").then((m) => ({ default: m.Advertisers })));
 const Ads = lazy(() => import("./pages/ads/Ads").then((m) => ({ default: m.Ads })));
+const RatingComments = lazy(() => import("./pages/moderation/RatingComments").then((m) => ({ default: m.RatingComments })));
 const Payouts = lazy(() => import("./pages/payouts/Payouts").then((m) => ({ default: m.Payouts })));
 const SubscriberAnalytics = lazy(() => import("./pages/analytics/SubscriberAnalytics").then((m) => ({ default: m.SubscriberAnalytics })));
 const Invoices = lazy(() => import("./pages/revenue/Invoices").then((m) => ({ default: m.Invoices })));
@@ -149,6 +150,7 @@ export function App() {
           <Route path="sponsors" element={<Sponsors />} />
           <Route path="advertisers" element={<Advertisers />} />
           <Route path="ads" element={<Ads />} />
+          <Route path="ratings/moderation" element={<RatingComments />} />
           <Route path="payouts" element={<Payouts />} />
           <Route path="analytics/subscribers" element={<SubscriberAnalytics />} />
           <Route path="invoices" element={<Invoices />} />

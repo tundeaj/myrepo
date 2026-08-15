@@ -1633,6 +1633,102 @@ async function main() {
   check("deleting an advertiser with no ads left succeeds", deleteAdvertiserNowUnused.status === 200, deleteAdvertiserNowUnused.body);
   created.advertisers = created.advertisers.filter((id) => id !== advertiserId);
 
+  // ─── Ratings — comment moderation (a policy decision exposed as a real
+  // admin setting, content_policy.rating_comments_mode, rather than
+  // hardcoded) ──────────────────────────────────────────────────────────────
+  section("Ratings — comment moderation");
+
+  async function setCommentMode(mode: string | null) {
+    const res = await call("/api/settings/content_policy", {
+      method: "PUT",
+      token: adminToken,
+      body: { values: { "content_policy.rating_comments_mode": mode } },
+    });
+    if (res.status !== 200) throw new Error(`Failed to set rating_comments_mode: ${JSON.stringify(res.body)}`);
+  }
+
+  try {
+    // Mode: review_required — a comment sits 'pending' until an admin acts,
+    // and never appears on the public detail page until approved.
+    await setCommentMode("review_required");
+
+    const reviewItem = await makeContent("public", { slug: `e2e-review-mode-${RUN}` });
+    const pendingRate = await call("/api/ratings", {
+      method: "POST",
+      token: sessionToken,
+      body: { content_id: reviewItem.id, score: 4, comment: `A pending comment ${RUN}` },
+    });
+    check("rating with a comment under review_required is accepted", pendingRate.status === 201 && pendingRate.body.comment_mode === "review_required", pendingRate.body);
+
+    const pendingPersisted = await prisma.rating.findFirst({ where: { content_id: reviewItem.id } });
+    check("the comment is stored as 'pending', not shown yet", pendingPersisted?.comment_status === "pending", pendingPersisted?.comment_status);
+
+    const detailBeforeApproval = await call(`/api/content/${reviewItem.slug}`);
+    check("a pending comment does not appear on the public detail page yet", (detailBeforeApproval.body.reviews ?? []).length === 0, detailBeforeApproval.body.reviews);
+
+    const viewerModQueue = await call("/api/ratings-moderation?status=pending", { token: sessionToken });
+    check("a signed-in VIEWER cannot see the moderation queue", viewerModQueue.status === 403, viewerModQueue.body);
+
+    const pendingQueue = await call("/api/ratings-moderation?status=pending", { token: adminToken });
+    const pendingIds = (pendingQueue.body.ratings ?? []).map((r: { id: number }) => r.id);
+    check("the pending comment shows up in the admin moderation queue", pendingIds.includes(pendingPersisted!.id), pendingIds);
+
+    const badFilter = await call("/api/ratings-moderation?status=not-a-real-status", { token: adminToken });
+    check("an invalid moderation status filter is rejected", badFilter.status === 400, badFilter.body);
+
+    const approve = await call(`/api/ratings-moderation/${pendingPersisted!.id}`, { method: "PUT", token: adminToken, body: { status: "approved" } });
+    check("approving the comment succeeds", approve.status === 200 && approve.body.rating?.comment_status === "approved", approve.body);
+
+    const detailAfterApproval = await call(`/api/content/${reviewItem.slug}`);
+    const approvedReviews = detailAfterApproval.body.reviews ?? [];
+    check("the approved comment now appears on the public detail page", approvedReviews.some((r: { comment: string }) => r.comment === `A pending comment ${RUN}`), approvedReviews);
+    check("the reviewer is shown by first name only, not their email", approvedReviews[0]?.reviewer && !approvedReviews[0].reviewer.includes("@"), approvedReviews[0]);
+
+    const scoreUnaffected = await prisma.contentItem.findUnique({ where: { id: reviewItem.id }, select: { avg_rating: true, rating_count: true } });
+    check("moderating the comment never touched the score aggregate", Number(scoreUnaffected?.avg_rating) === 4 && scoreUnaffected?.rating_count === 1, scoreUnaffected);
+
+    // Reject flow, on a second viewer's rating of the same item.
+    const rejectItem = await makeContent("public", { slug: `e2e-review-reject-${RUN}` });
+    const rejectRate = await call("/api/ratings", { method: "POST", token: sessionToken, body: { content_id: rejectItem.id, score: 2, comment: `A rejected comment ${RUN}` } });
+    const rejectRatingId = (await prisma.rating.findFirst({ where: { content_id: rejectItem.id } }))!.id;
+    void rejectRate;
+
+    const moderateNoComment = await call(`/api/ratings-moderation/999999999`, { method: "PUT", token: adminToken, body: { status: "approved" } });
+    check("moderating a rating that doesn't exist 404s", moderateNoComment.status === 404, moderateNoComment.body);
+
+    const reject = await call(`/api/ratings-moderation/${rejectRatingId}`, { method: "PUT", token: adminToken, body: { status: "rejected" } });
+    check("rejecting a comment succeeds", reject.status === 200 && reject.body.rating?.comment_status === "rejected", reject.body);
+
+    const detailAfterReject = await call(`/api/content/${rejectItem.slug}`);
+    check("a rejected comment never appears on the public detail page", (detailAfterReject.body.reviews ?? []).length === 0, detailAfterReject.body.reviews);
+
+    // Mode: auto_publish — a comment is approved the instant it's written.
+    await setCommentMode("auto_publish");
+    const autoItem = await makeContent("public", { slug: `e2e-review-auto-${RUN}` });
+    const autoRate = await call("/api/ratings", { method: "POST", token: sessionToken, body: { content_id: autoItem.id, score: 5, comment: `An auto-published comment ${RUN}` } });
+    check("under auto_publish, comment_mode is reported back as auto_publish", autoRate.body.comment_mode === "auto_publish", autoRate.body);
+    check("under auto_publish, the rating itself comes back already 'approved'", autoRate.body.rating?.comment_status === "approved", autoRate.body.rating);
+
+    const detailAuto = await call(`/api/content/${autoItem.slug}`);
+    check("an auto_publish comment appears immediately, no admin action needed", (detailAuto.body.reviews ?? []).some((r: { comment: string }) => r.comment === `An auto-published comment ${RUN}`), detailAuto.body.reviews);
+
+    // Mode: hidden (the default) — even an already-approved comment from
+    // when a different mode was active stops showing. This is a live
+    // policy check, not a snapshot of the comment's own historical status.
+    await setCommentMode("hidden");
+    const detailHidden = await call(`/api/content/${autoItem.slug}`);
+    check("switching back to hidden mode hides even a previously-approved comment", (detailHidden.body.reviews ?? []).length === 0, detailHidden.body.reviews);
+
+    const stillApprovedInDb = await prisma.rating.findFirst({ where: { content_id: autoItem.id } });
+    check("hidden mode is a display gate, not a data change — the row is still 'approved' underneath", stillApprovedInDb?.comment_status === "approved", stillApprovedInDb?.comment_status);
+  } finally {
+    // However the assertions above went, the settings table is a shared,
+    // untracked-by-`created` global row — reset it back to its default so
+    // no later run (or a human poking at the dev server) inherits a
+    // moderation mode this suite happened to leave switched on.
+    await setCommentMode(null);
+  }
+
   // ─── Cleanup ───────────────────────────────────────────────────────────────
   await prisma.rating.deleteMany({ where: { content_id: { in: created.content } } });
   await prisma.streamSession.deleteMany({ where: { content_id: { in: created.content } } });

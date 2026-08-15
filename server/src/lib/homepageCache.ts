@@ -364,6 +364,7 @@ const PUBLIC_SETTING_KEYS = [
   "brand.primary_colour",
   "brand.accent_colour",
   "integrations.imagekit_url_endpoint",
+  "content_policy.rating_comments_mode",
 ] as const;
 
 const SETTING_FALLBACKS: Record<string, string> = {
@@ -378,6 +379,7 @@ const SETTING_FALLBACKS: Record<string, string> = {
   "brand.primary_colour": "#E50914",
   "brand.accent_colour": "#F5C518",
   "integrations.imagekit_url_endpoint": "",
+  "content_policy.rating_comments_mode": "hidden",
 };
 
 export async function publicSettings(): Promise<Record<string, string>> {

@@ -480,6 +480,12 @@ enum ContactRequestStatus {
   closed
 }
 
+enum RatingCommentStatus {
+  pending
+  approved
+  rejected
+}
+
 enum ModuleTier {
   core
   growth
@@ -1297,12 +1303,19 @@ model PostComment {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 model Rating {
-  id          Int      @id @default(autoincrement())
-  user_id     Int
-  content_id  Int
-  score       Int
-  comment     String?  @db.Text
-  created_at  DateTime @default(now())
+  id             Int                 @id @default(autoincrement())
+  user_id        Int
+  content_id     Int
+  score          Int
+  comment        String?             @db.Text
+  /// Governed by the content_policy.rating_comments_mode setting — see
+  /// routes/ratings.ts. 'auto_publish' mode sets this to 'approved' the
+  /// moment a comment is written; 'review_required' leaves it 'pending'
+  /// until an admin acts; 'hidden' mode never surfaces a comment publicly
+  /// regardless of this value. Re-set on every write a comment changes on,
+  /// not preserved across edits — an edited comment needs fresh review.
+  comment_status RatingCommentStatus @default(pending)
+  created_at     DateTime            @default(now())
 
   @@unique([user_id, content_id])
   @@index([content_id])

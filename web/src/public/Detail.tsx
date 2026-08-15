@@ -89,6 +89,7 @@ interface DetailPayload extends PublicBootstrap {
     polls_enabled: boolean;
     allow_anonymous_qa: boolean;
   } | null;
+  reviews: { id: number; score: number; comment: string | null; created_at: string; reviewer: string }[];
   access: AccessResult;
 }
 
@@ -256,16 +257,29 @@ function Speakers({ speakers }: { speakers: DetailSpeaker[] }) {
  * 403, not as the actual enforcement — the server decides, same as every
  * other access-gated action in this app.
  */
-function RatingWidget({ contentId }: { contentId: number }) {
+/** "hidden" is the default and matches this app's behavior before comment
+ *  moderation existed at all — nothing changes publicly until an admin
+ *  opts in via Settings → Content Policy → Rating comments. */
+type CommentMode = "hidden" | "auto_publish" | "review_required";
+
+function RatingWidget({ contentId, commentMode }: { contentId: number; commentMode: CommentMode }) {
   const [myScore, setMyScore] = useState<number | null>(null);
   const [hoverScore, setHoverScore] = useState<number | null>(null);
+  const [comment, setComment] = useState("");
+  const [commentStatus, setCommentStatus] = useState<"pending" | "approved" | "rejected" | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    api<{ rating: { score: number } | null }>(`/ratings/mine?content_id=${contentId}`)
-      .then((res) => { if (!cancelled) { setMyScore(res.rating?.score ?? null); setLoaded(true); } })
+    api<{ rating: { score: number; comment: string | null; comment_status: "pending" | "approved" | "rejected" } | null }>(`/ratings/mine?content_id=${contentId}`)
+      .then((res) => {
+        if (cancelled) return;
+        setMyScore(res.rating?.score ?? null);
+        setComment(res.rating?.comment ?? "");
+        setCommentStatus(res.rating?.comment_status ?? null);
+        setLoaded(true);
+      })
       .catch(() => { if (!cancelled) setLoaded(true); });
     return () => { cancelled = true; };
   }, [contentId]);
@@ -275,7 +289,11 @@ function RatingWidget({ contentId }: { contentId: number }) {
     const previous = myScore;
     setMyScore(score); // optimistic — a rating click should feel instant
     try {
-      await api("/ratings", { method: "POST", body: JSON.stringify({ content_id: contentId, score }) });
+      const res = await api<{ comment_mode: CommentMode }>("/ratings", {
+        method: "POST",
+        body: JSON.stringify({ content_id: contentId, score, comment: comment.trim() || null }),
+      });
+      setCommentStatus(res.comment_mode === "auto_publish" ? "approved" : comment.trim() ? "pending" : null);
     } catch {
       setMyScore(previous); // failed silently reverts rather than lying about what saved
     } finally {
@@ -304,6 +322,46 @@ function RatingWidget({ contentId }: { contentId: number }) {
           >
             ★
           </button>
+        ))}
+      </div>
+
+      {commentMode !== "hidden" && myScore && (
+        <div className="space-y-1.5 pt-1">
+          <textarea
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            onBlur={() => { if (myScore) rate(myScore); }}
+            placeholder="Add a written review (optional)…"
+            maxLength={2000}
+            className="w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600 focus:border-brand focus:outline-none"
+            rows={2}
+          />
+          {commentStatus === "pending" && (
+            <p className="text-xs text-slate-600">Your review is awaiting approval before it's shown publicly.</p>
+          )}
+          {commentStatus === "rejected" && (
+            <p className="text-xs text-slate-600">Your review wasn't approved for public display. Your star rating still counts.</p>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ReviewsList({ reviews }: { reviews: DetailPayload["reviews"] }) {
+  if (!reviews.length) return null;
+  return (
+    <section className="space-y-3">
+      <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Reviews</h2>
+      <div className="space-y-4">
+        {reviews.map((r) => (
+          <div key={r.id} className="border-b border-slate-800 pb-4 last:border-0">
+            <div className="flex items-center gap-2">
+              <span className="text-amber-400 text-sm">{"★".repeat(r.score)}{"☆".repeat(5 - r.score)}</span>
+              <span className="text-xs text-slate-500">{r.reviewer}</span>
+            </div>
+            {r.comment && <p className="mt-1.5 text-sm text-slate-400">{r.comment}</p>}
+          </div>
         ))}
       </div>
     </section>
@@ -521,8 +579,9 @@ export function Detail() {
   if (loading) return <PublicPageSkeleton />;
   if (error || !data) return <PublicError kind={error ?? "failed"} onRetry={retry} />;
 
-  const { content, speakers, categories, curriculum, session_config, access } = data;
+  const { content, speakers, categories, curriculum, session_config, reviews, access, settings } = data;
   const liveAccess = accessOverride ?? access;
+  const ratingCommentMode = (settings["content_policy.rating_comments_mode"] as CommentMode | undefined) ?? "hidden";
   const heroImage = buildImageUrl(content.master_image_url, 1600);
   const isLive = LIVE_STATUSES.has(content.status);
 
@@ -609,7 +668,9 @@ export function Detail() {
 
         <Speakers speakers={speakers} />
 
-        {liveAccess.can_view && getToken() && <RatingWidget contentId={content.id} />}
+        {liveAccess.can_view && getToken() && <RatingWidget contentId={content.id} commentMode={ratingCommentMode} />}
+
+        <ReviewsList reviews={reviews} />
 
         <ContentFaqs contentId={content.id} />
 

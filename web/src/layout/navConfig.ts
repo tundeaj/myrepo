@@ -57,6 +57,7 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { labelKey: "nav.spaces", icon: "message", path: "/admin/community/spaces" },
       { labelKey: "nav.posts_moderation", icon: "shield", path: "/admin/community/moderation" },
+      { labelKey: "nav.rating_comments", icon: "shield", path: "/admin/ratings/moderation" },
     ],
   },
   {

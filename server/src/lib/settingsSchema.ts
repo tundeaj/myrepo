@@ -114,6 +114,18 @@ export const SETTINGS_FIELDS: Record<string, SettingField[]> = {
   content_policy: [
     { key: "content_policy.review_required", label: "Review required before publish", helper: "Instructor-submitted content must be approved before it goes live.", control: "toggle", default: "false" },
     { key: "content_policy.new_badge_days", label: "\"New\" badge window (days)", helper: "How long newly published content shows a New badge.", control: "number", default: "7", min: 1, max: 60 },
+    {
+      key: "content_policy.rating_comments_mode",
+      label: "Rating comments",
+      helper: "Whether a viewer's optional written comment on a rating is ever shown publicly, and if so, whether it needs approval first.",
+      control: "select",
+      default: "hidden",
+      options: [
+        { value: "hidden", label: "Hidden — stored, but never shown publicly" },
+        { value: "auto_publish", label: "Published immediately, no review" },
+        { value: "review_required", label: "Held for admin approval before publishing" },
+      ],
+    },
   ],
   notifications: [
     { key: "notifications.sender_name", label: "Sender name", helper: "The \"From\" name on platform emails.", control: "text", default: "Webinarflix" },

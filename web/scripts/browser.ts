@@ -466,6 +466,83 @@ async function run(browser: Browser) {
     }
   }
 
+  // ─── Ratings comment moderation — the decision gate itself ─────────────────
+  // Two things worth proving in a real browser: the policy setting renders
+  // as a real, savable control in the generic Settings Hub (not just a raw
+  // API field nobody can reach), and the moderation queue page it unlocks
+  // actually renders a real pending comment.
+  section("Ratings comment moderation");
+
+  if (adminToken) {
+    const beforeSettingsErrors = pageErrors.length;
+    await page.goto(`${BASE}/admin/settings?group=content_policy`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(500);
+    const hasModeControl = await page.locator("text=Rating comments").count();
+    check("the rating-comments decision gate renders as a real Settings Hub control", hasModeControl > 0, { hasModeControl });
+    check("/admin/settings?group=content_policy throws no uncaught render error", pageErrors.length === beforeSettingsErrors, pageErrors.slice(beforeSettingsErrors));
+
+    // Real fixture: switch to review_required, submit a commented rating,
+    // confirm it lands in the moderation queue's rendered page.
+    await fetch(`${API_BASE}/api/settings/content_policy`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ values: { "content_policy.rating_comments_mode": "review_required" } }),
+    });
+
+    // A real, throwaway public-access session — not an arbitrary real
+    // seeded one, since rating requires resolveAccess(...).can_view and
+    // this app has no admin bypass for that check (same access ladder
+    // applies to every signed-in user, admins included).
+    const createdSession = await fetch(`${API_BASE}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({
+        title: `Browser check moderation fixture ${Date.now()}`,
+        access_level: "public",
+        // A fresh session defaults to status: "draft", which resolveAccess
+        // treats as not-yet-visible regardless of access_level — same
+        // VISIBLE_STATUSES gate every public page respects. Without this,
+        // the rating POST below would 403.
+        status: "registration_open",
+        scheduled_start_at: new Date(Date.now() + 86400000).toISOString(),
+        scheduled_duration_minutes: 60,
+      }),
+    }).then((r) => r.json());
+    const targetContentId = createdSession?.session?.id;
+    check("a fixture public session is created to rate", typeof targetContentId === "number", createdSession);
+
+    if (targetContentId) {
+      const commentText = `Browser check pending comment ${Date.now()}`;
+      await fetch(`${API_BASE}/api/ratings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ content_id: targetContentId, score: 3, comment: commentText }),
+      });
+
+      const beforeQueueErrors = pageErrors.length;
+      await page.goto(`${BASE}/admin/ratings/moderation`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(500);
+      const hasCommentRow = await page.locator(`text=${commentText}`).count();
+      check("the moderation queue renders the real pending comment", hasCommentRow > 0, { hasCommentRow });
+      check("/admin/ratings/moderation throws no uncaught render error", pageErrors.length === beforeQueueErrors, pageErrors.slice(beforeQueueErrors));
+
+      // Clean up: withdraw the rating first (DELETE /api/sessions/:id
+      // doesn't cascade-delete ratings — see deleteRelated() — so skipping
+      // this would leave an orphaned row behind), then delete the fixture
+      // session itself.
+      await fetch(`${API_BASE}/api/ratings/${targetContentId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+      await fetch(`${API_BASE}/api/sessions/${targetContentId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    }
+
+    // Reset the decision gate back to its default — this check shouldn't
+    // leave the live dev server's moderation policy switched on.
+    await fetch(`${API_BASE}/api/settings/content_policy`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ values: { "content_policy.rating_comments_mode": null } }),
+    });
+  }
+
   check("no uncaught page errors across the run", pageErrors.length === 0, pageErrors);
 
   await page.close();

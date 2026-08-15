@@ -215,6 +215,40 @@ contentRouter.get("/:slug", async (req: Request, res: Response, next: NextFuncti
 
     const { capacity: _capacity, outcomes_json, cert_config_json, ...safe } = content;
 
+    // A rating's written comment is only ever shown when the current
+    // content_policy.rating_comments_mode setting says so — checked live,
+    // not from whatever the comment's own comment_status happened to be
+    // set to under a since-changed policy. Only ever comment_status:
+    // 'approved' rows — under 'auto_publish' that's set the moment a
+    // comment is written; under 'review_required' only after an admin
+    // acts; under 'hidden' this query never runs at all.
+    const reviews =
+      settings["content_policy.rating_comments_mode"] === "hidden"
+        ? []
+        : await (async () => {
+            const rows = await prisma.rating.findMany({
+              where: { content_id: content.id, comment_status: "approved", comment: { not: null } },
+              orderBy: { created_at: "desc" },
+              take: 20,
+              select: { id: true, score: true, comment: true, created_at: true, user_id: true },
+            });
+            if (!rows.length) return [];
+            const users = await prisma.user.findMany({
+              where: { id: { in: rows.map((r) => r.user_id) } },
+              select: { id: true, full_name: true },
+            });
+            const nameById = new Map(users.map((u) => [u.id, u.full_name]));
+            return rows.map((r) => ({
+              id: r.id,
+              score: r.score,
+              comment: r.comment,
+              created_at: r.created_at,
+              // First name only — a reviewer's full identity isn't this
+              // page's business to publish.
+              reviewer: nameById.get(r.user_id)?.trim().split(/\s+/)[0] || "A viewer",
+            }));
+          })();
+
     res.setHeader("Cache-Control", "public, max-age=60");
     res.json({
       content: {
@@ -235,6 +269,7 @@ contentRouter.get("/:slug", async (req: Request, res: Response, next: NextFuncti
       categories,
       curriculum,
       session_config: sessionConfig,
+      reviews,
       access,
       settings,
       strings,
