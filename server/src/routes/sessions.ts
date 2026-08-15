@@ -432,6 +432,85 @@ sessionsRouter.post("/:id/reveal-restream-key/:targetId", async (req: Request, r
   }
 });
 
+// ─── POST /sessions/:id/go-live and /end-live ─────────────────────────────────
+//
+// Scope, stated plainly: there is no actual RTMP ingest integration in this
+// codebase — stream_provider/stream_key/playback_id are metadata the admin
+// types in for their own external encoder setup (see StreamSourcePanel), not
+// something this app provisions by calling a real provider's API. These two
+// actions are the missing piece on THIS side of that boundary: the moment an
+// admin has actually started pushing a stream elsewhere and wants the product
+// to reflect it, and the moment they're done. They flip content_items.status
+// and create/close the matching stream_sessions row — the row Prompt-era
+// schema had already defined but nothing ever wrote to.
+//
+// peak_viewers, avg_viewers, avg_bitrate_kbps, dropped_frames and
+// reconnect_count are deliberately left at their defaults here. Computing a
+// real "peak concurrent viewers" needs periodic sampling this app has no
+// scheduler to run; writing a single point-in-time count into a field named
+// "peak" would be a fabricated number dressed as a measurement. What CAN be
+// honestly derived — status, started_at, ended_at, duration_seconds — is
+// exactly what gets written and nothing more.
+
+const LIVE_STARTABLE = new Set(["scheduled", "registration_open", "starting_soon"]);
+
+sessionsRouter.post("/:id/go-live", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const id = Number(req.params.id);
+    if (!id) throw new ApiError(400, "Invalid session id");
+
+    const item = await prisma.contentItem.findFirst({ where: { id, content_type: "webinar" } });
+    if (!item) throw new ApiError(404, "Session not found");
+    if (!LIVE_STARTABLE.has(item.status)) {
+      throw new ApiError(409, `Can't go live from "${item.status}". Only a scheduled or registration-open session can go live.`);
+    }
+
+    const [updated] = await prisma.$transaction([
+      prisma.contentItem.update({ where: { id }, data: { status: "live" } }),
+      prisma.streamSession.create({ data: { content_id: id, status: "running", started_at: new Date() } }),
+    ]);
+    res.json({ session: buildSessionShape(updated) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+sessionsRouter.post("/:id/end-live", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const id = Number(req.params.id);
+    if (!id) throw new ApiError(400, "Invalid session id");
+
+    const item = await prisma.contentItem.findFirst({ where: { id, content_type: "webinar" } });
+    if (!item) throw new ApiError(404, "Session not found");
+    if (item.status !== "live") throw new ApiError(409, `Can't end a session that isn't live (currently "${item.status}").`);
+
+    const running = await prisma.streamSession.findFirst({
+      where: { content_id: id, status: "running" },
+      orderBy: { started_at: "desc" },
+    });
+
+    const updates: Promise<unknown>[] = [prisma.contentItem.update({ where: { id }, data: { status: "ended" } })];
+    if (running) {
+      const endedAt = new Date();
+      const durationSeconds = running.started_at ? Math.round((endedAt.getTime() - running.started_at.getTime()) / 1000) : null;
+      updates.push(
+        prisma.streamSession.update({
+          where: { id: running.id },
+          data: { status: "completed", ended_at: endedAt, duration_seconds: durationSeconds },
+        }),
+      );
+    }
+    // No running stream_sessions row is possible only if status was forced to
+    // "live" outside go-live (e.g. a raw update) — content still ends cleanly
+    // rather than refusing the admin's End Session click over a bookkeeping gap.
+
+    const [updated] = await Promise.all(updates);
+    res.json({ session: buildSessionShape(updated as Record<string, any>) });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 async function fetchFullSession(id: number) {

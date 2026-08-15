@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useNavigate, useParams, useBlocker } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../../lib/api";
 import { useAutosave } from "../../hooks/useAutosave";
 import { useToast } from "../../components/Toast";
@@ -336,6 +336,8 @@ function validate(form: FormState): Record<string, string> {
   return errors;
 }
 
+const LIVE_STARTABLE = new Set(["scheduled", "registration_open", "starting_soon"]);
+
 // ─── Component ────────────────────────────────────────────────────────────────
 export function AddEditSession() {
   const { id } = useParams<{ id: string }>();
@@ -354,10 +356,21 @@ export function AddEditSession() {
   const [isDirty, setIsDirty] = useState(false);
   const savedFormRef = useRef<FormState | null>(null);
 
-  // Block navigation when dirty
-  useBlocker(({ currentLocation, nextLocation }) => {
-    return isDirty && currentLocation.pathname !== nextLocation.pathname;
-  });
+  // Warn on tab close / reload while dirty. useBlocker (react-router) needs a
+  // data router (createBrowserRouter + RouterProvider) to work at all — this
+  // app's main.tsx uses plain BrowserRouter, so calling useBlocker here threw
+  // "useBlocker must be used within a data router" on every render, crashing
+  // this entire page with no error boundary to catch it. Confirmed via a real
+  // browser check, not a type error — tsc has no way to see this. The native
+  // beforeunload event needs no router at all and covers the highest-cost
+  // case (losing everything since the last save, not just the last ~30s
+  // autosave already protects against for in-app navigation).
+  useEffect(() => {
+    if (!isDirty) return;
+    const handler = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [isDirty]);
 
   // Load existing session for edit mode
   useEffect(() => {
@@ -455,6 +468,39 @@ export function AddEditSession() {
     if (!errors.title) navigate("/admin/sessions");
   }
 
+  const [liveBusy, setLiveBusy] = useState(false);
+
+  async function handleGoLive() {
+    if (!sessionId) return;
+    setLiveBusy(true);
+    try {
+      const res = await api<{ session: Record<string, any> }>(`/sessions/${sessionId}/go-live`, { method: "POST" });
+      setForm((f) => ({ ...f, status: res.session.status as ContentStatus }));
+      if (savedFormRef.current) savedFormRef.current = { ...savedFormRef.current, status: res.session.status };
+      toast("Session is live.", "success");
+    } catch (err: any) {
+      toast(err.message ?? "Failed to go live.", "error");
+    } finally {
+      setLiveBusy(false);
+    }
+  }
+
+  async function handleEndLive() {
+    if (!sessionId) return;
+    if (!confirm("End this live session? Registrants will no longer see it as live.")) return;
+    setLiveBusy(true);
+    try {
+      const res = await api<{ session: Record<string, any> }>(`/sessions/${sessionId}/end-live`, { method: "POST" });
+      setForm((f) => ({ ...f, status: res.session.status as ContentStatus }));
+      if (savedFormRef.current) savedFormRef.current = { ...savedFormRef.current, status: res.session.status };
+      toast("Live session ended.", "success");
+    } catch (err: any) {
+      toast(err.message ?? "Failed to end the live session.", "error");
+    } finally {
+      setLiveBusy(false);
+    }
+  }
+
   if (loading) {
     return (
       <div className="space-y-4">
@@ -493,6 +539,28 @@ export function AddEditSession() {
         <div className="flex items-center gap-3">
           {/* Autosave status */}
           <AutosaveIndicator status={autosaveStatus} />
+
+          {isEdit && form.status === "live" && (
+            <button
+              type="button"
+              disabled={liveBusy}
+              onClick={handleEndLive}
+              className="rounded-lg border border-red-800 px-3 py-1.5 text-sm font-medium text-red-300 hover:bg-red-900/30 disabled:opacity-50"
+            >
+              {liveBusy ? "Ending…" : "End Live Session"}
+            </button>
+          )}
+          {isEdit && LIVE_STARTABLE.has(form.status) && (
+            <button
+              type="button"
+              disabled={liveBusy}
+              onClick={handleGoLive}
+              className="flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-50"
+            >
+              <span className="h-1.5 w-1.5 rounded-full bg-white" />
+              {liveBusy ? "Going live…" : "Go Live"}
+            </button>
+          )}
 
           <button
             type="button"

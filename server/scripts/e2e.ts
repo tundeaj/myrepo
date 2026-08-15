@@ -1241,6 +1241,53 @@ async function main() {
   const runAfterFailedProcess = await call(`/api/payouts/runs/${run2Id}`, { token: adminToken });
   check("a refused process attempt leaves the run 'approved', not stuck mid-way", runAfterFailedProcess.body.run?.status === "approved", runAfterFailedProcess.body.run);
 
+  // ─── Live sessions — go-live / end-live ────────────────────────────────────
+  section("Live sessions — go-live / end-live");
+
+  const liveTarget = await makeContent("registered", { slug: `e2e-golive-${RUN}`, status: "registration_open" });
+
+  const viewerGoLiveAttempt = await call(`/api/sessions/${liveTarget.id}/go-live`, { method: "POST", token: sessionToken });
+  check("a signed-in VIEWER cannot start a live session", viewerGoLiveAttempt.status === 403, viewerGoLiveAttempt.body);
+
+  const draftForLive = await makeContent("registered", { slug: `e2e-golive-draft-${RUN}`, status: "draft" });
+  const draftGoLive = await call(`/api/sessions/${draftForLive.id}/go-live`, { method: "POST", token: adminToken });
+  check("a DRAFT session can't go live directly", draftGoLive.status === 409, draftGoLive.body);
+
+  const courseItem = await prisma.contentItem.create({
+    data: { content_type: "course", title: `E2E course ${RUN}`, slug: `e2e-golive-course-${RUN}`, status: "registration_open" },
+  });
+  created.content.push(courseItem.id);
+  const courseGoLive = await call(`/api/sessions/${courseItem.id}/go-live`, { method: "POST", token: adminToken });
+  check("a COURSE can't be put live through the session endpoint", courseGoLive.status === 404, courseGoLive.body);
+
+  const goLiveRes = await call(`/api/sessions/${liveTarget.id}/go-live`, { method: "POST", token: adminToken });
+  check("a registration-open session goes live", goLiveRes.status === 200 && goLiveRes.body.session?.status === "live", goLiveRes.body);
+
+  const streamSessionAfterStart = await prisma.streamSession.findFirst({ where: { content_id: liveTarget.id }, orderBy: { id: "desc" } });
+  check("a stream_sessions row is created, status running, started_at set",
+    streamSessionAfterStart?.status === "running" && streamSessionAfterStart?.started_at != null, streamSessionAfterStart);
+  check("peak/avg viewer fields are left at their honest defaults, not fabricated",
+    streamSessionAfterStart?.peak_viewers === 0 && streamSessionAfterStart?.avg_viewers === 0, streamSessionAfterStart);
+
+  const doubleGoLive = await call(`/api/sessions/${liveTarget.id}/go-live`, { method: "POST", token: adminToken });
+  check("going live twice in a row is refused", doubleGoLive.status === 409, doubleGoLive.body);
+
+  const viewerEndLiveAttempt = await call(`/api/sessions/${liveTarget.id}/end-live`, { method: "POST", token: sessionToken });
+  check("a signed-in VIEWER cannot end a live session", viewerEndLiveAttempt.status === 403, viewerEndLiveAttempt.body);
+
+  const endLiveRes = await call(`/api/sessions/${liveTarget.id}/end-live`, { method: "POST", token: adminToken });
+  check("ending a live session succeeds", endLiveRes.status === 200 && endLiveRes.body.session?.status === "ended", endLiveRes.body);
+
+  const streamSessionAfterEnd = await prisma.streamSession.findFirst({ where: { id: streamSessionAfterStart!.id } });
+  check("the SAME stream_sessions row is closed out, not a second one created",
+    streamSessionAfterEnd?.status === "completed" && streamSessionAfterEnd?.ended_at != null, streamSessionAfterEnd);
+  check("duration_seconds is a real, small, non-negative number — not fabricated",
+    typeof streamSessionAfterEnd?.duration_seconds === "number" && streamSessionAfterEnd.duration_seconds >= 0 && streamSessionAfterEnd.duration_seconds < 60,
+    streamSessionAfterEnd?.duration_seconds);
+
+  const doubleEndLive = await call(`/api/sessions/${liveTarget.id}/end-live`, { method: "POST", token: adminToken });
+  check("ending an already-ended session is refused", doubleEndLive.status === 409, doubleEndLive.body);
+
   // ─── Content search (admin picker) ─────────────────────────────────────────
   section("Content search — admin picker");
 
@@ -1266,6 +1313,7 @@ async function main() {
   check("no query and no ids returns an empty list, not everything", (emptyQuery.body.items ?? []).length === 0, emptyQuery.body);
 
   // ─── Cleanup ───────────────────────────────────────────────────────────────
+  await prisma.streamSession.deleteMany({ where: { content_id: { in: created.content } } });
   await prisma.registration.deleteMany({ where: { content_id: { in: created.content } } });
   await prisma.order.deleteMany({
     where: { OR: [{ user_id: { in: created.users } }, { content_id: { in: created.content } }, { plan_id: { in: created.plans } }] },

@@ -26,6 +26,7 @@
 import { chromium, type Page, type Browser } from "playwright";
 
 const BASE = process.env.BASE ?? "http://127.0.0.1:5173";
+const API_BASE = process.env.API_BASE ?? "http://127.0.0.1:4000";
 const CHROMIUM_PATH = process.env.CHROMIUM_PATH;
 
 let passed = 0;
@@ -248,6 +249,45 @@ async function run(browser: Browser) {
   } else {
     // Not a failure: the seeded item may not be `registered` tier for this user.
     console.log("  · gate not in a registerable state for this fixture — skipped");
+  }
+
+  // ─── Admin content-authoring pages ─────────────────────────────────────────
+  // Added after a real bug: AddEditSession.tsx and AddEditCourse.tsx called
+  // react-router's useBlocker(), which throws "must be used within a data
+  // router" under this app's plain BrowserRouter — an uncaught render error
+  // with no boundary, so the ENTIRE page rendered blank. Invisible to tsc (a
+  // runtime router-config mismatch, not a type error), invisible to the API
+  // suite (pure frontend), and invisible to this file before now, because
+  // nothing here ever visited an admin route. Exactly the class of defect
+  // this file's own header comment describes existing to catch — it just
+  // hadn't reached these two pages yet.
+  section("Admin content-authoring pages");
+
+  const adminLogin = await fetch(`${API_BASE}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: "admin@webinarflix.dev", password: "ChangeMe123!" }),
+  }).then((r) => r.json());
+  const adminToken = adminLogin?.token as string | undefined;
+  check("the seeded admin account can log in for this check", typeof adminToken === "string", adminLogin);
+
+  if (adminToken) {
+    await page.evaluate((token) => localStorage.setItem("webinarflix_token", token), adminToken);
+
+    const sessionsList = await fetch(`${API_BASE}/api/sessions?per_page=1`, {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    }).then((r) => r.json());
+    const realSessionId = sessionsList?.sessions?.[0]?.id;
+
+    for (const path of ["/admin/sessions/new", realSessionId ? `/admin/sessions/${realSessionId}/edit` : null, "/admin/courses/new"]) {
+      if (!path) continue;
+      const beforeErrorCount = pageErrors.length;
+      await page.goto(`${BASE}${path}`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(800);
+      const hasContent = await page.locator("text=/Session Details|Course Details|Title/i").count();
+      check(`${path} renders real content, not a blank crashed page`, hasContent > 0, { path, hasContent });
+      check(`${path} throws no uncaught render error`, pageErrors.length === beforeErrorCount, pageErrors.slice(beforeErrorCount));
+    }
   }
 
   check("no uncaught page errors across the run", pageErrors.length === 0, pageErrors);

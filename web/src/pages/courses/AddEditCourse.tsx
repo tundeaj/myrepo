@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useNavigate, useParams, useBlocker } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../../lib/api";
 import { useAutosave } from "../../hooks/useAutosave";
 import { useToast } from "../../components/Toast";
@@ -370,10 +370,21 @@ export function AddEditCourse() {
   const [publishErrors, setPublishErrors] = useState<string[]>([]);
   const savedFormRef = useRef<FormState | null>(null);
 
-  // Unsaved-changes blocker
-  useBlocker(({ currentLocation, nextLocation }) => {
-    return isDirty && currentLocation.pathname !== nextLocation.pathname;
-  });
+  // Warn on tab close / reload while dirty. useBlocker (react-router) needs a
+  // data router (createBrowserRouter + RouterProvider) to work at all — this
+  // app's main.tsx uses plain BrowserRouter, so calling useBlocker here threw
+  // "useBlocker must be used within a data router" on every render, crashing
+  // this entire page with no error boundary to catch it. Confirmed via a real
+  // browser check, not a type error — tsc has no way to see this. The native
+  // beforeunload event needs no router at all and covers the highest-cost
+  // case (losing everything since the last save, not just the last ~30s
+  // autosave already protects against for in-app navigation).
+  useEffect(() => {
+    if (!isDirty) return;
+    const handler = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [isDirty]);
 
   // Load existing course
   useEffect(() => {
