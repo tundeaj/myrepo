@@ -575,6 +575,43 @@ async function run(browser: Browser) {
     check("/admin/payouts (Subscription Accrual panel) throws no uncaught render error", pageErrors.length === beforePayoutsErrors, pageErrors.slice(beforePayoutsErrors));
   }
 
+  section("Users admin");
+
+  if (adminToken) {
+    // No fixture account is created here on purpose — this router has no
+    // delete endpoint at all (an intentional safety choice: an admin account
+    // is never something to silently orphan away), so a browser-created
+    // fixture would be permanent junk in the users table on every run. The
+    // seeded admin account is already there on every run and is enough to
+    // exercise real rendering; the deeper create/search/filter/role/active
+    // matrix is already covered at the API level by the e2e suite's own
+    // fixture accounts, which it DOES clean up (via prisma, not this HTTP-only
+    // script).
+    const beforeUsersErrors = pageErrors.length;
+    await page.goto(`${BASE}/admin/users`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(500);
+    const hasSeededAdminRow = await page.locator("text=admin@webinarflix.dev").count();
+    check("/admin/users renders the real seeded admin account", hasSeededAdminRow > 0, { hasSeededAdminRow });
+    check("/admin/users throws no uncaught render error", pageErrors.length === beforeUsersErrors, pageErrors.slice(beforeUsersErrors));
+
+    // The self-change guard (an admin can't edit their own role through this
+    // page) is server-enforced — confirm it holds through the real UI, not
+    // just the API: try to change the signed-in admin's own role from their
+    // own row, then reload and confirm it didn't take.
+    const ownRow = page.locator("tr", { hasText: "admin@webinarflix.dev" });
+    const ownRoleSelect = ownRow.locator("select").first();
+    const roleBefore = await ownRoleSelect.inputValue().catch(() => null);
+    if (roleBefore) {
+      await ownRoleSelect.selectOption("viewer");
+      await page.waitForTimeout(500);
+      await page.reload({ waitUntil: "networkidle" });
+      await page.waitForTimeout(500);
+      const roleAfter = await page.locator("tr", { hasText: "admin@webinarflix.dev" }).locator("select").first().inputValue().catch(() => null);
+      check("the self-change guard blocks an admin editing their own role through the real UI, not just the API", roleAfter === roleBefore, { roleBefore, roleAfter });
+    }
+    check("/admin/users (self-change attempt) throws no uncaught render error", pageErrors.length === beforeUsersErrors, pageErrors.slice(beforeUsersErrors));
+  }
+
   check("no uncaught page errors across the run", pageErrors.length === 0, pageErrors);
 
   await page.close();

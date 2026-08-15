@@ -1830,6 +1830,93 @@ async function main() {
     });
   }
 
+  // ─── Users admin — list/search/filter, detail activity, role/active management ──
+  section("Users admin");
+
+  {
+    const fixtureViewer = await prisma.user.create({
+      data: { email: `e2e-users-viewer-${RUN}@example.test`, full_name: `E2E Users Fixture ${RUN}`, role: "viewer", email_verified: true, password_hash: null, country: "NG" },
+    });
+    created.users.push(fixtureViewer.id);
+    // Something for the detail view's activity counts to actually report.
+    const fixtureContentForEntitlement = await makeContent("public", { slug: `e2e-users-entitlement-${RUN}` });
+    await prisma.entitlement.create({ data: { user_id: fixtureViewer.id, content_id: fixtureContentForEntitlement.id, source: "admin_grant" } });
+
+    const viewerList = await call("/api/users", { token: sessionToken });
+    check("a signed-in VIEWER cannot list users", viewerList.status === 403, viewerList.body);
+
+    const list = await call("/api/users", { token: adminToken });
+    check("the admin list includes the real fixture account", (list.body.users ?? []).some((u: { id: number }) => u.id === fixtureViewer.id), list.status);
+    check("password_hash never leaves the list endpoint", !JSON.stringify(list.body).includes("password_hash"));
+
+    const searched = await call(`/api/users?search=e2e-users-viewer-${RUN}`, { token: adminToken });
+    check("search by email finds exactly the fixture account", searched.body.users?.length === 1 && searched.body.users[0].id === fixtureViewer.id, searched.body.users);
+
+    const roleFiltered = await call("/api/users?role=viewer", { token: adminToken });
+    check("role filter excludes non-matching roles", (roleFiltered.body.users ?? []).every((u: { role: string }) => u.role === "viewer"), roleFiltered.body.users?.length);
+
+    const badRole = await call("/api/users?role=not-a-role", { token: adminToken });
+    check("an invalid role filter is rejected", badRole.status === 400, badRole.body);
+
+    const detail = await call(`/api/users/${fixtureViewer.id}`, { token: adminToken });
+    check("the detail view resolves the real fixture account", detail.body.user?.id === fixtureViewer.id, detail.status);
+    check("password_hash never leaves the detail endpoint", !JSON.stringify(detail.body).includes("password_hash"));
+    check("the real entitlement created above is counted", detail.body.activity?.entitlement_count === 1, detail.body.activity);
+
+    const viewerDetail = await call(`/api/users/${fixtureViewer.id}`, { token: sessionToken });
+    check("a signed-in VIEWER cannot view another account's detail", viewerDetail.status === 403, viewerDetail.body);
+
+    // Role and active-status changes actually persist.
+    const roleChange = await call(`/api/users/${fixtureViewer.id}`, { method: "PATCH", token: adminToken, body: { role: "instructor" } });
+    check("an admin can change a fixture account's role", roleChange.status === 200 && roleChange.body.user?.role === "instructor", roleChange.body);
+
+    const deactivate = await call(`/api/users/${fixtureViewer.id}`, { method: "PATCH", token: adminToken, body: { is_active: false } });
+    check("an admin can deactivate a fixture account", deactivate.status === 200 && deactivate.body.user?.is_active === false, deactivate.body);
+
+    const emptyPatch = await call(`/api/users/${fixtureViewer.id}`, { method: "PATCH", token: adminToken, body: {} });
+    check("a no-op patch (neither field set) is rejected rather than silently doing nothing", emptyPatch.status === 400, emptyPatch.body);
+
+    const viewerPatchAttempt = await call(`/api/users/${fixtureViewer.id}`, { method: "PATCH", token: sessionToken, body: { role: "admin" } });
+    check("a signed-in VIEWER cannot patch another account's role", viewerPatchAttempt.status === 403, viewerPatchAttempt.body);
+
+    // An admin can't change their own role/status through this endpoint —
+    // the one form that could otherwise lock the operator out mid-edit.
+    const adminSelf = await prisma.user.findUnique({ where: { email: "admin@webinarflix.dev" } });
+    const selfPatch = await call(`/api/users/${adminSelf!.id}`, { method: "PATCH", token: adminToken, body: { is_active: false } });
+    check("an admin can't deactivate their own account through this endpoint", selfPatch.status === 400, selfPatch.body);
+
+    // The "last active admin can't be demoted or deactivated" guard — proven
+    // without ever touching the real seeded admin. A fixture admin is made
+    // the SOLE active admin (every other admin/super_admin temporarily
+    // suspended, snapshotted so it can be put back), then the guard is
+    // exercised against that fixture account, then everything is restored.
+    const otherActiveAdmins = await prisma.user.findMany({
+      where: { role: { in: ["admin", "super_admin"] }, is_active: true },
+      select: { id: true },
+    });
+    const fixtureAdmin = await prisma.user.create({
+      data: { email: `e2e-users-admin-${RUN}@example.test`, role: "admin", email_verified: true, password_hash: null, is_active: true },
+    });
+    created.users.push(fixtureAdmin.id);
+    try {
+      await prisma.user.updateMany({ where: { id: { in: otherActiveAdmins.map((a) => a.id) } }, data: { is_active: false } });
+
+      const lastAdminDemote = await call(`/api/users/${fixtureAdmin.id}`, { method: "PATCH", token: adminToken, body: { role: "viewer" } });
+      check("the last active admin can't be demoted", lastAdminDemote.status === 409, lastAdminDemote.body);
+
+      const lastAdminDeactivate = await call(`/api/users/${fixtureAdmin.id}`, { method: "PATCH", token: adminToken, body: { is_active: false } });
+      check("the last active admin can't be deactivated", lastAdminDeactivate.status === 409, lastAdminDeactivate.body);
+
+      const stillAdmin = await prisma.user.findUnique({ where: { id: fixtureAdmin.id } });
+      check("the guard actually refused — the account is still an active admin underneath", stillAdmin?.role === "admin" && stillAdmin?.is_active === true, stillAdmin);
+    } finally {
+      // Restore every real admin this touched to exactly the state it was in
+      // before this negative control — never leave a genuine admin account
+      // suspended because a test ran.
+      await prisma.user.updateMany({ where: { id: { in: otherActiveAdmins.map((a) => a.id) } }, data: { is_active: true } });
+    }
+  }
+
   // ─── Cleanup ───────────────────────────────────────────────────────────────
   await prisma.rating.deleteMany({ where: { content_id: { in: created.content } } });
   await prisma.streamSession.deleteMany({ where: { content_id: { in: created.content } } });

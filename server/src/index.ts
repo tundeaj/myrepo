@@ -30,6 +30,7 @@ import { adsRouter } from "./routes/ads.js";
 import { subscriberAnalyticsRouter } from "./routes/subscriberAnalytics.js";
 import { invoicesRouter } from "./routes/invoices.js";
 import { layoutRouter } from "./routes/layout.js";
+import { usersRouter } from "./routes/users.js";
 import { homepageRouter } from "./routes/homepage.js";
 import { contentRouter, publicCategoriesRouter, publicSpeakersRouter } from "./routes/content.js";
 import { signupRouter } from "./routes/signup.js";
@@ -93,6 +94,7 @@ app.use("/api/content-search", requireAuth, requireAdmin, contentSearchRouter);
 app.use("/api/analytics/subscribers", requireAuth, requireAdmin, subscriberAnalyticsRouter);
 app.use("/api/invoices", requireAuth, requireAdmin, invoicesRouter);
 app.use("/api/layout", requireAuth, requireAdmin, layoutRouter);
+app.use("/api/users", requireAuth, requireAdmin, usersRouter);
 app.use("/api/homepage", homepageRouter);
 // Public content surface (Prompt 11). Unauthenticated by design — these are the
 // pages the homepage links to. Mounted under /public-* so they cannot collide

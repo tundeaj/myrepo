@@ -68,6 +68,7 @@ const Coupons = lazy(() => import("./pages/coupons/Coupons").then((m) => ({ defa
 const Faqs = lazy(() => import("./pages/faqs/Faqs").then((m) => ({ default: m.Faqs })));
 const ContactRequests = lazy(() => import("./pages/contact/ContactRequests").then((m) => ({ default: m.ContactRequests })));
 const Categories = lazy(() => import("./pages/categories/Categories").then((m) => ({ default: m.Categories })));
+const Users = lazy(() => import("./pages/users/Users").then((m) => ({ default: m.Users })));
 const Sponsors = lazy(() => import("./pages/sponsors/Sponsors").then((m) => ({ default: m.Sponsors })));
 const Advertisers = lazy(() => import("./pages/advertisers/Advertisers").then((m) => ({ default: m.Advertisers })));
 const Ads = lazy(() => import("./pages/ads/Ads").then((m) => ({ default: m.Ads })));
@@ -81,7 +82,6 @@ const PageLayout = lazy(() => import("./pages/layout/PageLayout").then((m) => ({
 const PLACEHOLDER_PATHS = [
   "sessions/categories",
   "speakers",
-  "users",
   "registrations",
   "subscriptions-orders",
   "bulk-import",
@@ -147,6 +147,7 @@ export function App() {
           <Route path="faqs" element={<Faqs />} />
           <Route path="contact-requests" element={<ContactRequests />} />
           <Route path="categories" element={<Categories />} />
+          <Route path="users" element={<Users />} />
           <Route path="sponsors" element={<Sponsors />} />
           <Route path="advertisers" element={<Advertisers />} />
           <Route path="ads" element={<Ads />} />
