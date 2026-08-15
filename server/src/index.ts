@@ -23,6 +23,7 @@ import { payoutsRouter, payoutsWebhookRouter } from "./routes/payouts.js";
 import { contentSearchRouter } from "./routes/contentSearch.js";
 import { ratingsRouter } from "./routes/ratings.js";
 import { faqsRouter, publicFaqsRouter } from "./routes/faqs.js";
+import { contactRequestsRouter, publicContactRouter } from "./routes/contactRequests.js";
 import { subscriberAnalyticsRouter } from "./routes/subscriberAnalytics.js";
 import { invoicesRouter } from "./routes/invoices.js";
 import { layoutRouter } from "./routes/layout.js";
@@ -81,6 +82,7 @@ app.use("/api/payouts", requireAuth, requireAdmin, payoutsRouter);
 // The webhook above is mounted separately, ahead of the JSON parser, and is
 // intentionally public — Paystack has no admin session to send.
 app.use("/api/faqs", requireAuth, requireAdmin, faqsRouter);
+app.use("/api/contact-requests", requireAuth, requireAdmin, contactRequestsRouter);
 app.use("/api/content-search", requireAuth, requireAdmin, contentSearchRouter);
 app.use("/api/analytics/subscribers", requireAuth, requireAdmin, subscriberAnalyticsRouter);
 app.use("/api/invoices", requireAuth, requireAdmin, invoicesRouter);
@@ -93,6 +95,7 @@ app.use("/api/content", contentRouter);
 app.use("/api/public-categories", publicCategoriesRouter);
 app.use("/api/public-speakers", publicSpeakersRouter);
 app.use("/api/public-faqs", publicFaqsRouter);
+app.use("/api/public-contact", publicContactRouter);
 // Viewer accounts (Prompt 12). /signup is public — it describes the form.
 // Registrations and account are the viewer's own data, scoped by token.
 app.use("/api/signup", signupRouter);

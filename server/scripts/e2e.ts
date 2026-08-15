@@ -96,6 +96,7 @@ const created = {
   speakers: [] as number[],
   payoutRuns: [] as number[],
   faqs: [] as number[],
+  contactRequests: [] as number[],
 };
 
 async function makeContent(accessLevel: string, extra: Record<string, unknown> = {}) {
@@ -1446,6 +1447,74 @@ async function main() {
   check("deleting an already-deleted FAQ is refused", deleteFaqAgain.status === 404, deleteFaqAgain.body);
   created.faqs = created.faqs.filter((id) => id !== unpublishedFaqId); // already gone, cleanup would be a harmless no-op but keep the list honest
 
+  // ─── Contact Requests — public form + admin inbox ──────────────────────────
+  // Rate-limit exhaustion (checkRateLimit, keyed by IP) is deliberately not
+  // exercised here, same precedent as the AI-suggestion limit elsewhere in
+  // this app: the shared dev server this suite runs against is long-lived
+  // across repeated local runs within the same hour, and every call in this
+  // suite originates from the same source IP — actually tripping the limit
+  // would poison it for every run after this one until the window resets.
+  section("Contact Requests — public form + admin inbox");
+
+  const missingMessage = await call("/api/public-contact", { method: "POST", body: { email: "x@example.test" } });
+  check("a submission with no message is rejected", missingMessage.status === 422, missingMessage.body);
+
+  const missingBothContacts = await call("/api/public-contact", { method: "POST", body: { message: "Hello, I have a question." } });
+  check("a submission with neither email nor phone is rejected", missingBothContacts.status === 422, missingBothContacts.body);
+
+  const badEmail = await call("/api/public-contact", { method: "POST", body: { email: "not-an-email", message: "Hi" } });
+  check("a submission with a malformed email is rejected", badEmail.status === 422, badEmail.body);
+
+  const badEnquiryType = await call("/api/public-contact", { method: "POST", body: { phone: "+2348012345678", enquiry_type: "not-a-real-type", message: "Hi" } });
+  check("a submission with an invalid enquiry_type is rejected", badEnquiryType.status === 422, badEnquiryType.body);
+
+  const validSubmit = await call("/api/public-contact", {
+    method: "POST",
+    body: { name: `E2E Contact ${RUN}`, email: `e2e-contact-${RUN}@example.test`, enquiry_type: "corporate_training", message: "We'd like a quote for a cohort.", source_page: "/pricing" },
+  });
+  check("a valid submission is accepted with no auth at all", validSubmit.status === 201 && typeof validSubmit.body.id === "number", validSubmit.body);
+  const contactId = validSubmit.body.id;
+  if (contactId) created.contactRequests.push(contactId);
+
+  const persisted = await prisma.contactRequest.findUnique({ where: { id: contactId } });
+  check("it's actually persisted to the database, status 'new'", persisted?.status === "new" && persisted?.email === `e2e-contact-${RUN}@example.test`, persisted);
+  check("a fresh submission has no responded_at yet", persisted?.responded_at == null, persisted?.responded_at);
+
+  const viewerList = await call("/api/contact-requests", { token: sessionToken });
+  check("a signed-in VIEWER cannot list the admin inbox", viewerList.status === 403, viewerList.body);
+
+  const adminList = await call("/api/contact-requests", { token: adminToken });
+  const adminListIds = (adminList.body.requests ?? []).map((r: { id: number }) => r.id);
+  check("the admin inbox includes the new submission", adminListIds.includes(contactId), adminListIds.slice(0, 5));
+
+  const filteredList = await call("/api/contact-requests?status=won", { token: adminToken });
+  const filteredIds = (filteredList.body.requests ?? []).map((r: { id: number }) => r.id);
+  check("filtering by a status the fixture isn't in excludes it", !filteredIds.includes(contactId), filteredIds.slice(0, 5));
+
+  const badFilter = await call("/api/contact-requests?status=not-a-real-status", { token: adminToken });
+  check("an invalid status filter is rejected", badFilter.status === 400, badFilter.body);
+
+  const getOne = await call(`/api/contact-requests/${contactId}`, { token: adminToken });
+  check("fetching a single contact request returns it", getOne.body.request?.id === contactId, getOne.body);
+
+  const firstTriage = await call(`/api/contact-requests/${contactId}`, {
+    method: "PUT",
+    token: adminToken,
+    body: { status: "in_progress", notes: "Reached out, awaiting reply." },
+  });
+  check("triaging (status change) succeeds", firstTriage.status === 200 && firstTriage.body.request?.status === "in_progress", firstTriage.body);
+  check("responded_at is set the first time status leaves 'new'", firstTriage.body.request?.responded_at != null, firstTriage.body.request?.responded_at);
+  const respondedAtFirst = firstTriage.body.request?.responded_at;
+
+  const secondTriage = await call(`/api/contact-requests/${contactId}`, { method: "PUT", token: adminToken, body: { status: "closed" } });
+  check("responded_at does NOT move on a later status change — it's a first-touch timestamp", secondTriage.body.request?.responded_at === respondedAtFirst, secondTriage.body.request?.responded_at);
+
+  const deleteContact = await call(`/api/contact-requests/${contactId}`, { method: "DELETE", token: adminToken });
+  check("deleting a contact request succeeds", deleteContact.status === 200, deleteContact.body);
+  const deleteContactAgain = await call(`/api/contact-requests/${contactId}`, { method: "DELETE", token: adminToken });
+  check("deleting an already-deleted contact request is refused", deleteContactAgain.status === 404, deleteContactAgain.body);
+  created.contactRequests = created.contactRequests.filter((id) => id !== contactId); // already gone, keep the cleanup list honest
+
   // ─── Cleanup ───────────────────────────────────────────────────────────────
   await prisma.rating.deleteMany({ where: { content_id: { in: created.content } } });
   await prisma.streamSession.deleteMany({ where: { content_id: { in: created.content } } });
@@ -1466,6 +1535,7 @@ async function main() {
   await prisma.contentSpeaker.deleteMany({ where: { content_id: { in: created.content } } });
   await prisma.speaker.deleteMany({ where: { id: { in: created.speakers } } });
   await prisma.faq.deleteMany({ where: { id: { in: created.faqs } } });
+  await prisma.contactRequest.deleteMany({ where: { id: { in: created.contactRequests } } });
   await prisma.contentItem.deleteMany({ where: { id: { in: created.content } } });
   await prisma.plan.deleteMany({ where: { id: { in: created.plans } } });
   await prisma.coupon.deleteMany({ where: { id: { in: created.coupons } } });

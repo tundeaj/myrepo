@@ -16,6 +16,7 @@ const BrowseIndex = lazy(() => import("./public/Browse").then((m) => ({ default:
 const BrowseCategory = lazy(() => import("./public/Browse").then((m) => ({ default: m.BrowseCategory })));
 const SpeakerProfile = lazy(() => import("./public/SpeakerProfile").then((m) => ({ default: m.SpeakerProfile })));
 const PublicFaqs = lazy(() => import("./public/Faqs").then((m) => ({ default: m.Faqs })));
+const Contact = lazy(() => import("./public/Contact").then((m) => ({ default: m.Contact })));
 
 // Viewer accounts (Prompt 12). The three password/verification flows share one
 // chunk — a visitor who hits any of them is likely to touch another.
@@ -65,6 +66,7 @@ const FooterLinks = lazy(() => import("./pages/settings/FooterLinks").then((m) =
 const Plans = lazy(() => import("./pages/plans/Plans").then((m) => ({ default: m.Plans })));
 const Coupons = lazy(() => import("./pages/coupons/Coupons").then((m) => ({ default: m.Coupons })));
 const Faqs = lazy(() => import("./pages/faqs/Faqs").then((m) => ({ default: m.Faqs })));
+const ContactRequests = lazy(() => import("./pages/contact/ContactRequests").then((m) => ({ default: m.ContactRequests })));
 const Payouts = lazy(() => import("./pages/payouts/Payouts").then((m) => ({ default: m.Payouts })));
 const SubscriberAnalytics = lazy(() => import("./pages/analytics/SubscriberAnalytics").then((m) => ({ default: m.SubscriberAnalytics })));
 const Invoices = lazy(() => import("./pages/revenue/Invoices").then((m) => ({ default: m.Invoices })));
@@ -88,7 +90,6 @@ const PLACEHOLDER_PATHS = [
   "pages",
   "landing-pages",
   "promotions",
-  "contact-requests",
   "categories",
 ];
 
@@ -143,6 +144,7 @@ export function App() {
           <Route path="plans" element={<Plans />} />
           <Route path="coupons" element={<Coupons />} />
           <Route path="faqs" element={<Faqs />} />
+          <Route path="contact-requests" element={<ContactRequests />} />
           <Route path="payouts" element={<Payouts />} />
           <Route path="analytics/subscribers" element={<SubscriberAnalytics />} />
           <Route path="invoices" element={<Invoices />} />
@@ -181,6 +183,7 @@ export function App() {
         <Route path="/browse/:slug" element={<BrowseCategory />} />
         <Route path="/speakers/:slug" element={<SpeakerProfile />} />
         <Route path="/faqs" element={<PublicFaqs />} />
+        <Route path="/contact" element={<Contact />} />
 
         {/* ── Viewer accounts (Prompt 12) ── */}
         {/* /signin is the viewer entry; /login stays the back-office one, which

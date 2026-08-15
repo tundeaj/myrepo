@@ -338,6 +338,39 @@ async function run(browser: Browser) {
     }
   }
 
+  // ─── Contact Requests — public form + admin inbox ──────────────────────────
+  section("Contact Requests");
+
+  const beforeContactFormErrors = pageErrors.length;
+  await page.goto(`${BASE}/contact`, { waitUntil: "networkidle" });
+  await page.waitForTimeout(500);
+  const messageBox = page.locator('textarea[placeholder="How can we help?"]');
+  check("the public /contact form renders its message field", (await messageBox.count()) > 0, {});
+
+  const uniqueMessage = `Browser check message ${Date.now()}`;
+  await page.locator('input[placeholder="Email"]').fill(`browser-contact-${Date.now().toString(36)}@example.test`);
+  await messageBox.fill(uniqueMessage);
+  await page.locator('button[type="submit"]').click();
+  await page.waitForTimeout(600);
+  const hasConfirmation = await page.locator("text=/message has been sent/i").count();
+  check("submitting the contact form shows a confirmation", hasConfirmation > 0, { hasConfirmation });
+  check("/contact throws no uncaught render error", pageErrors.length === beforeContactFormErrors, pageErrors.slice(beforeContactFormErrors));
+
+  if (adminToken) {
+    const beforeAdminInboxErrors = pageErrors.length;
+    await page.goto(`${BASE}/admin/contact-requests`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(500);
+    const hasSubmittedMessage = await page.locator(`text=${uniqueMessage}`).count();
+    check("the real submission from this run appears in the admin inbox", hasSubmittedMessage > 0, { hasSubmittedMessage });
+    check("/admin/contact-requests throws no uncaught render error", pageErrors.length === beforeAdminInboxErrors, pageErrors.slice(beforeAdminInboxErrors));
+
+    // Clean up the fixture this run created — same discipline as the FAQ
+    // fixture above, so repeated runs don't accumulate rows in the inbox.
+    const list = await fetch(`${API_BASE}/api/contact-requests`, { headers: { Authorization: `Bearer ${adminToken}` } }).then((r) => r.json());
+    const created = (list?.requests ?? []).find((r: { message?: string }) => r.message === uniqueMessage);
+    if (created) await fetch(`${API_BASE}/api/contact-requests/${created.id}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+  }
+
   check("no uncaught page errors across the run", pageErrors.length === 0, pageErrors);
 
   await page.close();
