@@ -1,0 +1,135 @@
+name: CI
+
+# Runs every suite this project actually has, against a real Postgres
+# database — not mocked. Every defect this project has shipped was
+# invisible to a type-checker; this workflow is what runs the checks that
+# actually caught them (see server/scripts/e2e.ts, web/scripts/browser.ts).
+#
+# DATABASE_URL is the only env var the server strictly requires (see
+# server/src/lib/env.ts) — everything else (Paystack, ImageKit, SMTP,
+# Anthropic) has a safe empty-string default, so those integrations run in
+# their documented "not configured" paths here, same as this repo's own dev
+# environment when no real keys are set.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: webinarflix
+          POSTGRES_PASSWORD: webinarflix_ci
+          POSTGRES_DB: webinarflix
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://webinarflix:webinarflix_ci@localhost:5432/webinarflix
+      JWT_SECRET: ci-test-secret-do-not-use-in-production
+      CORS_ORIGIN: http://127.0.0.1:5173
+      PORT: 4000
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Prisma generate + migrate deploy
+        working-directory: server
+        run: |
+          npx prisma generate
+          npx prisma migrate deploy
+
+      - name: Seed reference data
+        working-directory: server
+        run: npm run db:seed
+
+      - name: Server typecheck
+        working-directory: server
+        run: npx tsc --noEmit
+
+      - name: Web typecheck
+        working-directory: web
+        run: npx tsc --noEmit
+
+      # Backgrounded — survives into later steps within the same job.
+      - name: Start API server
+        working-directory: server
+        run: nohup npx tsx src/index.ts > server.log 2>&1 &
+
+      - name: Wait for API server
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:4000/api/health && exit 0
+            sleep 1
+          done
+          echo "API server never became healthy" && cat server/server.log && exit 1
+
+      - name: Server e2e suite
+        working-directory: server
+        run: npm run test:e2e
+
+      - name: Server mail-flow suite
+        working-directory: server
+        run: npm run test:mail
+
+      - name: Webhook signature suite (isolated process, own key)
+        working-directory: server
+        env:
+          PAYSTACK_SECRET_KEY: sk_test_ci_dummy_key
+        run: npx tsx scripts/checkoutWebhook.ts
+
+      # This sandbox's own runtime has a pre-installed Chromium and is
+      # explicitly not supposed to run `playwright install` (see CLAUDE.md /
+      # session instructions) — that restriction is about this repo's own
+      # dev container, not a GitHub Actions runner, which starts with no
+      # browser at all and genuinely needs this step.
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Start web dev server
+        working-directory: web
+        run: nohup npx vite --host 127.0.0.1 --port 5173 > vite.log 2>&1 &
+
+      - name: Wait for web dev server
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:5173/ > /dev/null && exit 0
+            sleep 1
+          done
+          echo "Web dev server never became healthy" && cat web/vite.log && exit 1
+
+      - name: Web browser suite
+        working-directory: web
+        run: npx tsx scripts/browser.ts
+
+      - name: Web production build
+        working-directory: web
+        run: npx vite build
+
+      - name: Upload server/vite logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dev-server-logs
+          path: |
+            server/server.log
+            web/vite.log
+          if-no-files-found: ignore
