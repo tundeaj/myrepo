@@ -82,7 +82,6 @@ const PageLayout = lazy(() => import("./pages/layout/PageLayout").then((m) => ({
 
 // Routes not yet built — each will be replaced with a real page in future prompts
 const PLACEHOLDER_PATHS = [
-  "sessions/categories",
   "subscriptions-orders",
   "bulk-import",
   "community/spaces",
@@ -147,6 +146,13 @@ export function App() {
           <Route path="faqs" element={<Faqs />} />
           <Route path="contact-requests" element={<ContactRequests />} />
           <Route path="categories" element={<Categories />} />
+          {/* "Session Categories" in the Live Sessions submenu is not a separate
+              schema concept — Category (schema.prisma) has no content_type
+              column at all, so a category tagging a webinar and one tagging a
+              course are literally the same row type. This is the same
+              admin page as /admin/categories, reached from a second nav
+              location, not a second feature. */}
+          <Route path="sessions/categories" element={<Categories />} />
           <Route path="users" element={<Users />} />
           <Route path="registrations" element={<Registrations />} />
           <Route path="speakers" element={<Speakers />} />

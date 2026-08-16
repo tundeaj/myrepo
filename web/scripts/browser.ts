@@ -678,6 +678,21 @@ async function run(browser: Browser) {
     }
   }
 
+  section("Session Categories (nav alias)");
+
+  if (adminToken) {
+    // Not a separate feature — Category has no content_type column, so
+    // /admin/sessions/categories is the same page as /admin/categories,
+    // reached from a second nav location. Just confirm the alias route
+    // actually renders the real page rather than a blank crash.
+    const beforeAliasErrors = pageErrors.length;
+    await page.goto(`${BASE}/admin/sessions/categories`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(500);
+    const hasCategoriesHeading = await page.locator("h1:has-text(\"Categories\")").count();
+    check("/admin/sessions/categories renders the real Categories page, not a placeholder", hasCategoriesHeading > 0, { hasCategoriesHeading });
+    check("/admin/sessions/categories throws no uncaught render error", pageErrors.length === beforeAliasErrors, pageErrors.slice(beforeAliasErrors));
+  }
+
   check("no uncaught page errors across the run", pageErrors.length === 0, pageErrors);
 
   await page.close();
