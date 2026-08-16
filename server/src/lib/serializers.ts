@@ -5,6 +5,8 @@
 //   □ paystack_recipient_code absent from every GET response
 //   □ password_hash absent from every GET response
 //   □ is_secret settings return only a boolean
+//   □ access_token/refresh_token absent from every GET response (provider_connections)
+//   □ meeting_host_url absent from every PUBLIC content payload
 
 export function serializeUser<T extends Record<string, any>>(user: T) {
   const { password_hash, ...safe } = user;
@@ -41,4 +43,9 @@ export function serializeSetting<T extends { is_secret: boolean; setting_value: 
   if (!setting.is_secret) return setting;
   const { setting_value, ...safe } = setting;
   return { ...safe, is_set: Boolean(setting_value) };
+}
+
+export function serializeProviderConnection<T extends Record<string, any>>(connection: T) {
+  const { access_token, refresh_token, ...safe } = connection;
+  return safe;
 }

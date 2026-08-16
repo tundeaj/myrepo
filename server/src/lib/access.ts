@@ -43,6 +43,13 @@ export interface AccessResult {
   registration_id: number | null;
   /** A capability: possession is access to that session. Set only when can_view. */
   join_token: string | null;
+  /** null for a native session (the frontend already knows to route to
+   *  /watch/:slug/play itself — no change there) or when access is refused.
+   *  Set to the real external join link for a granted, non-native session,
+   *  so AccessGate's button works identically regardless of backend — see
+   *  lib/meetingProviders/. Never the host/start link; that stays
+   *  admin-only, same discipline as stream_key never appearing here either. */
+  join_url: string | null;
 }
 
 /** Only the columns the decision needs. Nothing here reaches a response body. */
@@ -54,7 +61,13 @@ const ACCESS_SELECT = {
   access_level: true,
   price_ngn: true,
   free_preview_seconds: true,
+  meeting_provider: true,
+  meeting_join_url: true,
 } as const;
+
+function joinUrlFor(content: { meeting_provider: string; meeting_join_url: string | null }): string | null {
+  return content.meeting_provider === "native" ? null : content.meeting_join_url;
+}
 
 function refuse(reason: AccessReason, preview = 0, price: number | null = null): AccessResult {
   return {
@@ -64,12 +77,13 @@ function refuse(reason: AccessReason, preview = 0, price: number | null = null):
     price_ngn: price,
     registration_id: null,
     join_token: null,
+    join_url: null,
   };
 }
 
 /** Granted, with no registration attached. Only `registered` content carries a
  *  join_token — it is the per-registration capability for one session. */
-function grant(reason: AccessReason, preview: number, price: number | null): AccessResult {
+function grant(reason: AccessReason, preview: number, price: number | null, joinUrl: string | null): AccessResult {
   return {
     can_view: true,
     reason,
@@ -77,6 +91,7 @@ function grant(reason: AccessReason, preview: number, price: number | null): Acc
     price_ngn: price,
     registration_id: null,
     join_token: null,
+    join_url: joinUrl,
   };
 }
 
@@ -116,6 +131,7 @@ export async function resolveAccess(
       price_ngn: price,
       registration_id: null,
       join_token: null,
+      join_url: joinUrlFor(content),
     };
   }
 
@@ -145,6 +161,7 @@ export async function resolveAccess(
         price_ngn: price,
         registration_id: registration.id,
         join_token: registration.join_token,
+        join_url: joinUrlFor(content),
       };
     }
 
@@ -157,7 +174,7 @@ export async function resolveAccess(
         select: { id: true },
       });
       if (!subscription) return refuse("needs_subscription", preview, price);
-      return grant("subscribed", preview, price);
+      return grant("subscribed", preview, price, joinUrlFor(content));
     }
 
     case "purchase": {
@@ -170,7 +187,7 @@ export async function resolveAccess(
         select: { id: true },
       });
       if (!entitlement) return refuse("needs_purchase", preview, price);
-      return grant("entitled", preview, price);
+      return grant("entitled", preview, price, joinUrlFor(content));
     }
 
     case "cohort": {
@@ -186,7 +203,7 @@ export async function resolveAccess(
         select: { id: true },
       });
       if (!place) return refuse("not_enrolled", preview, price);
-      return grant("cohort", preview, price);
+      return grant("cohort", preview, price, joinUrlFor(content));
     }
 
     default:

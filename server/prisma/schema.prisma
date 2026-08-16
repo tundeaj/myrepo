@@ -67,6 +67,31 @@ enum SessionFormat {
   lesson
 }
 
+// Which backend actually hosts the session. 'native' is this app's own
+// RTMP/VOD player (StreamSourcePanel, unchanged) — everything else hands the
+// session to a third-party meeting platform via lib/meetingProviders/, and
+// the viewer's "Join" button follows meeting_join_url out to it instead of
+// /watch/:slug/play. See lib/meetingProviders/types.ts for the adapter
+// interface this drives.
+enum MeetingProvider {
+  native
+  zoom
+  teams
+  google_meet
+  jitsi
+}
+
+// Which identity a stored OAuth token is for. Deliberately identity-shaped,
+// not meeting-provider-shaped: Google's token backs "google_meet" (a Calendar
+// event with conferenceData) and, later, Google Calendar sync; Microsoft's
+// backs "teams" (a Graph onlineMeeting) and, later, Outlook sync. One
+// connection per identity provider, not one per feature that happens to use it.
+enum OAuthProvider {
+  google
+  microsoft
+  zoom
+}
+
 enum AccessLevel {
   public
   registered
@@ -571,6 +596,24 @@ model ContentItem {
   stream_provider              String?        @db.VarChar(50)
   stream_key                  String?        @db.VarChar(255)
   playback_id                 String?        @db.VarChar(255)
+  meeting_provider             MeetingProvider @default(native)
+  // Set by lib/meetingProviders/ adapters, never typed by an admin — same
+  // "the provider is the source of truth" discipline as playback_id above.
+  meeting_join_url             String?        @db.VarChar(500)
+  // Host/start link — admin- and instructor-only. Never leaves a public
+  // payload or resolveAccess(), same discipline as stream_key.
+  meeting_host_url             String?        @db.VarChar(500)
+  meeting_external_id          String?        @db.VarChar(255)
+  // Whose ProviderConnection created/owns this meeting — the admin who set
+  // the provider, by default. Needed so a later edit (or delete) knows whose
+  // OAuth token to use, since a meeting is created under ONE host account.
+  meeting_host_user_id          Int?
+  // Set instead of failing the whole session save when the provider's API
+  // call fails (token expired, provider outage, account disconnected) — an
+  // admin editing an unrelated field shouldn't lose their edit because Zoom
+  // is down. Cleared automatically the next time sync succeeds.
+  meeting_sync_error            String?        @db.VarChar(300)
+  meeting_synced_at             DateTime?
   is_cohort                   Boolean        @default(false)
   cohort_start_date           DateTime?      @db.Date
   restream_enabled             Boolean        @default(false)
@@ -1626,6 +1669,27 @@ model CalendarEvent {
   @@unique([user_id, content_id, provider])
   @@index([ics_token])
   @@map("calendar_events")
+}
+
+// One OAuth grant per (user, identity provider) — a signed-in admin/instructor
+// connecting their own Zoom/Google/Microsoft account so meetings get created
+// under THEIR name, not a shared platform account (the same reason a real
+// Zoom/Teams integration has to be per-user: whoever's account hosts the
+// meeting is who Zoom/Teams/Meet consider the organiser). access_token and
+// refresh_token are as sensitive as a password — never returned by any GET
+// endpoint; see serializeProviderConnection().
+model ProviderConnection {
+  id                      Int            @id @default(autoincrement())
+  user_id                 Int
+  provider                OAuthProvider
+  access_token            String         @db.Text
+  refresh_token           String?        @db.Text
+  expires_at              DateTime
+  external_account_email  String?        @db.VarChar(190)
+  connected_at            DateTime       @default(now())
+
+  @@unique([user_id, provider])
+  @@map("provider_connections")
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

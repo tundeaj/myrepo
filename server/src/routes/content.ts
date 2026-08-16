@@ -31,6 +31,11 @@ import {
  *   capacity (raw)                          — surfaced as spots_left or not at all
  *   speaker email/phone/bank/account/paystack/commission — payout data
  *   content_speakers.revenue_share_pct      — commercial terms
+ *   meeting_host_url, meeting_external_id, meeting_host_user_id, meeting_sync_error
+ *     — the third-party meeting's own admin/organiser surface. The one
+ *     meeting_* field a viewer ever needs (the join link) is delivered
+ *     through access.join_url below, already access-gated by resolveAccess
+ *     — never straight off the content row.
  */
 export const contentRouter = Router();
 

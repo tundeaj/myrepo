@@ -315,6 +315,22 @@ export function SettingsHub() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Landing spot after a meeting-provider OAuth connection completes
+  // (routes/providerConnections.ts's callback redirects here) — surface
+  // what happened, then drop the query params so a refresh doesn't re-toast.
+  useEffect(() => {
+    const connected = searchParams.get("connected");
+    const connectionError = searchParams.get("connection_error");
+    if (!connected && !connectionError) return;
+    if (connected) toast(`${connected.replace("_", " ")} account connected.`);
+    if (connectionError) toast(connectionError, "error");
+    const next = new URLSearchParams(searchParams);
+    next.delete("connected");
+    next.delete("connection_error");
+    setSearchParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
+
   const group = data?.groups.find((g) => g.key === activeGroup);
   const isDirty = Object.keys(drafts).some((k) => group?.fields.some((f) => f.key === k)) || resets.size > 0;
 

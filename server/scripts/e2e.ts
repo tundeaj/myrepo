@@ -2071,6 +2071,146 @@ async function main() {
     check("deleting an already-deleted speaker 404s", (await call(`/api/speakers/${cleanId}`, { method: "DELETE", token: adminToken })).status === 404);
   }
 
+  // ─── Meeting providers ──────────────────────────────────────────────────────
+  //
+  // Jitsi is the one provider this app can verify for real, end to end — no
+  // OAuth app, no external credentials, just a URL (see lib/meetingProviders/
+  // jitsi.ts). Zoom/Teams/Google Meet are verified only for their honest
+  // "not configured" / "connect your account first" refusal path — this
+  // sandbox (like CI) has no real Client ID/Secret for any of them, the same
+  // untested-happy-path precedent this codebase already accepts for
+  // Paystack. All four share one adapter interface and one sessions.ts call
+  // site, so Zoom's refusal path is representative of Teams/Google Meet's.
+  section("Meeting providers");
+
+  {
+    const startAt = new Date(Date.now() + 86_400_000).toISOString();
+
+    // ── Jitsi: create, update (room persists), switch to native, switch back ──
+    const jitsiCreate = await call("/api/sessions", {
+      method: "POST",
+      token: adminToken,
+      body: { title: `E2E Jitsi ${RUN}`, scheduled_start_at: startAt, scheduled_duration_minutes: 60, meeting_provider: "jitsi" },
+    });
+    check("creating a session with meeting_provider 'jitsi' succeeds", jitsiCreate.status === 201, jitsiCreate.body);
+    const jitsiId = jitsiCreate.body.session?.id as number;
+    if (jitsiId) created.content.push(jitsiId);
+    check("Jitsi needs no configuration or connection — a real join_url comes back immediately", typeof jitsiCreate.body.session?.meeting_join_url === "string" && jitsiCreate.body.session.meeting_join_url.startsWith(`https://${process.env.JITSI_DOMAIN ?? "meet.jit.si"}/`), jitsiCreate.body.session?.meeting_join_url);
+    check("Jitsi's free tier has no distinct host link — host_url mirrors join_url", jitsiCreate.body.session?.meeting_host_url === jitsiCreate.body.session?.meeting_join_url, jitsiCreate.body.session);
+    check("no sync error on a provider that needs no configuration", jitsiCreate.body.session?.meeting_sync_error === null, jitsiCreate.body.session?.meeting_sync_error);
+
+    const createdRoom = jitsiCreate.body.session?.meeting_external_id;
+
+    const jitsiRetitle = await call(`/api/sessions/${jitsiId}`, {
+      method: "PUT",
+      token: adminToken,
+      body: { title: `E2E Jitsi ${RUN} (retitled)`, scheduled_start_at: startAt, scheduled_duration_minutes: 90, meeting_provider: "jitsi" },
+    });
+    check("re-saving with the same provider succeeds", jitsiRetitle.status === 200, jitsiRetitle.body);
+    check("the room — and so the link already shared with anyone — doesn't change on an unrelated edit", jitsiRetitle.body.session?.meeting_external_id === createdRoom, jitsiRetitle.body.session?.meeting_external_id);
+
+    const switchToNative = await call(`/api/sessions/${jitsiId}`, {
+      method: "PUT",
+      token: adminToken,
+      body: { title: `E2E Jitsi ${RUN} (native)`, scheduled_start_at: startAt, scheduled_duration_minutes: 90, meeting_provider: "native" },
+    });
+    check("switching a session back to native clears every meeting_* field", switchToNative.body.session?.meeting_provider === "native" && switchToNative.body.session?.meeting_join_url === null && switchToNative.body.session?.meeting_external_id === null, switchToNative.body.session);
+
+    const switchBackToJitsi = await call(`/api/sessions/${jitsiId}`, {
+      method: "PUT",
+      token: adminToken,
+      body: { title: `E2E Jitsi ${RUN} (jitsi again)`, scheduled_start_at: startAt, scheduled_duration_minutes: 90, meeting_provider: "jitsi" },
+    });
+    check("switching back to Jitsi creates a genuinely new room, not a stale one", switchBackToJitsi.body.session?.meeting_external_id !== createdRoom && typeof switchBackToJitsi.body.session?.meeting_join_url === "string", switchBackToJitsi.body.session?.meeting_external_id);
+
+    // ── created_by fix: was silently always null (req.user?.id doesn't exist
+    // on AuthTokenPayload — only .sub does). Confirmed directly against the DB
+    // since serializeContentItem doesn't strip it and it rides along in the
+    // session response too, but this checks the actual column, not the echo.
+    const adminUser = await prisma.user.findUnique({ where: { email: "admin@webinarflix.dev" } });
+    const jitsiRow = await prisma.contentItem.findUnique({ where: { id: jitsiId }, select: { created_by: true } });
+    check("created_by is now actually populated with the real creating admin, not silently null", jitsiRow?.created_by === adminUser?.id, jitsiRow?.created_by);
+
+    // ── join_url on the PUBLIC payload: a public, granted session's join_url
+    // is the real external link; a native public session's is still null —
+    // this is a decision-relevant regression check, not a new-feature-only one.
+    const jitsiPublic = await call("/api/sessions", {
+      method: "POST",
+      token: adminToken,
+      body: {
+        title: `E2E Jitsi Public ${RUN}`, slug: `e2e-jitsi-public-${RUN}`,
+        scheduled_start_at: startAt, scheduled_duration_minutes: 60,
+        meeting_provider: "jitsi", access_level: "public", status: "registration_open",
+      },
+    });
+    const jitsiPublicId = jitsiPublic.body.session?.id as number;
+    if (jitsiPublicId) created.content.push(jitsiPublicId);
+    const jitsiPublicDetail = await call(`/api/content/e2e-jitsi-public-${RUN}`);
+    check("a public Jitsi session's resolveAccess join_url is the real external link", jitsiPublicDetail.body.access?.join_url === jitsiPublic.body.session?.meeting_join_url && jitsiPublicDetail.body.access?.can_view === true, jitsiPublicDetail.body.access);
+    check("meeting_host_url — the organiser link — never appears anywhere in the public payload", !JSON.stringify(jitsiPublicDetail.body).includes("meeting_host_url"));
+    check("meeting_external_id and meeting_sync_error are equally absent from the public payload", !JSON.stringify(jitsiPublicDetail.body).includes("meeting_external_id") && !JSON.stringify(jitsiPublicDetail.body).includes("meeting_sync_error"));
+
+    const nativePublic = await makeContent("public", { slug: `e2e-native-public-${RUN}` });
+    const nativePublicDetail = await call(`/api/content/e2e-native-public-${RUN}`);
+    check("a public NATIVE session's join_url is still null — unchanged existing behaviour", nativePublicDetail.body.access?.join_url === null && nativePublicDetail.body.access?.can_view === true, nativePublicDetail.body.access);
+
+    // ── Zoom: not configured / not connected in this environment — refused
+    // honestly, without failing the whole session save.
+    const zoomCreate = await call("/api/sessions", {
+      method: "POST",
+      token: adminToken,
+      body: { title: `E2E Zoom ${RUN}`, scheduled_start_at: startAt, scheduled_duration_minutes: 60, meeting_provider: "zoom" },
+    });
+    check("creating a session with an unconnected provider still succeeds — the save isn't blocked", zoomCreate.status === 201, zoomCreate.body);
+    if (zoomCreate.body.session?.id) created.content.push(zoomCreate.body.session.id);
+    check("meeting_provider is recorded as requested even though sync failed", zoomCreate.body.session?.meeting_provider === "zoom", zoomCreate.body.session?.meeting_provider);
+    check("no join_url — nothing was actually created on Zoom", zoomCreate.body.session?.meeting_join_url === null, zoomCreate.body.session?.meeting_join_url);
+    check("the sync error explains what an admin needs to do next, not a stack trace", typeof zoomCreate.body.session?.meeting_sync_error === "string" && zoomCreate.body.session.meeting_sync_error.includes("Connect your Zoom account"), zoomCreate.body.session?.meeting_sync_error);
+
+    // ── A session with no scheduled time yet can't have a meeting created for
+    // it — refused with a specific, actionable reason rather than a provider
+    // error that has nothing to do with the real cause.
+    const noScheduleCreate = await call("/api/sessions", {
+      method: "POST",
+      token: adminToken,
+      body: { title: `E2E No Schedule ${RUN}`, meeting_provider: "jitsi" },
+    });
+    if (noScheduleCreate.body.session?.id) created.content.push(noScheduleCreate.body.session.id);
+    check("a session with no scheduled time gets a clear, specific sync error", noScheduleCreate.body.session?.meeting_sync_error?.includes("scheduled start time"), noScheduleCreate.body.session?.meeting_sync_error);
+  }
+
+  // ─── Provider connections (OAuth) ───────────────────────────────────────────
+  section("Provider connections");
+
+  {
+    const viewerList = await call("/api/provider-connections", { token: sessionToken });
+    check("a signed-in VIEWER cannot list provider connections", viewerList.status === 403, viewerList.body);
+
+    const adminList = await call("/api/provider-connections", { token: adminToken });
+    check("the admin's own connection list loads", adminList.status === 200 && Array.isArray(adminList.body.connections), adminList.body);
+    check("none of google/microsoft/zoom are configured in this environment — matches real env vars, not a guess", adminList.body.configured?.google === false && adminList.body.configured?.microsoft === false && adminList.body.configured?.zoom === false, adminList.body.configured);
+
+    const badProvider = await call("/api/provider-connections/not-a-provider/connect", { token: adminToken });
+    check("an unknown provider is rejected", badProvider.status === 400, badProvider.body);
+
+    const connectUnconfigured = await call("/api/provider-connections/zoom/connect", { token: adminToken });
+    check("starting a connection to an unconfigured provider is refused, not a silent redirect to nowhere", connectUnconfigured.status === 503 && connectUnconfigured.body.error?.includes("isn't configured"), connectUnconfigured.body);
+
+    const disconnectNothing = await call("/api/provider-connections/zoom", { method: "DELETE", token: adminToken });
+    check("disconnecting a provider that was never connected is a harmless no-op, not an error", disconnectNothing.status === 200 && disconnectNothing.body.ok === true, disconnectNothing.body);
+
+    // The callback is deliberately unauthenticated (see providerConnections.ts's
+    // module doc) — hit it with plain fetch, redirect: "manual", so the
+    // redirect itself can be inspected instead of silently followed.
+    const badStateCallback = await fetch(`${API}/api/provider-connections-callback/zoom?code=x&state=not-a-real-state`, { redirect: "manual" });
+    check("an invalid OAuth state redirects back rather than crashing or hanging", badStateCallback.status >= 300 && badStateCallback.status < 400, badStateCallback.status);
+    const badStateLocation = badStateCallback.headers.get("location") ?? "";
+    check("the redirect explains what went wrong via a query param the settings page can toast", badStateLocation.includes("connection_error"), badStateLocation);
+
+    const unknownProviderCallback = await fetch(`${API}/api/provider-connections-callback/not-a-provider?code=x&state=y`, { redirect: "manual" });
+    check("a callback for an unknown provider also redirects with an error rather than 500ing", unknownProviderCallback.status >= 300 && unknownProviderCallback.status < 400 && (unknownProviderCallback.headers.get("location") ?? "").includes("connection_error"), unknownProviderCallback.headers.get("location"));
+  }
+
   // ─── Cleanup ───────────────────────────────────────────────────────────────
   await prisma.rating.deleteMany({ where: { content_id: { in: created.content } } });
   await prisma.streamSession.deleteMany({ where: { content_id: { in: created.content } } });

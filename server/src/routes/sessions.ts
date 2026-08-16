@@ -3,11 +3,128 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { ApiError } from "../lib/errors.js";
 import { serializeContentItem, serializeRestreamTarget } from "../lib/serializers.js";
+import { getMeetingAdapter, type MeetingSessionInput } from "../lib/meetingProviders/index.js";
 import type { Request, Response, NextFunction } from "express";
 
 export const sessionsRouter = Router();
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
+
+type MeetingProviderValue = "native" | "zoom" | "teams" | "google_meet" | "jitsi";
+
+/**
+ * Reconciles content_items.meeting_* with the admin's chosen meeting_provider
+ * after every create/update. Deliberately never throws — a Zoom outage or an
+ * expired connection is not a reason to fail the admin's own save of the
+ * title/description/whatever else they were editing; it's recorded in
+ * meeting_sync_error instead, and the admin UI shows it next to whatever
+ * join link is (or isn't) currently on file. See lib/meetingProviders/
+ * types.ts for why this is possible without sessions.ts caring which
+ * provider it's talking to.
+ */
+async function syncMeetingProvider(
+  contentId: number,
+  desiredProvider: MeetingProviderValue,
+  requestingUserId: number | null,
+): Promise<void> {
+  const existing = await prisma.contentItem.findUnique({
+    where: { id: contentId },
+    select: {
+      meeting_provider: true,
+      meeting_external_id: true,
+      meeting_host_user_id: true,
+      title: true,
+      scheduled_start_at: true,
+      scheduled_duration_minutes: true,
+    },
+  });
+  if (!existing) return;
+
+  const wasNonNative = existing.meeting_provider !== "native";
+  const providerChanged = existing.meeting_provider !== desiredProvider;
+
+  // Switching to native, or away from a provider that had a real meeting —
+  // clean up the old one (best-effort) before anything else.
+  if (wasNonNative && (desiredProvider === "native" || providerChanged) && existing.meeting_external_id) {
+    try {
+      const oldAdapter = getMeetingAdapter(existing.meeting_provider as "zoom" | "teams" | "google_meet" | "jitsi");
+      await oldAdapter.deleteMeeting(existing.meeting_external_id, existing.meeting_host_user_id);
+    } catch {
+      // Best-effort — an already-revoked connection or already-deleted
+      // provider-side meeting is not a reason to block switching away from it.
+    }
+  }
+
+  if (desiredProvider === "native") {
+    await prisma.contentItem.update({
+      where: { id: contentId },
+      data: {
+        meeting_provider: "native",
+        meeting_join_url: null,
+        meeting_host_url: null,
+        meeting_external_id: null,
+        meeting_host_user_id: null,
+        meeting_sync_error: null,
+        meeting_synced_at: null,
+      },
+    });
+    return;
+  }
+
+  if (!existing.scheduled_start_at || !existing.scheduled_duration_minutes) {
+    await prisma.contentItem.update({
+      where: { id: contentId },
+      data: {
+        meeting_provider: desiredProvider,
+        meeting_sync_error: "This session needs a scheduled start time and duration before a meeting can be created for it.",
+      },
+    });
+    return;
+  }
+
+  const adapter = getMeetingAdapter(desiredProvider);
+  // Jitsi needs no host identity; every other provider defaults to whoever
+  // is saving the session, unless a host was already set (an edit by a
+  // different admin shouldn't silently reassign the meeting to themself).
+  const hostUserId = adapter.requiresConnection ? (providerChanged ? requestingUserId : (existing.meeting_host_user_id ?? requestingUserId)) : null;
+
+  const input: MeetingSessionInput = {
+    content_id: contentId,
+    title: existing.title,
+    host_user_id: hostUserId,
+    scheduled_start_at: existing.scheduled_start_at,
+    scheduled_duration_minutes: existing.scheduled_duration_minutes,
+  };
+
+  try {
+    const result =
+      !providerChanged && existing.meeting_external_id
+        ? await adapter.updateMeeting(existing.meeting_external_id, input)
+        : await adapter.createMeeting(input);
+
+    await prisma.contentItem.update({
+      where: { id: contentId },
+      data: {
+        meeting_provider: desiredProvider,
+        meeting_join_url: result.join_url,
+        meeting_host_url: result.host_url,
+        meeting_external_id: result.external_id,
+        meeting_host_user_id: hostUserId,
+        meeting_sync_error: null,
+        meeting_synced_at: new Date(),
+      },
+    });
+  } catch (err) {
+    await prisma.contentItem.update({
+      where: { id: contentId },
+      data: {
+        meeting_provider: desiredProvider,
+        meeting_host_user_id: hostUserId,
+        meeting_sync_error: err instanceof ApiError ? err.message : "Something went wrong creating the meeting.",
+      },
+    });
+  }
+}
 
 function slugify(text: string) {
   return text
@@ -49,6 +166,7 @@ const SessionWriteSchema = z.object({
   // Stream source
   stream_provider: z.string().max(50).nullable().optional(),
   playback_id: z.string().max(255).nullable().optional(),
+  meeting_provider: z.enum(["native", "zoom", "teams", "google_meet", "jitsi"]).default("native"),
 
   // Access & Pricing
   access_level: z.enum(["public","registered","subscriber","purchase","cohort"]).default("registered"),
@@ -204,7 +322,12 @@ sessionsRouter.get("/check-slug", async (req: Request, res: Response, next: Next
 sessionsRouter.post("/", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const body = SessionWriteSchema.parse(req.body);
-    const userId = (req as any).user?.id;
+    // Was `(req as any).user?.id` — AuthTokenPayload has no `id` field, only
+    // `sub` (see lib/jwt.ts), so created_by has been silently written as
+    // null on every session ever created. Fixed here because
+    // meeting_host_user_id below now genuinely depends on this being right,
+    // not just created_by's own bookkeeping.
+    const userId = req.user?.sub ?? null;
 
     // Enforce ad hard rule
     if (["subscriber","purchase","cohort"].includes(body.access_level)) {
@@ -236,6 +359,12 @@ sessionsRouter.post("/", async (req: Request, res: Response, next: NextFunction)
         search_tags: body.search_tags ?? null,
         stream_provider: body.stream_provider ?? null,
         playback_id: body.playback_id ?? null,
+        // meeting_provider is NOT set here — it stays at its schema default
+        // ('native') until syncMeetingProvider() below runs. That function is
+        // the only writer of this column; leaving it out here keeps its
+        // "existing.meeting_provider !== desired" change-detection honest on
+        // a brand-new row instead of racing its own read of what this insert
+        // just wrote.
         access_level: body.access_level as any,
         price_mode: body.price_mode as any,
         price_ngn: body.price_ngn ?? null,
@@ -260,12 +389,14 @@ sessionsRouter.post("/", async (req: Request, res: Response, next: NextFunction)
         seo_title: body.seo_title ?? null,
         seo_canonical_url: body.seo_canonical_url ?? null,
         seo_meta_description: body.seo_meta_description ?? null,
-        created_by: userId ?? null,
+        created_by: userId,
       },
     });
 
     // Create related records
     await createRelated(item.id, body);
+
+    await syncMeetingProvider(item.id, body.meeting_provider, userId);
 
     const full = await fetchFullSession(item.id);
     res.status(201).json({ session: full });
@@ -334,6 +465,9 @@ sessionsRouter.put("/:id", async (req: Request, res: Response, next: NextFunctio
         search_tags: body.search_tags ?? null,
         stream_provider: body.stream_provider ?? null,
         playback_id: body.playback_id ?? null,
+        // meeting_provider is deliberately not touched by this update — see
+        // the identical note in POST /sessions above. syncMeetingProvider()
+        // below is the only writer.
         access_level: body.access_level as any,
         price_mode: body.price_mode as any,
         price_ngn: body.price_ngn ?? null,
@@ -365,6 +499,8 @@ sessionsRouter.put("/:id", async (req: Request, res: Response, next: NextFunctio
     await deleteRelated(id);
     await createRelated(id, body);
 
+    await syncMeetingProvider(id, body.meeting_provider, req.user?.sub ?? null);
+
     const full = await fetchFullSession(id);
     res.json({ session: full });
   } catch (err) {
@@ -380,8 +516,22 @@ sessionsRouter.delete("/:id", async (req: Request, res: Response, next: NextFunc
     const id = Number(req.params.id);
     if (!id) throw new ApiError(400, "Invalid session id");
 
-    const existing = await prisma.contentItem.findFirst({ where: { id, content_type: "webinar" }, select: { id: true } });
+    const existing = await prisma.contentItem.findFirst({
+      where: { id, content_type: "webinar" },
+      select: { id: true, meeting_provider: true, meeting_external_id: true, meeting_host_user_id: true },
+    });
     if (!existing) throw new ApiError(404, "Session not found");
+
+    if (existing.meeting_provider !== "native" && existing.meeting_external_id) {
+      try {
+        const adapter = getMeetingAdapter(existing.meeting_provider as "zoom" | "teams" | "google_meet" | "jitsi");
+        await adapter.deleteMeeting(existing.meeting_external_id, existing.meeting_host_user_id);
+      } catch {
+        // Best-effort, same reasoning as syncMeetingProvider's own cleanup —
+        // deleting this session is not conditional on Zoom/Teams/Meet
+        // cooperating.
+      }
+    }
 
     await deleteRelated(id);
     await prisma.contentItem.delete({ where: { id } });

@@ -35,4 +35,17 @@ export const env = {
   OUTLOOK_CLIENT_SECRET: process.env.OUTLOOK_CLIENT_SECRET ?? "",
   /** Absolute base used to build the permanent .ics URL handed to calendar apps. */
   PUBLIC_BASE_URL: process.env.PUBLIC_BASE_URL ?? "http://localhost:4000",
+
+  // Meeting-provider integration (lib/meetingProviders/). Google Meet and
+  // Teams deliberately reuse the SAME app registrations as calendar sync
+  // above, not separate ones — a Google Meet link IS a Calendar event with
+  // conferenceData, and a Teams meeting IS an Outlook event with
+  // isOnlineMeeting set, so they're one OAuth grant per identity provider,
+  // not one per feature. Zoom has no calendar-sync counterpart in this app,
+  // so it gets its own pair.
+  ZOOM_CLIENT_ID: process.env.ZOOM_CLIENT_ID ?? "",
+  ZOOM_CLIENT_SECRET: process.env.ZOOM_CLIENT_SECRET ?? "",
+  /** Public Jitsi needs no credentials at all — this only matters for a
+   *  self-hosted instance. Defaults to the provider's own free public server. */
+  JITSI_DOMAIN: process.env.JITSI_DOMAIN ?? "meet.jit.si",
 };

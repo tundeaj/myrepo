@@ -102,6 +102,16 @@ export function Player() {
         if (cancelled) return;
         setSummary(content);
 
+        // A non-native session has no media asset for /api/playback/session
+        // to find — this route only exists for the native player. Someone
+        // landing here directly (a stale bookmark, browser back, a shared
+        // /watch/:slug/play link) for a Zoom/Teams/Meet/Jitsi session should
+        // land on the real meeting, not a "couldn't start playback" dead end.
+        if (content.access.can_view && content.access.join_url) {
+          window.location.replace(content.access.join_url);
+          return;
+        }
+
         const token = getToken();
         const res = await fetch("/api/playback/session", {
           method: "POST",

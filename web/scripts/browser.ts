@@ -693,6 +693,49 @@ async function run(browser: Browser) {
     check("/admin/sessions/categories throws no uncaught render error", pageErrors.length === beforeAliasErrors, pageErrors.slice(beforeAliasErrors));
   }
 
+  section("Meeting providers");
+
+  if (adminToken) {
+    // Real DELETE exists here too — fixture created and torn down via fetch,
+    // same as Speakers above. Jitsi specifically, because it's the one
+    // provider this environment can create a REAL meeting for (no OAuth app
+    // configured for Zoom/Google/Microsoft here, same as CI) — so this is
+    // the one path where "renders the real join link" is checking something
+    // truthfully live, not just a rendered placeholder.
+    const startAt = new Date(Date.now() + 86_400_000).toISOString();
+    const created = await fetch(`${API_BASE}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ title: `Browser Check Jitsi ${Date.now()}`, scheduled_start_at: startAt, scheduled_duration_minutes: 60, meeting_provider: "jitsi" }),
+    }).then((r) => r.json());
+    const sessionId = created?.session?.id;
+    check("a fixture Jitsi session is created for this check", typeof sessionId === "number", created);
+
+    if (sessionId) {
+      const beforeErrors = pageErrors.length;
+      await page.goto(`${BASE}/admin/sessions/${sessionId}/edit`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(600);
+
+      const hasPanel = await page.locator('h2:has-text("Meeting Platform")').count();
+      check("the Meeting Platform panel renders on the session editor", hasPanel > 0, { hasPanel });
+
+      const hasRealJoinLink = await page.locator(`text=${created.session.meeting_join_url}`).count();
+      check("the real Jitsi join link (created via the API above) renders in the panel", hasRealJoinLink > 0, { hasRealJoinLink, expected: created.session.meeting_join_url });
+
+      const hasStreamSourceWhileJitsi = await page.locator('h2:has-text("Stream Source")').count();
+      check("Stream Source is hidden while a third-party provider is selected", hasStreamSourceWhileJitsi === 0, { hasStreamSourceWhileJitsi });
+
+      await page.locator('select').filter({ hasText: "Native (Webinarflix player)" }).selectOption("native");
+      await page.waitForTimeout(400);
+      const hasStreamSourceAfterNative = await page.locator('h2:has-text("Stream Source")').count();
+      check("selecting Native brings Stream Source back", hasStreamSourceAfterNative > 0, { hasStreamSourceAfterNative });
+
+      check("/admin/sessions/:id/edit (Meeting Platform panel) throws no uncaught render error", pageErrors.length === beforeErrors, pageErrors.slice(beforeErrors));
+
+      await fetch(`${API_BASE}/api/sessions/${sessionId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    }
+  }
+
   check("no uncaught page errors across the run", pageErrors.length === 0, pageErrors);
 
   await page.close();

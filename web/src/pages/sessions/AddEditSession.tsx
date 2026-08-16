@@ -17,6 +17,8 @@ import { AdvertisementPanel } from "../../components/session/AdvertisementPanel"
 import { ArtworkPanel } from "../../components/session/ArtworkPanel";
 import { StreamSourcePanel } from "../../components/session/StreamSourcePanel";
 import type { StreamProvider } from "../../components/session/StreamSourcePanel";
+import { MeetingProviderPanel } from "../../components/session/MeetingProviderPanel";
+import type { MeetingProvider } from "../../components/session/MeetingProviderPanel";
 import { AccessPricingPanel } from "../../components/session/AccessPricingPanel";
 import type { AccessLevel, PriceMode } from "../../components/session/AccessPricingPanel";
 import { SimulcastPanel } from "../../components/session/SimulcastPanel";
@@ -78,6 +80,15 @@ interface FormState {
   externalUrl: string;
   vodAssetId: number | null;
   simulatedLive: boolean;
+
+  // Meeting platform — meetingProvider is the only one of these an admin
+  // sets directly; the rest are written by the server (syncMeetingProvider,
+  // routes/sessions.ts) and only ever read here, never sent back in a save.
+  meetingProvider: MeetingProvider;
+  meetingJoinUrl: string | null;
+  meetingHostUrl: string | null;
+  meetingSyncError: string | null;
+  meetingSyncedAt: string | null;
 
   // Access & Pricing
   accessLevel: AccessLevel;
@@ -145,6 +156,11 @@ function defaultForm(): FormState {
     externalUrl: "",
     vodAssetId: null,
     simulatedLive: false,
+    meetingProvider: "native",
+    meetingJoinUrl: null,
+    meetingHostUrl: null,
+    meetingSyncError: null,
+    meetingSyncedAt: null,
     accessLevel: "registered",
     priceMode: "fixed",
     priceNgn: "",
@@ -224,6 +240,11 @@ function sessionToForm(s: Record<string, any>): FormState {
     externalUrl: "",
     vodAssetId: null,
     simulatedLive: false,
+    meetingProvider: (s.meeting_provider as MeetingProvider) ?? "native",
+    meetingJoinUrl: s.meeting_join_url ?? null,
+    meetingHostUrl: s.meeting_host_url ?? null,
+    meetingSyncError: s.meeting_sync_error ?? null,
+    meetingSyncedAt: s.meeting_synced_at ?? null,
     accessLevel: (s.access_level as AccessLevel) ?? "registered",
     priceMode: (s.price_mode as PriceMode) ?? "fixed",
     priceNgn: s.price_ngn ? String(s.price_ngn) : "",
@@ -275,6 +296,7 @@ function formToPayload(form: FormState, status: "draft" | "registration_open") {
     search_tags: form.searchTags.join(",") || null,
     stream_provider: form.streamProvider,
     playback_id: form.playbackId || null,
+    meeting_provider: form.meetingProvider,
     access_level: form.accessLevel,
     price_mode: form.priceMode,
     price_ngn: parseFloat(form.priceNgn) || null,
@@ -673,19 +695,31 @@ export function AddEditSession() {
               onImageOverrides={(v) => patchForm({ imageOverrides: v })}
             />
 
-            <StreamSourcePanel
-              provider={form.streamProvider}
-              playbackId={form.playbackId}
-              externalUrl={form.externalUrl}
-              vodAssetId={form.vodAssetId}
-              simulatedLive={form.simulatedLive}
+            <MeetingProviderPanel
+              provider={form.meetingProvider}
+              onProvider={(v) => patchForm({ meetingProvider: v })}
+              joinUrl={form.meetingJoinUrl}
+              hostUrl={form.meetingHostUrl}
+              syncError={form.meetingSyncError}
+              syncedAt={form.meetingSyncedAt}
               sessionId={sessionId}
-              onProvider={(v) => patchForm({ streamProvider: v })}
-              onPlaybackId={(v) => patchForm({ playbackId: v })}
-              onExternalUrl={(v) => patchForm({ externalUrl: v })}
-              onVodAssetId={(v) => patchForm({ vodAssetId: v })}
-              onSimulatedLive={(v) => patchForm({ simulatedLive: v })}
             />
+
+            {form.meetingProvider === "native" && (
+              <StreamSourcePanel
+                provider={form.streamProvider}
+                playbackId={form.playbackId}
+                externalUrl={form.externalUrl}
+                vodAssetId={form.vodAssetId}
+                simulatedLive={form.simulatedLive}
+                sessionId={sessionId}
+                onProvider={(v) => patchForm({ streamProvider: v })}
+                onPlaybackId={(v) => patchForm({ playbackId: v })}
+                onExternalUrl={(v) => patchForm({ externalUrl: v })}
+                onVodAssetId={(v) => patchForm({ vodAssetId: v })}
+                onSimulatedLive={(v) => patchForm({ simulatedLive: v })}
+              />
+            )}
 
             <AccessPricingPanel
               accessLevel={form.accessLevel}

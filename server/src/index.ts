@@ -31,6 +31,7 @@ import { subscriberAnalyticsRouter } from "./routes/subscriberAnalytics.js";
 import { invoicesRouter } from "./routes/invoices.js";
 import { layoutRouter } from "./routes/layout.js";
 import { usersRouter } from "./routes/users.js";
+import { providerConnectionsRouter, providerConnectionsCallbackRouter } from "./routes/providerConnections.js";
 import { homepageRouter } from "./routes/homepage.js";
 import { contentRouter, publicCategoriesRouter, publicSpeakersRouter } from "./routes/content.js";
 import { signupRouter } from "./routes/signup.js";
@@ -95,6 +96,10 @@ app.use("/api/analytics/subscribers", requireAuth, requireAdmin, subscriberAnaly
 app.use("/api/invoices", requireAuth, requireAdmin, invoicesRouter);
 app.use("/api/layout", requireAuth, requireAdmin, layoutRouter);
 app.use("/api/users", requireAuth, requireAdmin, usersRouter);
+app.use("/api/provider-connections", requireAuth, requireInstructor, providerConnectionsRouter);
+// Unauthenticated on purpose, mounted at a base path with zero overlap with
+// /api/provider-connections above — see providerConnections.ts's module doc.
+app.use("/api/provider-connections-callback", providerConnectionsCallbackRouter);
 app.use("/api/homepage", homepageRouter);
 // Public content surface (Prompt 11). Unauthenticated by design — these are the
 // pages the homepage links to. Mounted under /public-* so they cannot collide

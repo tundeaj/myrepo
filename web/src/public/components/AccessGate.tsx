@@ -35,6 +35,10 @@ export interface AccessResult {
   price_ngn: number | null;
   registration_id: number | null;
   join_token: string | null;
+  /** Set only for a granted, non-native session (Zoom/Teams/Google Meet/Jitsi)
+   *  — the real external link. null for native sessions, where the internal
+   *  /watch/:slug/play route (below) is still exactly right. */
+  join_url: string | null;
 }
 
 const PRIMARY =
@@ -130,9 +134,20 @@ export function AccessGate({
     case "cohort":
       return (
         <div className="space-y-2">
-          <Link to={`/watch/${slug}/play`} className={PRIMARY}>
-            {isLive ? "Join live" : "Watch now"}
-          </Link>
+          {/* Same button, same copy, same style whether this session runs on
+              the native player or a third-party meeting platform — join_url
+              is null for native (the internal route below is exactly right),
+              and the real external link otherwise. Nothing else in this
+              component branches on which. */}
+          {access.join_url ? (
+            <a href={access.join_url} target="_blank" rel="noopener noreferrer" className={PRIMARY}>
+              {isLive ? "Join live" : "Watch now"}
+            </a>
+          ) : (
+            <Link to={`/watch/${slug}/play`} className={PRIMARY}>
+              {isLive ? "Join live" : "Watch now"}
+            </Link>
+          )}
           {access.reason === "registered" && (
             <Link
               to="/account/registrations"
