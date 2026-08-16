@@ -2629,6 +2629,87 @@ async function main() {
   check("both trending fixtures actually appear in the public hero payload", posA !== -1 && posB !== -1, heroIds);
   check("A sorts before B in the public hero — the same order the admin's promote/demote left them in", posA < posB, { posA, posB, heroIds });
 
+  section("Trending — suggestions (recently popular, not yet trending)");
+
+  const trendD = await makeContent("public", { slug: `e2e-trend-d-${RUN}`, title: `E2E Trend D ${RUN}` });
+  const trendE = await makeContent("public", { slug: `e2e-trend-e-${RUN}`, title: `E2E Trend E ${RUN}` });
+  const trendF = await makeContent("public", { slug: `e2e-trend-f-${RUN}`, title: `E2E Trend F ${RUN}` });
+  const trendStale = await makeContent("public", { slug: `e2e-trend-stale-${RUN}`, title: `E2E Trend Stale ${RUN}` });
+  const trendAlreadyIn = await makeContent("public", { slug: `e2e-trend-already-in-${RUN}`, title: `E2E Trend Already In ${RUN}` });
+
+  const withinWindow = new Date(Date.now() - 2 * 86400000);
+  const outsideWindow = new Date(Date.now() - 10 * 86400000);
+
+  // suggestions ranks GLOBALLY across every content item, not scoped to this
+  // run's own fixtures — other e2e sections leave a little real activity of
+  // their own behind (a Jitsi attendance ping here, a couple of playback
+  // sessions there). Volumes here are deliberately large relative to that
+  // realistic background noise, so D/E/F land in the top-`SUGGEST_LIMIT`
+  // regardless of what else happened earlier in the same run — the same
+  // "assume a non-empty, shared global state" discipline this session
+  // already learned for subscription accrual.
+
+  // D: 20 recent native plays. E: 12. Real PlaybackSession rows, not a
+  // proxy — the same signal lib/earnings.ts's own subscription accrual
+  // already trusts.
+  for (let i = 0; i < 20; i++) {
+    const s = await prisma.playbackSession.create({ data: { content_id: trendD.id, started_at: withinWindow } });
+    created.playbackSessions.push(s.id);
+  }
+  for (let i = 0; i < 12; i++) {
+    const s = await prisma.playbackSession.create({ data: { content_id: trendE.id, started_at: withinWindow } });
+    created.playbackSessions.push(s.id);
+  }
+
+  // F: recent non-native attendance only, no PlaybackSession at all — proves
+  // the two signals genuinely merge, not just one of them.
+  for (let i = 0; i < 15; i++) {
+    await prisma.meetingAttendance.create({ data: { user_id: user!.id, content_id: trendF.id, provider: "jitsi", joined_at: withinWindow } });
+  }
+
+  // Stale: real activity, but outside the 7-day window — must not surface.
+  const staleSession = await prisma.playbackSession.create({ data: { content_id: trendStale.id, started_at: outsideWindow } });
+  created.playbackSessions.push(staleSession.id);
+
+  // Already-in: real activity AND already on the trending list — activity
+  // alone must not be enough to suggest something already there.
+  const alreadyInAdd = await call("/api/trending", { method: "POST", token: adminToken, body: { content_id: trendAlreadyIn.id } });
+  check("the already-trending suggestion fixture is added for this check", alreadyInAdd.status === 201, alreadyInAdd.body);
+  for (let i = 0; i < 25; i++) {
+    const s = await prisma.playbackSession.create({ data: { content_id: trendAlreadyIn.id, started_at: withinWindow } });
+    created.playbackSessions.push(s.id);
+  }
+
+  const anonSuggest = await call("/api/trending/suggestions");
+  check("an anonymous request cannot see suggestions", anonSuggest.status === 401, anonSuggest.body);
+  const viewerSuggest = await call("/api/trending/suggestions", { token: sessionToken });
+  check("a signed-in VIEWER cannot see suggestions", viewerSuggest.status === 403, viewerSuggest.body);
+
+  const suggestRes = await call("/api/trending/suggestions", { token: adminToken });
+  check("the suggestions endpoint succeeds", suggestRes.status === 200, suggestRes.body);
+  const suggestions = suggestRes.body.suggestions as { id: number; recent_activity: number }[];
+  const suggestIds = suggestions.map((s) => s.id);
+
+  check("D and E (recent native activity) both appear", suggestIds.includes(trendD.id) && suggestIds.includes(trendE.id), suggestIds);
+  check("D outranks E — 20 recent plays beats 12",
+    suggestIds.indexOf(trendD.id) < suggestIds.indexOf(trendE.id), suggestIds);
+  check("F appears from attendance activity alone — the native and non-native signals genuinely merge",
+    suggestIds.includes(trendF.id), suggestIds);
+  check("the stale fixture (activity outside the 7-day window) does not appear", !suggestIds.includes(trendStale.id), suggestIds);
+  check("the already-trending fixture does not appear, despite having the most activity of all",
+    !suggestIds.includes(trendAlreadyIn.id), suggestIds);
+
+  const dSuggestion = suggestions.find((s) => s.id === trendD.id);
+  check("the suggested activity count for D reflects its real 20 recent plays", dSuggestion?.recent_activity === 20, dSuggestion);
+
+  // The one-click add itself is just the existing POST / — this proves a
+  // suggestion is a real, addable candidate, not a dead-end preview.
+  const addFromSuggestion = await call("/api/trending", { method: "POST", token: adminToken, body: { content_id: trendD.id } });
+  check("adding a suggested item succeeds via the exact same add endpoint the search box uses", addFromSuggestion.status === 201, addFromSuggestion.body);
+  const suggestAfterAdd = await call("/api/trending/suggestions", { token: adminToken });
+  const suggestIdsAfterAdd = (suggestAfterAdd.body.suggestions as { id: number }[]).map((s) => s.id);
+  check("D disappears from suggestions the moment it's added to the trending list", !suggestIdsAfterAdd.includes(trendD.id), suggestIdsAfterAdd);
+
   // ─── Cleanup ───────────────────────────────────────────────────────────────
   await prisma.meetingAttendance.deleteMany({
     where: { OR: [{ user_id: { in: created.users } }, { content_id: { in: created.content } }] },

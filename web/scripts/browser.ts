@@ -851,6 +851,19 @@ async function run(browser: Browser) {
         titlesAfterPromote.indexOf(`Browser Check Trend Second ${stamp}`) < titlesAfterPromote.indexOf(`Browser Check Trend First ${stamp}`),
         titlesAfterPromote);
 
+      // No fixture here has real PlaybackSession/MeetingAttendance rows
+      // behind it (that's e2e's job, against real activity data) — this
+      // just proves the "Suggested" section's presence tracks the real API
+      // response instead of crashing or silently mismatching it, whatever
+      // that response happens to be.
+      const suggestRes = await fetch(`${API_BASE}/api/trending/suggestions`, {
+        headers: { Authorization: `Bearer ${adminToken}` },
+      }).then((r) => r.json());
+      const suggestionCount = (suggestRes.suggestions ?? []).length;
+      const hasSuggestLabel = await page.locator("text=Recently popular, not yet trending").count();
+      check("the Suggested section's presence matches the real suggestions response",
+        (suggestionCount > 0) === (hasSuggestLabel > 0), { suggestionCount, hasSuggestLabel });
+
       check("/admin/trending throws no uncaught render error", pageErrors.length === beforeErrors, pageErrors.slice(beforeErrors));
 
       await fetch(`${API_BASE}/api/trending/${firstId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });

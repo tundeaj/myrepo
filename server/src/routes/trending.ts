@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { ApiError } from "../lib/errors.js";
-import { rebuildAllCaches } from "../lib/homepageCache.js";
+import { rebuildAllCaches, VISIBLE_STATUSES } from "../lib/homepageCache.js";
 import { syncHeroTrending } from "../lib/trending.js";
 import type { Request, Response, NextFunction } from "express";
 
@@ -32,6 +32,11 @@ import type { Request, Response, NextFunction } from "express";
  * hero (buildHero, via visibleWhere) is the actual gate: a trending item
  * that isn't yet publicly visible simply doesn't render there until it is,
  * same discipline as every other admin-side flag in this codebase.
+ *
+ * GET /suggestions is the one read-only, non-authoritative addition: a
+ * ranked nudge toward what's recently popular but not yet on the list, not
+ * a second way to BE on the list — adding a suggestion goes through the
+ * exact same POST / as the search box.
  */
 export const trendingRouter = Router();
 
@@ -69,6 +74,77 @@ trendingRouter.get("/", async (_req: Request, res: Response, next: NextFunction)
   try {
     const items = await orderedTrending();
     res.json({ items });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── GET /suggestions — what's recently popular but not yet trending ──────────
+//
+// A light-touch nudge, not a second ranking system: content_items.view_count
+// exists in the schema but nothing in this codebase has ever incremented it
+// (checked before building this) — using it here would rank everything by
+// zero. What IS real and populated is watch activity: PlaybackSession for
+// native content, MeetingAttendance for Zoom/Teams/Meet/Jitsi (see
+// lib/earnings.ts's own subscription-accrual merge of exactly these two
+// signals for the same reason — one measured, one credited, both real).
+// Recency window is fixed, not a Settings Hub field — "light touch" means
+// one honest default, not a new admin-configurable surface for a nudge an
+// admin can already override by hand.
+
+const SUGGEST_WINDOW_DAYS = 7;
+const SUGGEST_LIMIT = 8;
+
+trendingRouter.get("/suggestions", async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const since = new Date(Date.now() - SUGGEST_WINDOW_DAYS * 86_400_000);
+
+    const [playbackCounts, attendanceCounts, alreadyTrending] = await Promise.all([
+      prisma.playbackSession.groupBy({
+        by: ["content_id"],
+        where: { content_id: { not: null }, started_at: { gte: since } },
+        _count: { _all: true },
+      }),
+      prisma.meetingAttendance.groupBy({
+        by: ["content_id"],
+        where: { joined_at: { gte: since } },
+        _count: { _all: true },
+      }),
+      prisma.contentItem.findMany({ where: { show_in_hero: true }, select: { id: true } }),
+    ]);
+
+    const trendingIds = new Set(alreadyTrending.map((r) => r.id));
+    const activity = new Map<number, number>();
+    for (const row of playbackCounts) {
+      if (row.content_id == null || trendingIds.has(row.content_id)) continue;
+      activity.set(row.content_id, (activity.get(row.content_id) ?? 0) + row._count._all);
+    }
+    for (const row of attendanceCounts) {
+      if (trendingIds.has(row.content_id)) continue;
+      activity.set(row.content_id, (activity.get(row.content_id) ?? 0) + row._count._all);
+    }
+
+    const rankedIds = [...activity.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, SUGGEST_LIMIT)
+      .map(([id]) => id);
+
+    if (!rankedIds.length) return res.json({ suggestions: [], window_days: SUGGEST_WINDOW_DAYS });
+
+    // Same gate the public hero itself uses (visibleWhere) — a suggestion
+    // that isn't currently publishable isn't a real "add this" candidate,
+    // even if it racked up activity before being pulled back to draft.
+    const content = await prisma.contentItem.findMany({
+      where: { id: { in: rankedIds }, is_active: true, status: { in: [...VISIBLE_STATUSES] } },
+      select: { id: true, title: true, slug: true, content_type: true, status: true, master_image_url: true },
+    });
+    const byId = new Map(content.map((c) => [c.id, c]));
+
+    const suggestions = rankedIds
+      .filter((id) => byId.has(id))
+      .map((id) => ({ ...byId.get(id)!, recent_activity: activity.get(id)! }));
+
+    res.json({ suggestions, window_days: SUGGEST_WINDOW_DAYS });
   } catch (err) {
     next(err);
   }

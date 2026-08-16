@@ -43,6 +43,16 @@ interface SearchResult {
   show_in_hero: boolean;
 }
 
+interface Suggestion {
+  id: number;
+  title: string | null;
+  slug: string;
+  content_type: string;
+  status: string;
+  master_image_url: string | null;
+  recent_activity: number;
+}
+
 const STATUS_TONE: Record<string, string> = {
   live: "border-red-500/30 bg-red-500/15 text-red-300",
   registration_open: "border-emerald-500/30 bg-emerald-500/15 text-emerald-300",
@@ -145,19 +155,79 @@ function AddToTrending({ existingIds, onAdded }: { existingIds: Set<number>; onA
   );
 }
 
+/**
+ * A light-touch nudge, not a second way onto the list — every chip's "+"
+ * goes through the exact same POST /trending the search box above uses.
+ * Ranked by recent watch activity (native PlaybackSession + non-native
+ * MeetingAttendance, the last 7 days — see routes/trending.ts's own doc
+ * comment for why NOT content_items.view_count, which nothing ever
+ * populates). Absent entirely rather than shown empty — a fresh platform
+ * with no watch history yet has nothing honest to suggest.
+ */
+function SuggestionChips({
+  suggestions,
+  busyId,
+  onAdd,
+}: {
+  suggestions: Suggestion[];
+  busyId: number | null;
+  onAdd: (item: Suggestion) => void;
+}) {
+  if (!suggestions.length) return null;
+
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+      <p className="mb-2 text-xs font-medium text-slate-400">
+        Recently popular, not yet trending <span className="text-slate-600">— last 7 days</span>
+      </p>
+      <div className="flex flex-wrap gap-2">
+        {suggestions.map((s) => (
+          <button
+            key={s.id}
+            type="button"
+            onClick={() => onAdd(s)}
+            disabled={busyId === s.id}
+            className="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-950 py-1.5 pl-3 pr-2 text-xs text-slate-200 hover:border-brand/50 hover:bg-slate-900 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <span className="max-w-[16rem] truncate">{s.title ?? `Untitled #${s.id}`}</span>
+            <span className="rounded-full bg-slate-800 px-1.5 py-0.5 text-[10px] tabular-nums text-slate-400">
+              {s.recent_activity}
+            </span>
+            <Icon name="flame" className="h-3.5 w-3.5 shrink-0 text-brand" />
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function Trending() {
   const { toast } = useToast();
   const [items, setItems] = useState<TrendingItem[] | null>(null);
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [correlationId, setCorrelationId] = useState<string | undefined>();
   const [busyId, setBusyId] = useState<number | null>(null);
 
+  // Fetched together so a change to one is never out of sync with the
+  // other — adding an item (from the search box OR a suggestion chip) must
+  // make it disappear from suggestions on the very next render, not the one
+  // after.
   const load = useCallback(() => {
     setLoading(true);
     setError(null);
-    api<{ items: TrendingItem[] }>("/trending")
-      .then((res) => { setItems(res.items); setLoading(false); })
+    Promise.all([
+      api<{ items: TrendingItem[] }>("/trending"),
+      // Suggestions are a nudge, not load-bearing — a failure here shouldn't
+      // block the actual trending list from rendering.
+      api<{ suggestions: Suggestion[] }>("/trending/suggestions").catch(() => ({ suggestions: [] })),
+    ])
+      .then(([trendingRes, suggestRes]) => {
+        setItems(trendingRes.items);
+        setSuggestions(suggestRes.suggestions);
+        setLoading(false);
+      })
       .catch((err) => {
         setError(err.message ?? "Failed to load the trending list.");
         setCorrelationId(err.correlationId);
@@ -166,6 +236,19 @@ export function Trending() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  async function addSuggestion(item: Suggestion) {
+    setBusyId(item.id);
+    try {
+      await api("/trending", { method: "POST", body: JSON.stringify({ content_id: item.id }) });
+      toast(`"${item.title ?? "Untitled"}" added to the trending list.`);
+      load();
+    } catch (e: any) {
+      toast(e.message ?? "Couldn't add that to the trending list.", "error");
+    } finally {
+      setBusyId(null);
+    }
+  }
 
   async function move(item: TrendingItem, direction: "promote" | "demote") {
     setBusyId(item.id);
@@ -211,6 +294,8 @@ export function Trending() {
           it later, or remove it entirely. A change here goes live within moments, not the homepage's usual cache window.
         </p>
       </div>
+
+      <SuggestionChips suggestions={suggestions} busyId={busyId} onAdd={addSuggestion} />
 
       <AddToTrending existingIds={existingIds} onAdded={load} />
 
