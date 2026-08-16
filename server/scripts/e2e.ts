@@ -99,6 +99,7 @@ const created = {
   contactRequests: [] as number[],
   categories: [] as number[],
   sponsors: [] as number[],
+  contentSponsors: [] as number[],
   advertisers: [] as number[],
   ads: [] as number[],
 };
@@ -1725,6 +1726,129 @@ async function main() {
   check("deleting a sponsor with no content links succeeds", deleteSponsorUnused.status === 200, deleteSponsorUnused.body);
   created.sponsors = created.sponsors.filter((id) => id !== sponsorId);
 
+  // ─── Content Sponsors — linking a sponsor to specific content ─────────────────
+  //
+  // content_sponsors has existed in the schema since the beginning, but
+  // routes/sponsors.ts's own doc comment flagged linking as a real, separate
+  // gap: "no nav entry anywhere to hang a UI off of yet." routes/contentSponsors.ts
+  // closes it — this section exercises that surface directly.
+  section("Content Sponsors — linking a sponsor to content");
+
+  const csSponsor = await call("/api/sponsors", { method: "POST", token: adminToken, body: { name: `E2E CS Sponsor ${RUN}` } });
+  const csSponsorId = csSponsor.body.sponsor?.id;
+  if (csSponsorId) created.sponsors.push(csSponsorId);
+
+  const csInactiveSponsor = await call("/api/sponsors", { method: "POST", token: adminToken, body: { name: `E2E CS Inactive Sponsor ${RUN}`, is_active: false } });
+  const csInactiveSponsorId = csInactiveSponsor.body.sponsor?.id;
+  if (csInactiveSponsorId) created.sponsors.push(csInactiveSponsorId);
+
+  const csContentA = await makeContent("public", { slug: `e2e-cs-a-${RUN}` });
+  const csContentB = await makeContent("public", { slug: `e2e-cs-b-${RUN}` });
+
+  const viewerLinkCreate = await call("/api/content-sponsors", { method: "POST", token: sessionToken, body: { content_id: csContentA.id, sponsor_id: csSponsorId } });
+  check("a signed-in VIEWER cannot link a sponsor to content", viewerLinkCreate.status === 403, viewerLinkCreate.body);
+
+  const missingFields = await call("/api/content-sponsors", { method: "POST", token: adminToken, body: { content_id: csContentA.id } });
+  check("linking without a sponsor_id is rejected", missingFields.status === 422, missingFields.body);
+
+  const ghostContent = await call("/api/content-sponsors", { method: "POST", token: adminToken, body: { content_id: 999999999, sponsor_id: csSponsorId } });
+  check("linking to a content item that doesn't exist 404s", ghostContent.status === 404, ghostContent.body);
+
+  const ghostSponsor = await call("/api/content-sponsors", { method: "POST", token: adminToken, body: { content_id: csContentA.id, sponsor_id: 999999999 } });
+  check("linking a sponsor that doesn't exist 404s", ghostSponsor.status === 404, ghostSponsor.body);
+
+  const inactiveLink = await call("/api/content-sponsors", { method: "POST", token: adminToken, body: { content_id: csContentA.id, sponsor_id: csInactiveSponsorId } });
+  check("an inactive sponsor can't be linked to new content", inactiveLink.status === 409, inactiveLink.body);
+
+  const badDates = await call("/api/content-sponsors", {
+    method: "POST",
+    token: adminToken,
+    body: { content_id: csContentA.id, sponsor_id: csSponsorId, starts_at: "2026-06-01", ends_at: "2026-05-01" },
+  });
+  check("an end date before the start date is rejected", badDates.status === 422, badDates.body);
+
+  const createLink = await call("/api/content-sponsors", {
+    method: "POST",
+    token: adminToken,
+    body: { content_id: csContentA.id, sponsor_id: csSponsorId, placement: "session_page", sponsorship_ngn: 50000, message: "E2E sponsor message" },
+  });
+  check(
+    "a valid sponsorship link is created with its terms intact",
+    createLink.status === 201 && createLink.body.link?.placement === "session_page" && Number(createLink.body.link?.sponsorship_ngn) === 50000,
+    createLink.body,
+  );
+  const linkId = createLink.body.link?.id;
+  if (linkId) created.contentSponsors.push(linkId);
+
+  const dupPlacement = await call("/api/content-sponsors", {
+    method: "POST",
+    token: adminToken,
+    body: { content_id: csContentA.id, sponsor_id: csSponsorId, placement: "session_page" },
+  });
+  check("the same sponsor can't be linked to the same content in the same placement twice", dupPlacement.status === 409, dupPlacement.body);
+
+  const secondPlacement = await call("/api/content-sponsors", {
+    method: "POST",
+    token: adminToken,
+    body: { content_id: csContentA.id, sponsor_id: csSponsorId, placement: "player" },
+  });
+  check("the same sponsor CAN be linked to the same content in a different placement", secondPlacement.status === 201, secondPlacement.body);
+  const secondLinkId = secondPlacement.body.link?.id;
+  if (secondLinkId) created.contentSponsors.push(secondLinkId);
+
+  const linkOnB = await call("/api/content-sponsors", { method: "POST", token: adminToken, body: { content_id: csContentB.id, sponsor_id: csSponsorId } });
+  const linkOnBId = linkOnB.body.link?.id;
+  if (linkOnBId) created.contentSponsors.push(linkOnBId);
+
+  const noQuery = await call("/api/content-sponsors", { token: adminToken });
+  check("listing links without sponsor_id or content_id is rejected", noQuery.status === 400, noQuery.body);
+
+  const bySponsor = await call(`/api/content-sponsors?sponsor_id=${csSponsorId}`, { token: adminToken });
+  const bySponsorIds = (bySponsor.body.links ?? []).map((l: { id: number }) => l.id);
+  check(
+    "listing by sponsor_id returns every one of this sponsor's links, each with its content resolved",
+    linkId && secondLinkId && linkOnBId
+      ? [linkId, secondLinkId, linkOnBId].every((id) => bySponsorIds.includes(id)) &&
+        (bySponsor.body.links ?? []).every((l: { content: { id: number } | null }) => l.content !== null)
+      : false,
+    bySponsor.body,
+  );
+
+  const byContent = await call(`/api/content-sponsors?content_id=${csContentA.id}`, { token: adminToken });
+  const byContentIds = (byContent.body.links ?? []).map((l: { id: number }) => l.id);
+  check(
+    "listing by content_id returns only that content item's links",
+    linkId && secondLinkId ? byContentIds.includes(linkId) && byContentIds.includes(secondLinkId) && !byContentIds.includes(linkOnBId) : false,
+    byContent.body,
+  );
+
+  const updateLink = await call(`/api/content-sponsors/${linkId}`, {
+    method: "PUT",
+    token: adminToken,
+    body: { placement: "session_page", sponsorship_ngn: 75000, message: "Updated message", content_id: csContentB.id, sponsor_id: csInactiveSponsorId },
+  });
+  check(
+    "updating a link's terms succeeds, and a content_id/sponsor_id in the body is silently ignored — those stay immutable",
+    updateLink.status === 200 && Number(updateLink.body.link?.sponsorship_ngn) === 75000 && updateLink.body.link?.content_id === csContentA.id && updateLink.body.link?.sponsor_id === csSponsorId,
+    updateLink.body,
+  );
+
+  const updateToDupPlacement = await call(`/api/content-sponsors/${secondLinkId}`, { method: "PUT", token: adminToken, body: { placement: "session_page" } });
+  check("moving a link's placement into one that collides with a sibling link is refused", updateToDupPlacement.status === 409, updateToDupPlacement.body);
+
+  const updateGhost = await call("/api/content-sponsors/999999999", { method: "PUT", token: adminToken, body: { placement: "hero" } });
+  check("updating a sponsorship link that doesn't exist 404s", updateGhost.status === 404, updateGhost.body);
+
+  const deleteLink = await call(`/api/content-sponsors/${linkOnBId}`, { method: "DELETE", token: adminToken });
+  check("removing a sponsorship link succeeds", deleteLink.status === 200, deleteLink.body);
+  created.contentSponsors = created.contentSponsors.filter((id) => id !== linkOnBId);
+
+  const csAfterDelete = await call(`/api/content-sponsors?content_id=${csContentB.id}`, { token: adminToken });
+  check("the removed link no longer appears for that content item", (csAfterDelete.body.links ?? []).length === 0, csAfterDelete.body);
+
+  const deleteLinkAgain = await call(`/api/content-sponsors/${linkOnBId}`, { method: "DELETE", token: adminToken });
+  check("removing an already-removed link 404s", deleteLinkAgain.status === 404, deleteLinkAgain.body);
+
   // ─── Advertisers & Ads — admin CRUD ─────────────────────────────────────────
   section("Advertisers & Ads — admin CRUD");
 
@@ -2740,7 +2864,7 @@ async function main() {
   await prisma.contactRequest.deleteMany({ where: { id: { in: created.contactRequests } } });
   await prisma.contentCategory.deleteMany({ where: { category_id: { in: created.categories } } });
   await prisma.category.deleteMany({ where: { id: { in: created.categories } } });
-  await prisma.contentSponsor.deleteMany({ where: { sponsor_id: { in: created.sponsors } } });
+  await prisma.contentSponsor.deleteMany({ where: { OR: [{ sponsor_id: { in: created.sponsors } }, { id: { in: created.contentSponsors } }] } });
   await prisma.sponsor.deleteMany({ where: { id: { in: created.sponsors } } });
   await prisma.ad.deleteMany({ where: { id: { in: created.ads } } });
   await prisma.advertiser.deleteMany({ where: { id: { in: created.advertisers } } });

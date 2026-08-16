@@ -6,6 +6,7 @@ import { ErrorState } from "../../components/ErrorState";
 import { Skeleton } from "../../components/Skeleton";
 import { Icon } from "../../components/Icon";
 import { Toggle, inputClass } from "../../components/session/Panel";
+import { SponsorContentSlideOver } from "./SponsorContentSlideOver";
 
 interface Sponsor {
   id: number;
@@ -113,6 +114,7 @@ export function Sponsors() {
   const [correlationId, setCorrelationId] = useState<string | undefined>();
   const [editing, setEditing] = useState<Sponsor | "new" | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [contentFor, setContentFor] = useState<Sponsor | null>(null);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -162,6 +164,9 @@ export function Sponsors() {
       {editing && (
         <SponsorSlideOver sponsor={editing === "new" ? null : editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />
       )}
+      {contentFor && (
+        <SponsorContentSlideOver sponsorId={contentFor.id} sponsorName={contentFor.name} onClose={() => setContentFor(null)} />
+      )}
 
       <div className="flex items-center justify-between">
         <div>
@@ -202,6 +207,7 @@ export function Sponsors() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button onClick={() => setContentFor(s)} className="rounded px-2 py-1 text-xs text-slate-400 hover:bg-slate-700 hover:text-slate-200">Content</button>
                         <button onClick={() => setEditing(s)} className="rounded px-2 py-1 text-xs text-slate-400 hover:bg-slate-700 hover:text-slate-200">Edit</button>
                         <button onClick={() => handleDelete(s)} disabled={deletingId === s.id} className="rounded px-2 py-1 text-xs text-slate-400 hover:bg-red-900/30 hover:text-red-400 disabled:opacity-50">
                           {deletingId === s.id ? "…" : "Delete"}

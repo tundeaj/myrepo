@@ -873,6 +873,68 @@ async function run(browser: Browser) {
     }
   }
 
+  // ─── Content Sponsors — linking a sponsor to content from the Sponsors page ──
+  section("Content Sponsors");
+
+  if (adminToken) {
+    const stamp = Date.now();
+    const csSponsorName = `Browser Check CS Sponsor ${stamp}`;
+    const createdCsSponsor = await fetch(`${API_BASE}/api/sponsors`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ name: csSponsorName }),
+    }).then((r) => r.json());
+    const csSponsorId = createdCsSponsor?.sponsor?.id;
+    check("a fixture sponsor is created for this check", typeof csSponsorId === "number", createdCsSponsor);
+
+    const csSessionTitle = `Browser Check CS Session ${stamp}`;
+    const createdCsSession = await fetch(`${API_BASE}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ title: csSessionTitle, scheduled_start_at: new Date(Date.now() + 86_400_000).toISOString(), scheduled_duration_minutes: 60 }),
+    }).then((r) => r.json());
+    const csSessionId = createdCsSession?.session?.id;
+    check("a fixture session is created for this check", typeof csSessionId === "number", createdCsSession);
+
+    if (csSponsorId && csSessionId) {
+      // Real API call, not the slide-over's own search box — same split
+      // Trending's own section above makes: this is about the slide-over
+      // actually rendering a real link, not re-proving the add flow itself
+      // (e2e's job, and thorough there).
+      const createdLink = await fetch(`${API_BASE}/api/content-sponsors`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ content_id: csSessionId, sponsor_id: csSponsorId, placement: "player", sponsorship_ngn: 25000 }),
+      }).then((r) => r.json());
+      const csLinkId = createdLink?.link?.id;
+      check("the fixture sponsor is linked to the fixture session", typeof csLinkId === "number", createdLink);
+
+      const beforeCsErrors = pageErrors.length;
+      await page.goto(`${BASE}/admin/sponsors`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(500);
+
+      const csSponsorRow = page.locator("tbody tr", { hasText: csSponsorName });
+      await csSponsorRow.locator('button:has-text("Content")').click();
+      await page.waitForTimeout(500);
+
+      const hasLinkedSession = await page.locator(`text=${csSessionTitle}`).count();
+      check("the content-sponsorships slide-over renders the real fixture link", hasLinkedSession > 0, { hasLinkedSession });
+
+      const hasPlacementLabel = await page.locator("text=Player").count();
+      check("the link's placement renders as its human label", hasPlacementLabel > 0, { hasPlacementLabel });
+
+      const hasAmount = await page.locator("text=/₦\\s?25,000/").count();
+      check("the link's sponsorship amount renders formatted in Naira", hasAmount > 0, { hasAmount });
+
+      check("/admin/sponsors' content slide-over throws no uncaught render error", pageErrors.length === beforeCsErrors, pageErrors.slice(beforeCsErrors));
+
+      if (csLinkId) await fetch(`${API_BASE}/api/content-sponsors/${csLinkId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    }
+
+    if (csSessionId) await fetch(`${API_BASE}/api/sessions/${csSessionId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    if (csSponsorId) await fetch(`${API_BASE}/api/sponsors/${csSponsorId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+  }
+
   check("no uncaught page errors across the run", pageErrors.length === 0, pageErrors);
 
   await page.close();
