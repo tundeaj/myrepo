@@ -70,6 +70,7 @@ const ContactRequests = lazy(() => import("./pages/contact/ContactRequests").the
 const Categories = lazy(() => import("./pages/categories/Categories").then((m) => ({ default: m.Categories })));
 const Users = lazy(() => import("./pages/users/Users").then((m) => ({ default: m.Users })));
 const Registrations = lazy(() => import("./pages/registrations/Registrations").then((m) => ({ default: m.Registrations })));
+const Speakers = lazy(() => import("./pages/speakers/Speakers").then((m) => ({ default: m.Speakers })));
 const Sponsors = lazy(() => import("./pages/sponsors/Sponsors").then((m) => ({ default: m.Sponsors })));
 const Advertisers = lazy(() => import("./pages/advertisers/Advertisers").then((m) => ({ default: m.Advertisers })));
 const Ads = lazy(() => import("./pages/ads/Ads").then((m) => ({ default: m.Ads })));
@@ -82,7 +83,6 @@ const PageLayout = lazy(() => import("./pages/layout/PageLayout").then((m) => ({
 // Routes not yet built — each will be replaced with a real page in future prompts
 const PLACEHOLDER_PATHS = [
   "sessions/categories",
-  "speakers",
   "subscriptions-orders",
   "bulk-import",
   "community/spaces",
@@ -149,6 +149,7 @@ export function App() {
           <Route path="categories" element={<Categories />} />
           <Route path="users" element={<Users />} />
           <Route path="registrations" element={<Registrations />} />
+          <Route path="speakers" element={<Speakers />} />
           <Route path="sponsors" element={<Sponsors />} />
           <Route path="advertisers" element={<Advertisers />} />
           <Route path="ads" element={<Ads />} />

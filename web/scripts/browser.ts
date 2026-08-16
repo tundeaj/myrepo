@@ -641,6 +641,43 @@ async function run(browser: Browser) {
     check("/admin/registrations throws no uncaught render error", pageErrors.length === beforeRegErrors, pageErrors.slice(beforeRegErrors));
   }
 
+  section("Speakers admin");
+
+  if (adminToken) {
+    // Unlike Users/Registrations, this router has a real DELETE — so, same
+    // as Categories/Sponsors/Ads earlier in this suite, a fixture is created
+    // and torn down via fetch rather than left behind.
+    const speakerName = `Browser Check Speaker ${Date.now()}`;
+    const createdSpeaker = await fetch(`${API_BASE}/api/speakers`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ full_name: speakerName, title: "Browser Check Title" }),
+    }).then((r) => r.json());
+    const speakerId = createdSpeaker?.speaker?.id;
+    check("a fixture speaker is created for this check", typeof speakerId === "number", createdSpeaker);
+
+    if (speakerId) {
+      const beforeSpeakerErrors = pageErrors.length;
+      await page.goto(`${BASE}/admin/speakers`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(500);
+      const hasSpeakerRow = await page.locator(`text=${speakerName}`).count();
+      check("/admin/speakers renders the real fixture speaker", hasSpeakerRow > 0, { hasSpeakerRow });
+      check("/admin/speakers throws no uncaught render error", pageErrors.length === beforeSpeakerErrors, pageErrors.slice(beforeSpeakerErrors));
+
+      // Edit through the real UI, not just the API — open the slide-over,
+      // change organisation, save, and confirm it actually persisted.
+      await page.locator(`text=${speakerName}`).first().click();
+      await page.waitForTimeout(500);
+      await page.locator('label:has-text("Organisation") + input, label:has-text("Organisation") ~ input').first().fill("Browser Check Org");
+      await page.locator('button:has-text("Save changes")').click();
+      await page.waitForTimeout(600);
+      const afterEdit = await fetch(`${API_BASE}/api/speakers/${speakerId}`, { headers: { Authorization: `Bearer ${adminToken}` } }).then((r) => r.json());
+      check("editing a speaker through the real UI persists the change", afterEdit?.speaker?.organisation === "Browser Check Org", afterEdit?.speaker);
+
+      await fetch(`${API_BASE}/api/speakers/${speakerId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    }
+  }
+
   check("no uncaught page errors across the run", pageErrors.length === 0, pageErrors);
 
   await page.close();

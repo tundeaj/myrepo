@@ -1984,6 +1984,93 @@ async function main() {
     check("restoring from cancelled re-increments registration_count by exactly one", contentAfterRestore?.registration_count === 1, contentAfterRestore);
   }
 
+  // ─── Speakers admin ─────────────────────────────────────────────────────────
+  section("Speakers admin");
+
+  {
+    const viewerCreate = await call("/api/speakers", { method: "POST", token: sessionToken, body: { full_name: "Should Not Exist" } });
+    check("a signed-in VIEWER cannot create a speaker", viewerCreate.status === 403, viewerCreate.body);
+
+    const created1 = await call("/api/speakers", {
+      method: "POST",
+      token: adminToken,
+      body: { full_name: `E2E Speaker Admin ${RUN}`, title: "Head of Growth", organisation: "Acme", email: `e2e-speaker-${RUN}@example.test` },
+    });
+    check("a speaker is created", created1.status === 201 && typeof created1.body.speaker?.id === "number", created1.body);
+    const speakerId = created1.body.speaker.id as number;
+    created.speakers.push(speakerId);
+
+    const types = await call("/api/speakers/types", { token: adminToken });
+    check("speaker types (seeded, never read over HTTP before this) are returned", Array.isArray(types.body.types) && types.body.types.length > 0, types.body.types?.length);
+
+    const defaultList = await call(`/api/speakers?all=1&q=${encodeURIComponent(`E2E Speaker Admin ${RUN}`)}`, { token: adminToken });
+    check("the admin list (?all=1) finds the new fixture speaker", (defaultList.body.speakers ?? []).some((s: { id: number }) => s.id === speakerId), defaultList.body.speakers?.length);
+
+    // Give the fixture real bank data directly (the admin edit form never
+    // writes these fields), so the masking guarantee is proven against a
+    // real value, not just an absent one.
+    await prisma.speaker.update({ where: { id: speakerId }, data: { account_number: "0123456789", bank_code: "044", paystack_recipient_code: "RCP_e2e_test" } });
+
+    const detail = await call(`/api/speakers/${speakerId}`, { token: adminToken });
+    check("the detail view resolves the real fixture speaker", detail.body.speaker?.id === speakerId, detail.status);
+    check("the account number is masked, not returned in full", detail.body.speaker?.account_number === "••••••6789", detail.body.speaker?.account_number);
+    check("payout_configured reflects the real recipient code without exposing it", detail.body.speaker?.payout_configured === true, detail.body.speaker);
+    check("the raw paystack_recipient_code never leaves the detail endpoint", !JSON.stringify(detail.body).includes("RCP_e2e_test"));
+    check("the raw bank_code never leaves the detail endpoint", !("bank_code" in (detail.body.speaker ?? {})));
+
+    const viewerDetail = await call(`/api/speakers/${speakerId}`, { token: sessionToken });
+    check("a signed-in VIEWER cannot view a speaker's admin detail", viewerDetail.status === 403, viewerDetail.body);
+
+    const badType = await call(`/api/speakers/${speakerId}`, {
+      method: "PUT", token: adminToken,
+      body: { full_name: "E2E Speaker Admin (edited)", commission_pct: 25, speaker_type_id: 999999999, is_active: true },
+    });
+    check("a nonexistent speaker_type_id is rejected", badType.status === 400, badType.body);
+
+    const realType = types.body.types[0];
+    const edit = await call(`/api/speakers/${speakerId}`, {
+      method: "PUT", token: adminToken,
+      body: { full_name: "E2E Speaker Admin (edited)", organisation: "New Org", commission_pct: 25, speaker_type_id: realType.id, is_active: true },
+    });
+    check("editing a speaker succeeds", edit.status === 200 && edit.body.speaker?.full_name === "E2E Speaker Admin (edited)", edit.body);
+    check("commission_pct is persisted", Number(edit.body.speaker?.commission_pct) === 25, edit.body.speaker?.commission_pct);
+
+    const detailAfterEdit = await call(`/api/speakers/${speakerId}`, { token: adminToken });
+    check("editing profile fields never touches the bank data set directly above", detailAfterEdit.body.speaker?.payout_configured === true, detailAfterEdit.body.speaker);
+
+    const viewerPut = await call(`/api/speakers/${speakerId}`, { method: "PUT", token: sessionToken, body: { full_name: "x", commission_pct: 0, is_active: true } });
+    check("a signed-in VIEWER cannot edit a speaker", viewerPut.status === 403, viewerPut.body);
+
+    const deactivate = await call(`/api/speakers/${speakerId}`, { method: "PUT", token: adminToken, body: { full_name: "E2E Speaker Admin (edited)", commission_pct: 25, is_active: false } });
+    check("deactivating a speaker succeeds", deactivate.status === 200 && deactivate.body.speaker?.is_active === false, deactivate.body);
+
+    const defaultListAfterDeactivate = await call(`/api/speakers?q=${encodeURIComponent("E2E Speaker Admin (edited)")}`, { token: adminToken });
+    check("the default (active-only) list drops the now-inactive speaker", (defaultListAfterDeactivate.body.speakers ?? []).every((s: { id: number }) => s.id !== speakerId), defaultListAfterDeactivate.body.speakers?.length);
+    const allListAfterDeactivate = await call(`/api/speakers?all=1&q=${encodeURIComponent("E2E Speaker Admin (edited)")}`, { token: adminToken });
+    check("?all=1 still includes the inactive speaker, for the admin page", (allListAfterDeactivate.body.speakers ?? []).some((s: { id: number }) => s.id === speakerId), allListAfterDeactivate.body.speakers?.length);
+
+    // Delete is blocked while credited on content.
+    const speakerContent = await makeContent("registered", { slug: `e2e-speaker-admin-${RUN}` });
+    await prisma.contentSpeaker.create({ data: { content_id: speakerContent.id, speaker_id: speakerId, revenue_share_pct: 50 } });
+
+    const viewerDelete = await call(`/api/speakers/${speakerId}`, { method: "DELETE", token: sessionToken });
+    check("a signed-in VIEWER cannot delete a speaker", viewerDelete.status === 403, viewerDelete.body);
+
+    const blockedDelete = await call(`/api/speakers/${speakerId}`, { method: "DELETE", token: adminToken });
+    check("deleting a speaker still credited on content is refused", blockedDelete.status === 409, blockedDelete.body);
+
+    const stillThere = await prisma.speaker.findUnique({ where: { id: speakerId } });
+    check("the refused delete actually left the speaker in place", stillThere !== null, stillThere);
+
+    // A clean speaker (no content credit, no earnings) deletes outright.
+    const clean = await call("/api/speakers", { method: "POST", token: adminToken, body: { full_name: `E2E Speaker Clean ${RUN}` } });
+    const cleanId = clean.body.speaker.id as number;
+    created.speakers.push(cleanId);
+    const cleanDelete = await call(`/api/speakers/${cleanId}`, { method: "DELETE", token: adminToken });
+    check("deleting a speaker with no content credit or earnings history succeeds", cleanDelete.status === 200 && cleanDelete.body.ok === true, cleanDelete.body);
+    check("deleting an already-deleted speaker 404s", (await call(`/api/speakers/${cleanId}`, { method: "DELETE", token: adminToken })).status === 404);
+  }
+
   // ─── Cleanup ───────────────────────────────────────────────────────────────
   await prisma.rating.deleteMany({ where: { content_id: { in: created.content } } });
   await prisma.streamSession.deleteMany({ where: { content_id: { in: created.content } } });
