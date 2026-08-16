@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { ApiError } from "../lib/errors.js";
 import { serializeContentItem } from "../lib/serializers.js";
+import { syncHeroTrending } from "../lib/trending.js";
 import type { Request, Response, NextFunction } from "express";
 
 export const coursesRouter = Router();
@@ -557,7 +558,10 @@ coursesRouter.get("/check-slug", async (req: Request, res: Response, next: NextF
 coursesRouter.post("/", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const body = CourseWriteSchema.parse(req.body);
-    const userId = (req as any).user?.id;
+    // Was (req as any).user?.id — AuthTokenPayload only has .sub, so
+    // created_by has been silently null on every course ever created. Same
+    // bug already fixed in routes/sessions.ts; found while working nearby.
+    const userId = req.user?.sub ?? null;
 
     // Ad hard rule
     if (["subscriber", "purchase", "cohort"].includes(body.access_level)) {
@@ -616,6 +620,11 @@ coursesRouter.post("/", async (req: Request, res: Response, next: NextFunction) 
 
     await createRelated(item.id, body);
 
+    // A brand-new row can't have been previously trending — see
+    // syncHeroTrending's own doc comment for why this only fires on a real
+    // false→true transition.
+    if (body.show_in_hero) await syncHeroTrending(item.id, false, true);
+
     const full = await fetchFullCourse(item.id);
     res.status(201).json({ course: full });
   } catch (err) {
@@ -647,7 +656,7 @@ coursesRouter.put("/:id", async (req: Request, res: Response, next: NextFunction
 
     const existing = await prisma.contentItem.findFirst({
       where: { id, content_type: "course" },
-      select: { id: true, slug: true },
+      select: { id: true, slug: true, show_in_hero: true },
     });
     if (!existing) throw new ApiError(404, "Course not found");
 
@@ -750,6 +759,11 @@ coursesRouter.put("/:id", async (req: Request, res: Response, next: NextFunction
 
     // Upsert curriculum
     await upsertCurriculum(id, body.modules);
+
+    // Keeps hero_display_order consistent whether this checkbox or the
+    // dedicated Trending page (routes/trending.ts) flips the flag — see
+    // syncHeroTrending's own doc comment.
+    await syncHeroTrending(id, existing.show_in_hero, body.show_in_hero);
 
     const full = await fetchFullCourse(id);
     res.json({ course: full });

@@ -79,6 +79,7 @@ const Payouts = lazy(() => import("./pages/payouts/Payouts").then((m) => ({ defa
 const SubscriberAnalytics = lazy(() => import("./pages/analytics/SubscriberAnalytics").then((m) => ({ default: m.SubscriberAnalytics })));
 const Invoices = lazy(() => import("./pages/revenue/Invoices").then((m) => ({ default: m.Invoices })));
 const PageLayout = lazy(() => import("./pages/layout/PageLayout").then((m) => ({ default: m.PageLayout })));
+const Trending = lazy(() => import("./pages/homepage/Trending").then((m) => ({ default: m.Trending })));
 
 // Routes not yet built — each will be replaced with a real page in future prompts
 const PLACEHOLDER_PATHS = [
@@ -166,6 +167,7 @@ export function App() {
 
           {/* ── Homepage Row Builder (Prompt 08) ── */}
           <Route path="layout" element={<PageLayout />} />
+          <Route path="trending" element={<Trending />} />
 
           {/* ── Placeholder routes (future prompts) ── */}
           {PLACEHOLDER_PATHS.map((path) => (

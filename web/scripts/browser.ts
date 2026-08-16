@@ -794,6 +794,72 @@ async function run(browser: Browser) {
     check("/admin/plans (Price $ field) throws no uncaught render error", pageErrors.length === beforePlansErrors, pageErrors.slice(beforePlansErrors));
   }
 
+  section("Trending");
+
+  if (adminToken) {
+    const stamp = Date.now();
+    const startAt = new Date(Date.now() + 86_400_000).toISOString();
+    const makeFixture = (title: string) =>
+      fetch(`${API_BASE}/api/sessions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ title, scheduled_start_at: startAt, scheduled_duration_minutes: 60 }),
+      }).then((r) => r.json());
+
+    const [first, second] = await Promise.all([
+      makeFixture(`Browser Check Trend First ${stamp}`),
+      makeFixture(`Browser Check Trend Second ${stamp}`),
+    ]);
+    const firstId = first?.session?.id;
+    const secondId = second?.session?.id;
+    check("two fixture sessions are created for this check", typeof firstId === "number" && typeof secondId === "number", { first, second });
+
+    if (firstId && secondId) {
+      // Real API calls, not the UI's own "Add" search box — this section is
+      // about the ordered list rendering and promote/demote wiring, not
+      // re-proving the add flow the search box drives (covered by the
+      // dedicated fixture-creation flow the Meeting providers section
+      // already established, and by e2e's own thorough coverage of add()).
+      await fetch(`${API_BASE}/api/trending`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ content_id: firstId }),
+      });
+      await fetch(`${API_BASE}/api/trending`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ content_id: secondId }),
+      });
+
+      const beforeErrors = pageErrors.length;
+      await page.goto(`${BASE}/admin/trending`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(600);
+
+      const rowTitles = () => page.locator("tbody tr td:nth-child(2) span.font-medium").allTextContents();
+      const titlesBeforePromote = await rowTitles();
+      check("both fixtures render in the trending table, in add order",
+        titlesBeforePromote.indexOf(`Browser Check Trend First ${stamp}`) < titlesBeforePromote.indexOf(`Browser Check Trend Second ${stamp}`),
+        titlesBeforePromote);
+
+      // The second fixture's row — promote it and confirm the table
+      // re-orders for real, not just the underlying data.
+      const secondRow = page.locator("tbody tr", { hasText: `Browser Check Trend Second ${stamp}` });
+      await secondRow.locator('button[aria-label="Promote"]').click();
+      await page.waitForTimeout(400);
+      const titlesAfterPromote = await rowTitles();
+      check("clicking Promote actually moves the row earlier in the table",
+        titlesAfterPromote.indexOf(`Browser Check Trend Second ${stamp}`) < titlesAfterPromote.indexOf(`Browser Check Trend First ${stamp}`),
+        titlesAfterPromote);
+
+      check("/admin/trending throws no uncaught render error", pageErrors.length === beforeErrors, pageErrors.slice(beforeErrors));
+
+      await fetch(`${API_BASE}/api/trending/${firstId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+      await fetch(`${API_BASE}/api/trending/${secondId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+      await fetch(`${API_BASE}/api/sessions/${firstId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+      await fetch(`${API_BASE}/api/sessions/${secondId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    }
+  }
+
   check("no uncaught page errors across the run", pageErrors.length === 0, pageErrors);
 
   await page.close();

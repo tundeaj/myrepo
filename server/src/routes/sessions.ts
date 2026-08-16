@@ -4,6 +4,7 @@ import { prisma } from "../lib/prisma.js";
 import { ApiError } from "../lib/errors.js";
 import { serializeContentItem, serializeRestreamTarget } from "../lib/serializers.js";
 import { getMeetingAdapter, type MeetingSessionInput } from "../lib/meetingProviders/index.js";
+import { syncHeroTrending } from "../lib/trending.js";
 import type { Request, Response, NextFunction } from "express";
 
 export const sessionsRouter = Router();
@@ -402,6 +403,11 @@ sessionsRouter.post("/", async (req: Request, res: Response, next: NextFunction)
     // Create related records
     await createRelated(item.id, body);
 
+    // A brand-new row can't have been previously trending — see
+    // syncHeroTrending's own doc comment for why this only fires on a real
+    // false→true transition.
+    if (body.show_in_hero) await syncHeroTrending(item.id, false, true);
+
     await syncMeetingProvider(item.id, body.meeting_provider, userId);
 
     const full = await fetchFullSession(item.id);
@@ -433,7 +439,7 @@ sessionsRouter.put("/:id", async (req: Request, res: Response, next: NextFunctio
     const id = Number(req.params.id);
     if (!id) throw new ApiError(400, "Invalid session id");
 
-    const existing = await prisma.contentItem.findFirst({ where: { id, content_type: "webinar" }, select: { id: true } });
+    const existing = await prisma.contentItem.findFirst({ where: { id, content_type: "webinar" }, select: { id: true, show_in_hero: true } });
     if (!existing) throw new ApiError(404, "Session not found");
 
     const body = SessionWriteSchema.parse(req.body);
@@ -506,6 +512,11 @@ sessionsRouter.put("/:id", async (req: Request, res: Response, next: NextFunctio
     // Replace all related records
     await deleteRelated(id);
     await createRelated(id, body);
+
+    // Keeps hero_display_order consistent whether this checkbox or the
+    // dedicated Trending page (routes/trending.ts) flips the flag — see
+    // syncHeroTrending's own doc comment.
+    await syncHeroTrending(id, existing.show_in_hero, body.show_in_hero);
 
     await syncMeetingProvider(id, body.meeting_provider, req.user?.sub ?? null);
 

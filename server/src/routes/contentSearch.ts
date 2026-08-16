@@ -34,7 +34,7 @@ contentSearchRouter.get("/", async (req: Request, res: Response, next: NextFunct
         ids.length > 0
           ? { id: { in: ids } }
           : { OR: [{ title: { contains: q, mode: "insensitive" } }, { slug: { contains: q, mode: "insensitive" } }] },
-      select: { id: true, title: true, slug: true, content_type: true, status: true },
+      select: { id: true, title: true, slug: true, content_type: true, status: true, master_image_url: true, show_in_hero: true },
       orderBy: { id: "desc" },
       take: 15,
     });

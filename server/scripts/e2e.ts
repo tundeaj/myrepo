@@ -2469,6 +2469,166 @@ async function main() {
     check("a callback for an unknown provider also redirects with an error rather than 500ing", unknownProviderCallback.status >= 300 && unknownProviderCallback.status < 400 && (unknownProviderCallback.headers.get("location") ?? "").includes("connection_error"), unknownProviderCallback.headers.get("location"));
   }
 
+  // ─── Trending / hero carousel ──────────────────────────────────────────────
+  //
+  // Position (ContentItem.hero_display_order) is owned by lib/trending.ts's
+  // syncHeroTrending, shared by routes/trending.ts (the dedicated admin page)
+  // and the session/course editor's own "Show in Hero" checkbox — this
+  // section proves both entry points land in the SAME consistent order,
+  // which is the whole point of having promote/demote at all.
+  section("Trending — validation and ownership");
+
+  const trendA = await makeContent("public", { slug: `e2e-trend-a-${RUN}`, title: `E2E Trend A ${RUN}` });
+  const trendB = await makeContent("public", { slug: `e2e-trend-b-${RUN}`, title: `E2E Trend B ${RUN}` });
+  const trendC = await makeContent("public", { slug: `e2e-trend-c-${RUN}`, title: `E2E Trend C ${RUN}` });
+
+  const trendingAnonList = await call("/api/trending");
+  check("an anonymous request cannot list the trending list", trendingAnonList.status === 401, trendingAnonList.body);
+  const trendingViewerList = await call("/api/trending", { token: sessionToken });
+  check("a signed-in VIEWER cannot list the trending list", trendingViewerList.status === 403, trendingViewerList.body);
+
+  const missingAdd = await call("/api/trending", { method: "POST", token: adminToken, body: { content_id: 999999999 } });
+  check("adding non-existent content is refused", missingAdd.status === 404, missingAdd.body);
+
+  section("Trending — add, order, promote, demote, remove");
+
+  // seed.ts deliberately flags demo content show_in_hero so a fresh install
+  // doesn't paint an empty hero — so this list is never assumed empty here.
+  // Everything below checks A/B/C's RELATIVE order among themselves and
+  // whether the full list stays a contiguous, gap-free sequence, not fixed
+  // absolute values a pre-existing seed row would throw off.
+  type TrendRow = { id: number; hero_display_order: number };
+  const relOrder = (items: TrendRow[], ids: number[]) =>
+    items.filter((i) => ids.includes(i.id)).map((i) => i.id).join(",");
+  const isContiguous = (items: TrendRow[]) =>
+    items.map((i) => i.hero_display_order).join(",") === items.map((_, i) => i + 1).join(",");
+
+  const addA = await call("/api/trending", { method: "POST", token: adminToken, body: { content_id: trendA.id } });
+  check("adding the first item succeeds", addA.status === 201, addA.body);
+
+  const addAAgain = await call("/api/trending", { method: "POST", token: adminToken, body: { content_id: trendA.id } });
+  check("adding the same item twice is refused", addAAgain.status === 409, addAAgain.body);
+
+  const addB = await call("/api/trending", { method: "POST", token: adminToken, body: { content_id: trendB.id } });
+  check("adding a second item appends after the first, not ahead of it",
+    addB.status === 201 && addB.body.item?.hero_display_order > addA.body.item?.hero_display_order, addB.body);
+
+  const addC = await call("/api/trending", { method: "POST", token: adminToken, body: { content_id: trendC.id } });
+  check("adding a third item appends after the second",
+    addC.status === 201 && addC.body.item?.hero_display_order > addB.body.item?.hero_display_order, addC.body);
+
+  const listAfterAdds = await call("/api/trending", { token: adminToken });
+  check("the list reflects add order: A, B, C",
+    relOrder(listAfterAdds.body.items, [trendA.id, trendB.id, trendC.id]) === `${trendA.id},${trendB.id},${trendC.id}`,
+    listAfterAdds.body.items);
+  check("the full list is a contiguous, gap-free sequence after three appends", isContiguous(listAfterAdds.body.items), listAfterAdds.body.items);
+
+  const promoteC = await call(`/api/trending/${trendC.id}/promote`, { method: "POST", token: adminToken });
+  check("promoting C swaps it with its immediate predecessor B: A, C, B",
+    relOrder(promoteC.body.items, [trendA.id, trendB.id, trendC.id]) === `${trendA.id},${trendC.id},${trendB.id}`,
+    promoteC.body.items);
+
+  // The environment-agnostic version of "refuse at the boundary": whatever
+  // the actual current top/bottom item is (seed content or a fixture, this
+  // run or a prior one's leftovers), promoting the top / demoting the
+  // bottom must refuse — not specifically A or B, which may not BE the
+  // absolute top/bottom if anything else is already trending.
+  const currentTop = promoteC.body.items[0] as TrendRow;
+  const promoteTop = await call(`/api/trending/${currentTop.id}/promote`, { method: "POST", token: adminToken });
+  check("promoting the item already at the top is refused", promoteTop.status === 409, promoteTop.body);
+
+  const currentBottom = promoteC.body.items[promoteC.body.items.length - 1] as TrendRow;
+  const demoteBottom = await call(`/api/trending/${currentBottom.id}/demote`, { method: "POST", token: adminToken });
+  check("demoting the item already at the bottom is refused", demoteBottom.status === 409, demoteBottom.body);
+
+  const removeC = await call(`/api/trending/${trendC.id}`, { method: "DELETE", token: adminToken });
+  check("removing an item succeeds", removeC.status === 200 && removeC.body.ok === true, removeC.body);
+
+  const removeCAgain = await call(`/api/trending/${trendC.id}`, { method: "DELETE", token: adminToken });
+  check("removing an item no longer on the list is refused", removeCAgain.status === 404, removeCAgain.body);
+
+  const listAfterRemove = await call("/api/trending", { token: adminToken });
+  check("C is gone; A still sorts before B, their relative order preserved",
+    relOrder(listAfterRemove.body.items, [trendA.id, trendB.id, trendC.id]) === `${trendA.id},${trendB.id}`,
+    listAfterRemove.body.items);
+  check("the remainder was re-compacted to a contiguous, gap-free sequence — no gap left by C's removal",
+    isContiguous(listAfterRemove.body.items), listAfterRemove.body.items);
+
+  section("Trending — the session editor's own checkbox stays consistent with the dedicated page");
+
+  const heroViaCheckbox = await call("/api/sessions", {
+    method: "POST",
+    token: adminToken,
+    body: {
+      title: `E2E Trend Via Checkbox ${RUN}`,
+      scheduled_start_at: new Date(Date.now() + 86400000).toISOString(),
+      scheduled_duration_minutes: 60,
+      show_in_hero: true,
+    },
+  });
+  check("creating a session with show_in_hero:true succeeds", heroViaCheckbox.status === 201, heroViaCheckbox.body);
+  const heroViaCheckboxId = heroViaCheckbox.body.session?.id as number;
+  if (heroViaCheckboxId) created.content.push(heroViaCheckboxId);
+
+  const listAfterCheckboxAdd = await call("/api/trending", { token: adminToken });
+  const checkboxItems = listAfterCheckboxAdd.body.items as TrendRow[];
+  const checkboxRow = checkboxItems.find((i) => i.id === heroViaCheckboxId);
+  check("the checkbox-created session lands on the trending list via the SAME shared logic",
+    checkboxRow != null, listAfterCheckboxAdd.body.items);
+  check("it was appended at the very end — not jumped to the top ahead of A/B's deliberate order",
+    checkboxItems[checkboxItems.length - 1]?.id === heroViaCheckboxId, checkboxItems);
+
+  // Re-saving with show_in_hero already true (an unrelated field changes)
+  // must NOT re-append it to the end again — that would silently undo any
+  // promote/demote an admin had done since.
+  const heroResaveUnchanged = await call(`/api/sessions/${heroViaCheckboxId}`, {
+    method: "PUT",
+    token: adminToken,
+    body: {
+      title: `E2E Trend Via Checkbox ${RUN} (edited)`,
+      scheduled_start_at: new Date(Date.now() + 86400000).toISOString(),
+      scheduled_duration_minutes: 90,
+      show_in_hero: true,
+    },
+  });
+  check("re-saving the session with the box still checked succeeds", heroResaveUnchanged.status === 200, heroResaveUnchanged.body);
+  const listAfterResave = await call("/api/trending", { token: adminToken });
+  const resaveRow = (listAfterResave.body.items as TrendRow[]).find((i) => i.id === heroViaCheckboxId);
+  check("an unrelated re-save with the box already checked leaves its position untouched, not bumped to the end again",
+    resaveRow?.hero_display_order === checkboxRow?.hero_display_order, { before: checkboxRow, after: resaveRow });
+
+  // Now uncheck it via the editor and confirm the OTHER two items (A, B)
+  // re-compact correctly — the removal path is shared too, not just the add path.
+  const heroUncheck = await call(`/api/sessions/${heroViaCheckboxId}`, {
+    method: "PUT",
+    token: adminToken,
+    body: {
+      title: `E2E Trend Via Checkbox ${RUN} (edited)`,
+      scheduled_start_at: new Date(Date.now() + 86400000).toISOString(),
+      scheduled_duration_minutes: 90,
+      show_in_hero: false,
+    },
+  });
+  check("unchecking Show in Hero via the editor succeeds", heroUncheck.status === 200, heroUncheck.body);
+  const listAfterUncheck = await call("/api/trending", { token: adminToken });
+  const idsAfterUncheck = (listAfterUncheck.body.items as TrendRow[]).map((i) => i.id);
+  check("the unchecked session is gone from the trending list", !idsAfterUncheck.includes(heroViaCheckboxId), idsAfterUncheck);
+  check("A and B are still there, relative order unaffected",
+    relOrder(listAfterUncheck.body.items, [trendA.id, trendB.id]) === `${trendA.id},${trendB.id}`, idsAfterUncheck);
+  check("the list stays a contiguous, gap-free sequence after the checkbox's own removal", isContiguous(listAfterUncheck.body.items), listAfterUncheck.body.items);
+
+  section("Trending — the public hero actually reflects the admin's order");
+
+  // A and B are `public`-tier from makeContent's own default status
+  // (registration_open, a VISIBLE_STATUSES member) — visible to buildHero()
+  // without needing a live session or any further setup.
+  const publicHomepage = await call("/api/homepage?surface=home&platform=web&audience=logged_out");
+  const heroIds = (publicHomepage.body.hero ?? []).map((c: { id: number }) => c.id);
+  const posA = heroIds.indexOf(trendA.id);
+  const posB = heroIds.indexOf(trendB.id);
+  check("both trending fixtures actually appear in the public hero payload", posA !== -1 && posB !== -1, heroIds);
+  check("A sorts before B in the public hero — the same order the admin's promote/demote left them in", posA < posB, { posA, posB, heroIds });
+
   // ─── Cleanup ───────────────────────────────────────────────────────────────
   await prisma.meetingAttendance.deleteMany({
     where: { OR: [{ user_id: { in: created.users } }, { content_id: { in: created.content } }] },

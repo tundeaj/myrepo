@@ -389,6 +389,7 @@ async function seedUiTranslations() {
     "nav.ppv_revenue_analytics": "PPV & Revenue Analytics",
     "nav.site": "Site",
     "nav.page_layout": "Page Layout",
+    "nav.trending": "Trending",
     "nav.pages": "Pages",
     "nav.landing_pages": "Landing Pages",
     "nav.promotions": "Promotions",
@@ -570,6 +571,13 @@ async function seedDemoContent() {
     { title: "AMA: Raising a Seed Round in Lagos", days: -8, status: "ended", regs: 32, attended: 17 },
   ];
 
+  // Sequential, not the schema's default 0 for every hero item — two demo
+  // sessions both carry hero:true, and leaving hero_display_order at its
+  // default would tie them, giving the fresh-install Trending admin page
+  // (routes/trending.ts) an undefined starting order instead of a real one
+  // to promote/demote from.
+  let nextHeroOrder = 1;
+
   for (const s of demoSessions) {
     const slug = s.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
     const item = await prisma.contentItem.create({
@@ -585,6 +593,7 @@ async function seedDemoContent() {
         access_level: "registered",
         price_mode: "free",
         show_in_hero: s.hero ?? false,
+        hero_display_order: s.hero ? nextHeroOrder++ : 0,
         is_featured: s.featured ?? false,
         registration_count: s.regs,
         created_at: inDays(s.days - 14),

@@ -33,6 +33,9 @@ const PATHS: Record<string, string> = {
   chevron: "M9 6l6 6-6 6",
   menu: "M4 6h16M4 12h16M4 18h16",
   "arrow-left": "M19 12H5M12 5l-7 7 7 7",
+  flame: "M12 2c1.5 3-2 5-2 8a2 2 0 004 0c0-1-.5-2-1-3 2 1 4 3 4 6a5 5 0 01-10 0c0-5 3-7 5-11z",
+  arrowUp: "M12 19V5 M5 12l7-7 7 7",
+  arrowDown: "M12 5v14 M19 12l-7 7-7-7",
 };
 
 export function Icon({ name, className = "h-4 w-4" }: { name: keyof typeof PATHS | string; className?: string }) {

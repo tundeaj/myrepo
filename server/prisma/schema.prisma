@@ -636,6 +636,13 @@ model ContentItem {
   is_featured                Boolean         @default(false)
   is_active                  Boolean         @default(true)
   show_in_hero               Boolean         @default(false)
+  /// Admin-controlled position within the hero/trending carousel among
+  /// show_in_hero=true items — ascending, ties broken by scheduled_start_at
+  /// desc (see buildHero() in homepageCache.ts). Meaningless while
+  /// show_in_hero is false; routes/trending.ts is the only writer, assigning
+  /// the next value on add and re-compacting the remainder on remove, so gaps
+  /// never accumulate. Not used for anything outside the hero carousel.
+  hero_display_order         Int             @default(0)
   has_transcript             Boolean         @default(false)
   has_chapters               Boolean         @default(false)
   has_substitute             Boolean         @default(false)

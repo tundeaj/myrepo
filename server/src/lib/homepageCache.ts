@@ -331,11 +331,15 @@ async function cacheTtlMinutes(): Promise<number> {
 const HERO_LIMIT = 5;
 
 async function buildHero(): Promise<ContentCard[]> {
-  // Explicitly flagged hero items first; fall back to whatever is live, then to
-  // featured content, so the hero is never empty on a young platform.
+  // Explicitly flagged hero items first, in the admin's own trending order —
+  // see routes/trending.ts, the only writer of hero_display_order. Ties (or a
+  // pre-promote/demote item still at its default 0) fall back to
+  // scheduled_start_at desc, the ordering this used exclusively before
+  // trending existed. Fall back further to whatever is live, then to featured
+  // content, so the hero is never empty on a young platform.
   const flagged = await prisma.contentItem.findMany({
     where: visibleWhere({ show_in_hero: true }),
-    orderBy: { scheduled_start_at: "desc" },
+    orderBy: [{ hero_display_order: "asc" }, { scheduled_start_at: "desc" }],
     take: HERO_LIMIT,
     select: CARD_SELECT,
   });

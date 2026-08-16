@@ -30,6 +30,7 @@ import { adsRouter } from "./routes/ads.js";
 import { subscriberAnalyticsRouter } from "./routes/subscriberAnalytics.js";
 import { invoicesRouter } from "./routes/invoices.js";
 import { layoutRouter } from "./routes/layout.js";
+import { trendingRouter } from "./routes/trending.js";
 import { usersRouter } from "./routes/users.js";
 import { providerConnectionsRouter, providerConnectionsCallbackRouter } from "./routes/providerConnections.js";
 import { homepageRouter } from "./routes/homepage.js";
@@ -99,6 +100,7 @@ app.use("/api/content-search", requireAuth, requireAdmin, contentSearchRouter);
 app.use("/api/analytics/subscribers", requireAuth, requireAdmin, subscriberAnalyticsRouter);
 app.use("/api/invoices", requireAuth, requireAdmin, invoicesRouter);
 app.use("/api/layout", requireAuth, requireAdmin, layoutRouter);
+app.use("/api/trending", requireAuth, requireAdmin, trendingRouter);
 app.use("/api/users", requireAuth, requireAdmin, usersRouter);
 app.use("/api/provider-connections", requireAuth, requireInstructor, providerConnectionsRouter);
 // Unauthenticated on purpose, mounted at a base path with zero overlap with

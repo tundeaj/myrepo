@@ -84,6 +84,7 @@ export const NAV_SECTIONS: NavSection[] = [
     headingKey: "nav.site",
     items: [
       { labelKey: "nav.page_layout", icon: "layout", path: "/admin/layout" },
+      { labelKey: "nav.trending", icon: "flame", path: "/admin/trending" },
       { labelKey: "nav.pages", icon: "file", path: "/admin/pages" },
       { labelKey: "nav.landing_pages", icon: "layout", path: "/admin/landing-pages" },
       { labelKey: "nav.promotions", icon: "megaphoneOutline", path: "/admin/promotions" },
