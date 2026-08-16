@@ -40,7 +40,7 @@ import { accountRouter } from "./routes/account.js";
 import { transcriptsRouter } from "./routes/transcripts.js";
 import { calendarRouter, publicCalendarRouter } from "./routes/calendar.js";
 import { aiRouter } from "./routes/ai.js";
-import { checkoutRouter, checkoutWebhookRouter, publicPlansRouter } from "./routes/checkout.js";
+import { checkoutRouter, checkoutWebhookRouter, stripeWebhookRouter, publicPlansRouter } from "./routes/checkout.js";
 import { playbackRouter } from "./routes/playback.js";
 import { requireAdmin, requireAuth } from "./middleware/auth.js";
 import { errorHandler, notFoundHandler } from "./lib/errors.js";
@@ -60,6 +60,10 @@ app.use("/api/checkout/webhook", express.raw({ type: "application/json", limit: 
 // events are HMAC-signed over the raw body, so express.raw() must be the only
 // body parser that ever touches this route too.
 app.use("/api/payouts/webhook", express.raw({ type: "application/json", limit: "1mb" }), payoutsWebhookRouter);
+// Stripe's own webhook, same reasoning again but its own mount — a separate
+// signature scheme (see verifyStripeWebhookSignature) reading a different
+// header, so it cannot share the Paystack mount above.
+app.use("/api/checkout/stripe-webhook", express.raw({ type: "application/json", limit: "1mb" }), stripeWebhookRouter);
 
 app.use(express.json({ limit: "5mb" }));
 

@@ -108,6 +108,12 @@ jobs:
           PAYSTACK_SECRET_KEY: sk_test_ci_dummy_key
         run: npx tsx scripts/payoutsWebhook.ts
 
+      - name: Stripe webhook signature suite (isolated process, own secret)
+        working-directory: server
+        env:
+          STRIPE_WEBHOOK_SECRET: whsec_test_ci_dummy_secret
+        run: npx tsx scripts/stripeWebhook.ts
+
       # This sandbox's own runtime has a pre-installed Chromium and is
       # explicitly not supposed to run `playwright install` (see CLAUDE.md /
       # session instructions) — that restriction is about this repo's own

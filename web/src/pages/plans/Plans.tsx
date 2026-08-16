@@ -6,12 +6,13 @@ import { ErrorState } from "../../components/ErrorState";
 import { Skeleton } from "../../components/Skeleton";
 import { Icon } from "../../components/Icon";
 import { Toggle, inputClass, selectClass } from "../../components/session/Panel";
-import { formatCount, formatNaira } from "../../lib/format";
+import { formatCount, formatNaira, formatUsd } from "../../lib/format";
 
 interface Plan {
   id: number;
   name: string | null;
   price_ngn: string | number | null;
+  price_usd: string | number | null;
   billing_interval: "monthly" | "annual";
   features: string | null;
   max_concurrent_streams: number;
@@ -24,6 +25,10 @@ interface Plan {
 interface FormState {
   name: string;
   price_ngn: string;
+  /** Independent USD figure for Stripe checkout — optional, and not derived
+   *  from price_ngn. Leaving it blank means no Stripe "Subscribe" option for
+   *  this plan, Paystack only. */
+  price_usd: string;
   billing_interval: "monthly" | "annual";
   features: string;
   max_concurrent_streams: string;
@@ -35,6 +40,7 @@ interface FormState {
 const EMPTY_FORM: FormState = {
   name: "",
   price_ngn: "",
+  price_usd: "",
   billing_interval: "monthly",
   features: "",
   max_concurrent_streams: "1",
@@ -47,6 +53,7 @@ function planToForm(p: Plan): FormState {
   return {
     name: p.name ?? "",
     price_ngn: p.price_ngn != null ? String(p.price_ngn) : "0",
+    price_usd: p.price_usd != null ? String(p.price_usd) : "",
     billing_interval: p.billing_interval,
     features: p.features ?? "",
     max_concurrent_streams: String(p.max_concurrent_streams),
@@ -73,6 +80,11 @@ function PricingPreview({ form }: { form: FormState }) {
         {price === 0 ? "Free" : formatNaira(price)}
         {price > 0 && <span className="text-sm font-normal text-slate-500"> / {form.billing_interval === "monthly" ? "month" : "year"}</span>}
       </p>
+      {form.price_usd.trim() && Number(form.price_usd) > 0 && (
+        <p className="mt-0.5 text-sm text-slate-500">
+          or {formatUsd(Number(form.price_usd))} / {form.billing_interval === "monthly" ? "month" : "year"} via card
+        </p>
+      )}
       {form.is_team_plan && (
         <span className="mt-2 inline-block rounded-full bg-blue-500/15 border border-blue-500/30 px-2 py-0.5 text-xs text-blue-300">
           Team plan · {form.seat_count} seat{Number(form.seat_count) === 1 ? "" : "s"}
@@ -119,6 +131,7 @@ function PlanSlideOver({ plan, onClose, onSaved }: { plan: Plan | null; onClose:
     const payload = {
       name: form.name.trim(),
       price_ngn: price,
+      price_usd: form.price_usd.trim() ? Number(form.price_usd) : null,
       billing_interval: form.billing_interval,
       features: form.features.trim() || null,
       max_concurrent_streams: Number(form.max_concurrent_streams) || 1,
@@ -171,6 +184,11 @@ function PlanSlideOver({ plan, onClose, onSaved }: { plan: Plan | null; onClose:
                   <option value="monthly">Monthly</option>
                   <option value="annual">Annual</option>
                 </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-slate-400">Price $</label>
+                <input type="number" min={0} value={form.price_usd} onChange={(e) => set("price_usd", e.target.value)} className={inputClass} placeholder="Optional" />
+                <p className="mt-1 text-xs text-slate-600">Optional — enables a Stripe checkout option alongside Paystack.</p>
               </div>
             </div>
 
@@ -256,7 +274,15 @@ export function Plans() {
       if (e.status === 409) {
         if (confirm(`${e.message}\n\nDeactivate instead?`)) {
           try {
-            await api(`/plans/${plan.id}`, { method: "PUT", body: JSON.stringify({ ...plan, price_ngn: Number(plan.price_ngn), is_active: false }) });
+            await api(`/plans/${plan.id}`, {
+              method: "PUT",
+              body: JSON.stringify({
+                ...plan,
+                price_ngn: Number(plan.price_ngn),
+                price_usd: plan.price_usd != null ? Number(plan.price_usd) : null,
+                is_active: false,
+              }),
+            });
             load();
             toast("Plan deactivated.");
           } catch (e2: any) {
@@ -345,7 +371,12 @@ export function Plans() {
                       <p className="font-medium text-slate-100">{p.name}</p>
                       {p.is_team_plan && <span className="text-xs text-blue-400">Team · {p.seat_count} seats</span>}
                     </td>
-                    <td className="px-4 py-3 tabular-nums text-slate-300">{Number(p.price_ngn) === 0 ? "Free" : formatNaira(p.price_ngn)}</td>
+                    <td className="px-4 py-3 tabular-nums text-slate-300">
+                      {Number(p.price_ngn) === 0 ? "Free" : formatNaira(p.price_ngn)}
+                      {p.price_usd != null && Number(p.price_usd) > 0 && (
+                        <span className="ml-1.5 text-xs text-slate-500">/ {formatUsd(p.price_usd)}</span>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-slate-500 capitalize">{p.billing_interval}</td>
                     <td className="px-4 py-3 tabular-nums text-slate-400">{p.max_concurrent_streams}</td>
                     <td className="px-4 py-3 tabular-nums text-slate-400">{formatCount(p.subscriber_count)}</td>

@@ -48,4 +48,12 @@ export const env = {
   /** Public Jitsi needs no credentials at all — this only matters for a
    *  self-hosted instance. Defaults to the provider's own free public server. */
   JITSI_DOMAIN: process.env.JITSI_DOMAIN ?? "meet.jit.si",
+
+  // Stripe — the USD checkout rail alongside Paystack's NGN one. Same
+  // discipline as PAYSTACK_SECRET_KEY above: an env var is the one
+  // authoritative source, not a Settings Hub field (see lib/stripe.ts).
+  STRIPE_SECRET_KEY: process.env.STRIPE_SECRET_KEY ?? "",
+  /** Signs Stripe's webhook payloads — a separate secret from the API key,
+   *  unlike Paystack, which reuses its API key for both. */
+  STRIPE_WEBHOOK_SECRET: process.env.STRIPE_WEBHOOK_SECRET ?? "",
 };

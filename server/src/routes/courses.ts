@@ -61,6 +61,9 @@ const CourseWriteSchema = z.object({
   compare_at_price_ngn: z.number().nonnegative().nullable().optional(),
   suggested_price_ngn: z.number().nonnegative().nullable().optional(),
   minimum_price_ngn: z.number().nonnegative().nullable().optional(),
+  /** Independent USD figures for Stripe checkout — see sessions.ts. */
+  price_usd: z.number().nonnegative().nullable().optional(),
+  minimum_price_usd: z.number().nonnegative().nullable().optional(),
   free_preview_seconds: z.number().int().nonnegative().default(0),
 
   // Artwork
@@ -583,6 +586,8 @@ coursesRouter.post("/", async (req: Request, res: Response, next: NextFunction) 
         compare_at_price_ngn: body.compare_at_price_ngn ?? null,
         suggested_price_ngn: body.suggested_price_ngn ?? null,
         minimum_price_ngn: body.minimum_price_ngn ?? null,
+        price_usd: body.price_usd ?? null,
+        minimum_price_usd: body.minimum_price_usd ?? null,
         free_preview_seconds: body.free_preview_seconds,
         master_image_url: body.master_image_url ?? null,
         focal_x: body.focal_x,
@@ -681,6 +686,8 @@ coursesRouter.put("/:id", async (req: Request, res: Response, next: NextFunction
         compare_at_price_ngn: body.compare_at_price_ngn ?? null,
         suggested_price_ngn: body.suggested_price_ngn ?? null,
         minimum_price_ngn: body.minimum_price_ngn ?? null,
+        price_usd: body.price_usd ?? null,
+        minimum_price_usd: body.minimum_price_usd ?? null,
         free_preview_seconds: body.free_preview_seconds,
         master_image_url: body.master_image_url ?? null,
         focal_x: body.focal_x,

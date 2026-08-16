@@ -14,6 +14,9 @@ interface Plan {
   id: number;
   name: string | null;
   price_ngn: number | null;
+  /** Independent USD price — set only when an admin has configured one,
+   *  enabling a Stripe "Subscribe with card" option alongside Paystack's. */
+  price_usd: number | null;
   billing_interval: "monthly" | "annual";
   features: string | null;
   is_team_plan: boolean;
@@ -40,9 +43,10 @@ function PlanCard({ plan }: { plan: Plan }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const price = formatPrice(plan.price_ngn);
+  const priceUsd = plan.price_usd != null ? `$${plan.price_usd.toLocaleString("en-US")}` : null;
   const features = parseFeatures(plan.features);
 
-  async function subscribe() {
+  async function subscribe(provider: "paystack" | "stripe" = "paystack") {
     if (status !== "signed-in") {
       window.location.href = `/signin?from=${encodeURIComponent("/plans")}`;
       return;
@@ -52,7 +56,7 @@ function PlanCard({ plan }: { plan: Plan }) {
     try {
       const res = await api<{ free: boolean; authorization_url?: string }>("/checkout/session", {
         method: "POST",
-        body: JSON.stringify({ plan_id: plan.id }),
+        body: JSON.stringify({ plan_id: plan.id, provider }),
       });
       if (res.authorization_url) window.location.href = res.authorization_url;
     } catch (err: any) {
@@ -92,12 +96,24 @@ function PlanCard({ plan }: { plan: Plan }) {
 
       <button
         type="button"
-        onClick={subscribe}
+        onClick={() => subscribe("paystack")}
         disabled={busy}
         className="mt-6 w-full rounded-lg bg-white px-4 py-2.5 text-sm font-semibold text-slate-900 transition hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
       >
         {busy ? "Starting checkout…" : "Subscribe"}
       </button>
+      {/* Only when an admin has set a USD price for this plan — see the
+          Plans admin page's "Price $" field. */}
+      {priceUsd && (
+        <button
+          type="button"
+          onClick={() => subscribe("stripe")}
+          disabled={busy}
+          className="mt-2 w-full rounded-lg border border-slate-700 px-4 py-2.5 text-sm font-medium text-slate-200 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {busy ? "Starting checkout…" : `Pay with card · ${priceUsd}`}
+        </button>
+      )}
       {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
     </div>
   );

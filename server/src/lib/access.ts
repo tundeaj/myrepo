@@ -40,6 +40,12 @@ export interface AccessResult {
   /** Populated for `purchase` content whether or not anyone is signed in: the price
    *  is public information, the buying is what's gated. */
   price_ngn: number | null;
+  /** The same content's independent USD price, for a Stripe checkout option
+   *  alongside the Paystack one price_ngn implies — see ContentItem.price_usd's
+   *  doc comment in schema.prisma. null under the exact same conditions as
+   *  price_ngn (not purchase-tier, or refused before either is meaningful),
+   *  and independently null even on purchase-tier content with no USD price set. */
+  price_usd: number | null;
   registration_id: number | null;
   /** A capability: possession is access to that session. Set only when can_view. */
   join_token: string | null;
@@ -60,6 +66,7 @@ const ACCESS_SELECT = {
   expires_at: true,
   access_level: true,
   price_ngn: true,
+  price_usd: true,
   free_preview_seconds: true,
   meeting_provider: true,
   meeting_join_url: true,
@@ -69,12 +76,18 @@ function joinUrlFor(content: { meeting_provider: string; meeting_join_url: strin
   return content.meeting_provider === "native" ? null : content.meeting_join_url;
 }
 
-function refuse(reason: AccessReason, preview = 0, price: number | null = null): AccessResult {
+function refuse(
+  reason: AccessReason,
+  preview = 0,
+  priceNgn: number | null = null,
+  priceUsd: number | null = null,
+): AccessResult {
   return {
     can_view: false,
     reason,
     preview_seconds: preview,
-    price_ngn: price,
+    price_ngn: priceNgn,
+    price_usd: priceUsd,
     registration_id: null,
     join_token: null,
     join_url: null,
@@ -83,12 +96,19 @@ function refuse(reason: AccessReason, preview = 0, price: number | null = null):
 
 /** Granted, with no registration attached. Only `registered` content carries a
  *  join_token — it is the per-registration capability for one session. */
-function grant(reason: AccessReason, preview: number, price: number | null, joinUrl: string | null): AccessResult {
+function grant(
+  reason: AccessReason,
+  preview: number,
+  priceNgn: number | null,
+  priceUsd: number | null,
+  joinUrl: string | null,
+): AccessResult {
   return {
     can_view: true,
     reason,
     preview_seconds: preview,
-    price_ngn: price,
+    price_ngn: priceNgn,
+    price_usd: priceUsd,
     registration_id: null,
     join_token: null,
     join_url: joinUrl,
@@ -117,18 +137,20 @@ export async function resolveAccess(
 
   const preview = content.free_preview_seconds ?? 0;
   // Price rides along on every purchase-tier result, granted or refused, so the
-  // card and the gate can print it without a second query.
-  const price =
-    content.access_level === "purchase" && content.price_ngn != null
-      ? Number(content.price_ngn)
-      : null;
+  // card and the gate can print it without a second query. Both currencies
+  // ride along independently — a purchase-tier item can have either, both, or
+  // (until an admin sets one) neither price set.
+  const isPurchase = content.access_level === "purchase";
+  const priceNgn = isPurchase && content.price_ngn != null ? Number(content.price_ngn) : null;
+  const priceUsd = isPurchase && content.price_usd != null ? Number(content.price_usd) : null;
 
   if (content.access_level === "public") {
     return {
       can_view: true,
       reason: "public",
       preview_seconds: preview,
-      price_ngn: price,
+      price_ngn: priceNgn,
+      price_usd: priceUsd,
       registration_id: null,
       join_token: null,
       join_url: joinUrlFor(content),
@@ -139,7 +161,7 @@ export async function resolveAccess(
   // this visitor may already own the thing. "Sign in and I'll tell you" is the
   // only honest answer, and it is correct for all four gated levels.
   if (userId === null) {
-    return refuse("needs_signin", preview, price);
+    return refuse("needs_signin", preview, priceNgn, priceUsd);
   }
 
   // Signed in, on a gated level. Each branch looks for the one thing that grants
@@ -153,12 +175,13 @@ export async function resolveAccess(
         where: { user_id: userId, content_id: contentId, status: "confirmed" },
         select: { id: true, join_token: true },
       });
-      if (!registration) return refuse("needs_registration", preview, price);
+      if (!registration) return refuse("needs_registration", preview, priceNgn, priceUsd);
       return {
         can_view: true,
         reason: "registered",
         preview_seconds: preview,
-        price_ngn: price,
+        price_ngn: priceNgn,
+        price_usd: priceUsd,
         registration_id: registration.id,
         join_token: registration.join_token,
         join_url: joinUrlFor(content),
@@ -173,8 +196,8 @@ export async function resolveAccess(
         where: { user_id: userId, status: { in: [...LIVE_STATUSES] } },
         select: { id: true },
       });
-      if (!subscription) return refuse("needs_subscription", preview, price);
-      return grant("subscribed", preview, price, joinUrlFor(content));
+      if (!subscription) return refuse("needs_subscription", preview, priceNgn, priceUsd);
+      return grant("subscribed", preview, priceNgn, priceUsd, joinUrlFor(content));
     }
 
     case "purchase": {
@@ -186,8 +209,8 @@ export async function resolveAccess(
         },
         select: { id: true },
       });
-      if (!entitlement) return refuse("needs_purchase", preview, price);
-      return grant("entitled", preview, price, joinUrlFor(content));
+      if (!entitlement) return refuse("needs_purchase", preview, priceNgn, priceUsd);
+      return grant("entitled", preview, priceNgn, priceUsd, joinUrlFor(content));
     }
 
     case "cohort": {
@@ -202,8 +225,8 @@ export async function resolveAccess(
         },
         select: { id: true },
       });
-      if (!place) return refuse("not_enrolled", preview, price);
-      return grant("cohort", preview, price, joinUrlFor(content));
+      if (!place) return refuse("not_enrolled", preview, priceNgn, priceUsd);
+      return grant("cohort", preview, priceNgn, priceUsd, joinUrlFor(content));
     }
 
     default:

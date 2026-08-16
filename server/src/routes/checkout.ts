@@ -13,6 +13,7 @@ import {
   verifyWebhookSignature,
   isPaystackConfigured,
 } from "../lib/paystack.js";
+import { createCheckoutSession, retrieveCheckoutSession, verifyStripeWebhookSignature } from "../lib/stripe.js";
 import { publicUrl } from "../lib/mail.js";
 import { sendMail } from "../lib/mail.js";
 import { publicSettings, publicStrings } from "../lib/homepageCache.js";
@@ -39,6 +40,7 @@ publicPlansRouter.get("/", async (_req: Request, res: Response, next: NextFuncti
           id: true,
           name: true,
           price_ngn: true,
+          price_usd: true,
           billing_interval: true,
           features: true,
           is_team_plan: true,
@@ -54,7 +56,11 @@ publicPlansRouter.get("/", async (_req: Request, res: Response, next: NextFuncti
       publicStrings(),
     ]);
     res.json({
-      plans: plans.map((p) => ({ ...p, price_ngn: p.price_ngn != null ? Number(p.price_ngn) : null })),
+      plans: plans.map((p) => ({
+        ...p,
+        price_ngn: p.price_ngn != null ? Number(p.price_ngn) : null,
+        price_usd: p.price_usd != null ? Number(p.price_usd) : null,
+      })),
       settings,
       strings,
     });
@@ -138,8 +144,14 @@ const SessionSchema = z
     content_id: z.number().int().positive().optional(),
     plan_id: z.number().int().positive().optional(),
     coupon_code: z.string().trim().max(40).optional(),
-    /** Only read when the content's price_mode is pay_what_you_can. */
+    /** Only read when the content's price_mode is pay_what_you_can. Naira for
+     *  provider 'paystack', dollars for provider 'stripe' — see amount_ngn's
+     *  own doc comment in schema.prisma on why this app doesn't rename the
+     *  field per-currency at the boundary either. */
     amount_ngn: z.number().positive().optional(),
+    /** Which gateway settles this order. Defaults to paystack — every
+     *  existing caller that predates Stripe support keeps working unchanged. */
+    provider: z.enum(["paystack", "stripe"]).default("paystack"),
   })
   .refine((b) => Boolean(b.content_id) !== Boolean(b.plan_id), {
     message: "Specify exactly one of content_id or plan_id.",
@@ -147,24 +159,40 @@ const SessionSchema = z
 
 checkoutRouter.post("/session", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    // Deliberately NOT checked here. A 100%-off coupon settles for ₦0 without
-    // ever calling Paystack — see below — so requiring a configured secret key
-    // this early would block a free checkout that has no payment step at all.
-    // The check happens immediately before the one call that actually needs it.
+    // Deliberately NOT checked here. A 100%-off coupon settles for ₦0/$0
+    // without ever calling either gateway — see below — so requiring a
+    // configured key this early would block a free checkout that has no
+    // payment step at all. The check happens immediately before the one call
+    // that actually needs it.
     const body = SessionSchema.parse(req.body);
     const userId = req.user!.sub;
     const user = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
     if (!user) throw new ApiError(404, "Account not found.");
 
+    const isStripe = body.provider === "stripe";
+    const currency = isStripe ? "USD" : "NGN";
+    const currencySymbol = isStripe ? "$" : "₦";
+
     let baseAmount: number;
     let appliesTo: "content" | "plan";
     let targetId: number;
     let orderData: { content_id?: number; plan_id?: number };
+    let productName: string;
 
     if (body.content_id) {
       const content = await prisma.contentItem.findUnique({
         where: { id: body.content_id },
-        select: { id: true, access_level: true, price_mode: true, price_ngn: true, minimum_price_ngn: true, title: true, status: true },
+        select: {
+          id: true,
+          access_level: true,
+          price_mode: true,
+          price_ngn: true,
+          minimum_price_ngn: true,
+          price_usd: true,
+          minimum_price_usd: true,
+          title: true,
+          status: true,
+        },
       });
       if (!content) throw new ApiError(404, "That item isn't available.");
       if (content.access_level !== "purchase") {
@@ -175,24 +203,36 @@ checkoutRouter.post("/session", async (req: Request, res: Response, next: NextFu
       const access = await resolveAccess(userId, content.id);
       if (access.can_view) throw new ApiError(409, "You already have access to this.");
 
+      const price = isStripe ? content.price_usd : content.price_ngn;
+      const minimumPrice = isStripe ? content.minimum_price_usd : content.minimum_price_ngn;
+
       if (content.price_mode === "pay_what_you_can") {
-        const minimum = content.minimum_price_ngn != null ? Number(content.minimum_price_ngn) : 0;
+        const minimum = minimumPrice != null ? Number(minimumPrice) : 0;
         if (!body.amount_ngn || body.amount_ngn < minimum) {
-          throw new ApiError(422, minimum > 0 ? `Enter at least ₦${minimum.toLocaleString()}.` : "Enter an amount.");
+          throw new ApiError(422, minimum > 0 ? `Enter at least ${currencySymbol}${minimum.toLocaleString()}.` : "Enter an amount.");
         }
         baseAmount = body.amount_ngn;
       } else {
-        if (content.price_ngn == null) throw new ApiError(422, "This item doesn't have a price set yet.");
-        baseAmount = Number(content.price_ngn);
+        if (price == null) {
+          throw new ApiError(
+            422,
+            isStripe ? "This item doesn't have a USD price set yet." : "This item doesn't have a price set yet.",
+          );
+        }
+        baseAmount = Number(price);
       }
 
       appliesTo = "content";
       targetId = content.id;
       orderData = { content_id: content.id };
+      productName = content.title;
     } else {
       const plan = await prisma.plan.findUnique({ where: { id: body.plan_id! } });
       if (!plan || !plan.is_active) throw new ApiError(404, "That plan isn't available.");
-      if (plan.price_ngn == null) throw new ApiError(422, "This plan doesn't have a price set yet.");
+      const price = isStripe ? plan.price_usd : plan.price_ngn;
+      if (price == null) {
+        throw new ApiError(422, isStripe ? "This plan doesn't have a USD price set yet." : "This plan doesn't have a price set yet.");
+      }
 
       // Block re-buying the SAME plan while a live subscription to it exists.
       // Switching to a different plan is allowed at this layer — proration and
@@ -202,10 +242,11 @@ checkoutRouter.post("/session", async (req: Request, res: Response, next: NextFu
       });
       if (existing) throw new ApiError(409, "You're already subscribed to this plan.");
 
-      baseAmount = Number(plan.price_ngn);
+      baseAmount = Number(price);
       appliesTo = "plan";
       targetId = plan.id;
       orderData = { plan_id: plan.id };
+      productName = plan.name ?? "Subscription";
     }
 
     const { coupon_id, final_amount_ngn } = await applyCoupon(body.coupon_code, baseAmount, appliesTo, targetId);
@@ -215,19 +256,47 @@ checkoutRouter.post("/session", async (req: Request, res: Response, next: NextFu
         user_id: userId,
         ...orderData,
         amount_ngn: final_amount_ngn,
-        currency: "NGN",
+        currency,
         status: "pending",
         order_type: "direct",
+        payment_provider: body.provider,
         coupon_id,
       },
     });
 
     // A coupon can discount all the way to zero. There is nothing to charge
-    // Paystack for, so this order is settled immediately rather than sent to a
-    // checkout page for ₦0 — Paystack's minimum charge would reject it anyway.
+    // either gateway for, so this order is settled immediately rather than
+    // sent to a checkout page for ₦0/$0 — both gateways' minimum charge would
+    // reject it anyway.
     if (final_amount_ngn === 0) {
       const settled = await finalizeOrder(order.id);
       return res.status(201).json({ free: true, order: settled });
+    }
+
+    if (isStripe) {
+      const reference = `wf-${order.id}-${randomUUID().slice(0, 8)}`;
+      const checkout = await createCheckoutSession({
+        email: user.email,
+        amountUsd: final_amount_ngn,
+        productName,
+        reference,
+        // Stripe substitutes the literal `{CHECKOUT_SESSION_ID}` token at
+        // redirect time — reusing the exact same `reference` query param
+        // Paystack's callback already reads means CheckoutCallback.tsx needs
+        // no changes at all to handle either provider.
+        successUrl: `${publicUrl("/checkout/callback")}?reference={CHECKOUT_SESSION_ID}`,
+        cancelUrl: publicUrl("/checkout/callback"),
+        metadata: { order_id: order.id, user_id: userId },
+      });
+
+      await prisma.order.update({ where: { id: order.id }, data: { stripe_session_id: checkout.session_id } });
+
+      return res.status(201).json({
+        free: false,
+        order_id: order.id,
+        authorization_url: checkout.url,
+        reference: checkout.session_id,
+      });
     }
 
     const reference = `wf-${order.id}-${randomUUID().slice(0, 8)}`;
@@ -338,8 +407,15 @@ async function failOrder(orderId: number) {
 
 checkoutRouter.get("/verify/:reference", async (req: Request, res: Response, next: NextFunction) => {
   try {
+    // A paystack_reference ("wf-...") and a stripe_session_id ("cs_...") are
+    // disjoint value spaces — one OR lookup finds the order regardless of
+    // which gateway it came back from, and CheckoutCallback.tsx never has to
+    // know or say which.
     const order = await prisma.order.findFirst({
-      where: { paystack_reference: req.params.reference, user_id: req.user!.sub },
+      where: {
+        user_id: req.user!.sub,
+        OR: [{ paystack_reference: req.params.reference }, { stripe_session_id: req.params.reference }],
+      },
     });
     if (!order) throw new ApiError(404, "We couldn't find that order.");
 
@@ -347,8 +423,12 @@ checkoutRouter.get("/verify/:reference", async (req: Request, res: Response, nex
       return res.json({ status: "paid", order, ...(await orderTargets(order)) });
     }
 
-    const verified = await verifyTransaction(req.params.reference);
-    if (verified.status === "success") {
+    const paid =
+      order.payment_provider === "stripe"
+        ? (await retrieveCheckoutSession(req.params.reference)).status === "paid"
+        : (await verifyTransaction(req.params.reference)).status === "success";
+
+    if (paid) {
       const settled = await finalizeOrder(order.id);
       return res.json({ status: "paid", order: settled, ...(await orderTargets(settled)) });
     }
@@ -426,5 +506,58 @@ checkoutWebhookRouter.post("/", async (req: Request, res: Response) => {
     else await failOrder(order.id);
   } catch (err) {
     console.error("[checkout webhook] failed to process charge.success:", err);
+  }
+});
+
+// ─── POST /checkout/stripe-webhook — Stripe's server-to-server notice ─────────
+//
+// A SEPARATE router and mount path from Paystack's webhook above, not a
+// second event type on the same one — the two providers sign completely
+// differently (see verifyStripeWebhookSignature's doc comment), and the
+// header each reads (x-paystack-signature vs stripe-signature) is provider-
+// specific. Same reasoning applies for why this is its own express.raw()
+// mount in index.ts rather than sharing /api/checkout/webhook's.
+//
+// Exists for the same reason as Paystack's: the browser-return callback
+// (CheckoutCallback.tsx, via successUrl above) is not guaranteed to fire —
+// a viewer can complete payment and close the tab before Stripe redirects
+// them back.
+
+export const stripeWebhookRouter = Router();
+
+stripeWebhookRouter.post("/", async (req: Request, res: Response) => {
+  const signature = req.headers["stripe-signature"];
+  const rawBody = req.body as Buffer;
+
+  if (!verifyStripeWebhookSignature(rawBody, typeof signature === "string" ? signature : undefined)) {
+    return res.status(400).json({ error: "Invalid signature." });
+  }
+
+  let payload: { type?: string; data?: { object?: { id?: string } } };
+  try {
+    payload = JSON.parse(rawBody.toString("utf8"));
+  } catch {
+    return res.status(400).json({ error: "Malformed payload." });
+  }
+
+  // Acknowledge immediately regardless of outcome from here — Stripe retries
+  // on non-2xx, and a session we don't recognise, or an event we don't
+  // handle, is not an error on our side.
+  res.json({ received: true });
+
+  const sessionId = payload.data?.object?.id;
+  if (payload.type !== "checkout.session.completed" || !sessionId) return;
+
+  try {
+    const order = await prisma.order.findFirst({ where: { stripe_session_id: sessionId } });
+    if (!order || order.status !== "pending") return;
+
+    // The webhook body is a hint to go check — verified independently rather
+    // than trusted, exactly like the callback path.
+    const verified = await retrieveCheckoutSession(sessionId);
+    if (verified.status === "paid") await finalizeOrder(order.id);
+    else await failOrder(order.id);
+  } catch (err) {
+    console.error("[stripe webhook] failed to process checkout.session.completed:", err);
   }
 });

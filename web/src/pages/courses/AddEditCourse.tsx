@@ -101,6 +101,8 @@ interface FormState {
   compareAtPriceNgn: string;
   suggestedPriceNgn: string;
   minimumPriceNgn: string;
+  priceUsd: string;
+  minimumPriceUsd: string;
   freePreviewSeconds: string;
 
   // Visibility
@@ -155,6 +157,8 @@ function defaultForm(): FormState {
     compareAtPriceNgn: "",
     suggestedPriceNgn: "",
     minimumPriceNgn: "",
+    priceUsd: "",
+    minimumPriceUsd: "",
     freePreviewSeconds: "0",
     status: "draft",
     publishMode: "immediate",
@@ -252,6 +256,8 @@ function courseToForm(c: Record<string, any>): FormState {
     compareAtPriceNgn: c.compare_at_price_ngn ? String(c.compare_at_price_ngn) : "",
     suggestedPriceNgn: c.suggested_price_ngn ? String(c.suggested_price_ngn) : "",
     minimumPriceNgn: c.minimum_price_ngn ? String(c.minimum_price_ngn) : "",
+    priceUsd: c.price_usd ? String(c.price_usd) : "",
+    minimumPriceUsd: c.minimum_price_usd ? String(c.minimum_price_usd) : "",
     freePreviewSeconds: String(c.free_preview_seconds ?? 0),
     status: (c.status as ContentStatus) ?? "draft",
     publishMode: c.publish_at ? "scheduled" : "immediate",
@@ -283,6 +289,8 @@ function formToPayload(form: FormState, status: "draft" | "registration_open") {
     compare_at_price_ngn: parseFloat(form.compareAtPriceNgn) || null,
     suggested_price_ngn: parseFloat(form.suggestedPriceNgn) || null,
     minimum_price_ngn: parseFloat(form.minimumPriceNgn) || null,
+    price_usd: parseFloat(form.priceUsd) || null,
+    minimum_price_usd: parseFloat(form.minimumPriceUsd) || null,
     free_preview_seconds: parseInt(form.freePreviewSeconds) || 0,
     master_image_url: form.masterImageUrl || null,
     focal_x: form.focalX,
@@ -654,6 +662,8 @@ export function AddEditCourse() {
               compareAtPriceNgn={form.compareAtPriceNgn}
               suggestedPriceNgn={form.suggestedPriceNgn}
               minimumPriceNgn={form.minimumPriceNgn}
+              priceUsd={form.priceUsd}
+              minimumPriceUsd={form.minimumPriceUsd}
               freePreviewSeconds={form.freePreviewSeconds}
               onAccessLevel={(v) => patchForm({ accessLevel: v })}
               onPriceMode={(v) => patchForm({ priceMode: v })}
@@ -661,6 +671,8 @@ export function AddEditCourse() {
               onCompareAtPriceNgn={(v) => patchForm({ compareAtPriceNgn: v })}
               onSuggestedPriceNgn={(v) => patchForm({ suggestedPriceNgn: v })}
               onMinimumPriceNgn={(v) => patchForm({ minimumPriceNgn: v })}
+              onPriceUsd={(v) => patchForm({ priceUsd: v })}
+              onMinimumPriceUsd={(v) => patchForm({ minimumPriceUsd: v })}
               onFreePreviewSeconds={(v) => patchForm({ freePreviewSeconds: v })}
               errors={errors}
             />

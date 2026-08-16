@@ -15,6 +15,16 @@ export function formatNaira(value: unknown): string {
   }).format(n);
 }
 
+/** The USD counterpart to formatNaira, for Stripe-priced items. */
+export function formatUsd(value: unknown): string {
+  const n = safeNumber(value, 0);
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  }).format(n);
+}
+
 /** Percentage from a 0–1 ratio. Renders "—" when the ratio is null (undefined denominator). */
 export function formatPct(ratio: number | null | undefined, digits = 0): string {
   if (ratio === null || ratio === undefined || !Number.isFinite(ratio)) return "—";

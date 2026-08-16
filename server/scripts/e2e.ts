@@ -301,7 +301,7 @@ async function main() {
 
   async function accessFor(slug: string, tok?: string) {
     const r = await call(`/api/content/${slug}`, { token: tok });
-    return r.body.access as { can_view: boolean; reason: string; price_ngn: number | null };
+    return r.body.access as { can_view: boolean; reason: string; price_ngn: number | null; price_usd: number | null };
   }
 
   const outPub = await accessFor(pub.slug);
@@ -813,6 +813,137 @@ async function main() {
   // it throws client-side and the page renders "Something went wrong."
   check("settings and strings ride along so the page can paint on one call",
     publicPlans.body.settings != null && publicPlans.body.strings != null, publicPlans.body);
+
+  // ─── Checkout — Stripe ───────────────────────────────────────────────────────
+  //
+  // No STRIPE_SECRET_KEY/STRIPE_WEBHOOK_SECRET is configured in this
+  // environment either — same accepted gap as Paystack above, and Zoom/Google/
+  // Microsoft before it. What's real and testable without one: USD pricing
+  // threading through content, access, and public-plans; the "doesn't have a
+  // USD price yet" refusal; ownership scoping on verify; the webhook's
+  // unconfigured refusal; and — because a 100%-off coupon never calls Stripe
+  // either, exactly like the Paystack path — the FULL settle-and-grant path
+  // for a Stripe-provider order, run for real against the live database.
+  section("Checkout — Stripe");
+
+  const stripeBuyable = await makeContent("purchase", {
+    slug: `e2e-stripe-buyable-${RUN}`,
+    price_ngn: "4000",
+    price_usd: "25",
+  });
+  const noUsdPrice = await makeContent("purchase", {
+    slug: `e2e-no-usd-${RUN}`,
+    price_ngn: "4000",
+    price_usd: null,
+  });
+  const stripePwyc = await makeContent("purchase", {
+    slug: `e2e-stripe-pwyc-${RUN}`,
+    price_mode: "pay_what_you_can",
+    price_ngn: null,
+    minimum_price_ngn: "1000",
+    price_usd: null,
+    minimum_price_usd: "5",
+  });
+
+  const detailWithUsd = await call(`/api/content/${stripeBuyable.slug}`);
+  check("the public detail payload carries price_usd", detailWithUsd.body.content?.price_usd === 25, detailWithUsd.body.content);
+  const detailNoUsd = await call(`/api/content/${noUsdPrice.slug}`);
+  check("price_usd is null when no admin ever set one — not defaulted to price_ngn", detailNoUsd.body.content?.price_usd === null, detailNoUsd.body.content);
+  const detailPwycUsd = await call(`/api/content/${stripePwyc.slug}`);
+  check("minimum_price_usd rides alongside minimum_price_ngn on PWYC content", detailPwycUsd.body.content?.minimum_price_usd === 5, detailPwycUsd.body.content);
+
+  const accessWithUsd = await accessFor(stripeBuyable.slug, sessionToken);
+  check("resolveAccess carries price_usd for purchase-tier content that has one", accessWithUsd.price_usd === 25, accessWithUsd);
+  const accessNoUsd = await accessFor(noUsdPrice.slug, sessionToken);
+  check("resolveAccess reports price_usd null independently of price_ngn", accessNoUsd.price_ngn === 4000 && accessNoUsd.price_usd === null, accessNoUsd);
+  const accessPublicUsd = await accessFor(pub.slug, sessionToken);
+  check("price_usd is null on non-purchase-tier content, same as price_ngn", accessPublicUsd.price_usd === null, accessPublicUsd);
+
+  const noUsdStripeCheckout = await call("/api/checkout/session", {
+    method: "POST",
+    token: sessionToken,
+    body: { content_id: noUsdPrice.id, provider: "stripe" },
+  });
+  check("checking out via Stripe for content with no USD price is refused",
+    noUsdStripeCheckout.status === 422, noUsdStripeCheckout.body);
+  const ordersAfterNoUsd = await prisma.order.count({ where: { user_id: user!.id, content_id: noUsdPrice.id } });
+  check("the refused USD-less Stripe attempt leaves no abandoned order behind", ordersAfterNoUsd === 0, ordersAfterNoUsd);
+
+  const stripeBelowMin = await call("/api/checkout/session", {
+    method: "POST",
+    token: sessionToken,
+    body: { content_id: stripePwyc.id, provider: "stripe", amount_ngn: 2 },
+  });
+  check("Stripe pay-what-you-can below the USD minimum is rejected, not the NGN one", stripeBelowMin.status === 422, stripeBelowMin.body);
+
+  section("Checkout — Stripe, the free path (settles without ever calling Stripe)");
+
+  const stripeFreeCoupon = await prisma.coupon.create({
+    data: { code: `STRIPEFREE-${RUN}`, discount_type: "percent", discount_value: "100", applies_to: "all", is_active: true },
+  });
+  created.coupons.push(stripeFreeCoupon.id);
+
+  const stripeFreeCheckout = await call("/api/checkout/session", {
+    method: "POST",
+    token: sessionToken,
+    body: { content_id: stripeBuyable.id, provider: "stripe", coupon_code: stripeFreeCoupon.code },
+  });
+  check("a 100%-off coupon settles a Stripe-provider order without a Stripe call",
+    stripeFreeCheckout.status === 201 && stripeFreeCheckout.body.free === true, stripeFreeCheckout.body);
+  check("the order is recorded with payment_provider 'stripe', not defaulted to paystack",
+    stripeFreeCheckout.body.order?.payment_provider === "stripe", stripeFreeCheckout.body.order);
+  check("the order's currency is USD, off the $25 price, not the ₦4000 one",
+    stripeFreeCheckout.body.order?.currency === "USD", stripeFreeCheckout.body.order);
+
+  const afterStripeFreeBuy = await accessFor(stripeBuyable.slug, sessionToken);
+  check("the entitlement was actually granted via the Stripe path too", afterStripeFreeBuy.can_view && afterStripeFreeBuy.reason === "entitled", afterStripeFreeBuy);
+
+  const stripePlan = await prisma.plan.create({
+    data: { name: `E2E Stripe Plan ${RUN}`, price_ngn: "8000", price_usd: "10", billing_interval: "monthly", is_active: true },
+  });
+  created.plans.push(stripePlan.id);
+  const stripePlanCoupon = await prisma.coupon.create({
+    data: { code: `STRIPEPLAN-${RUN}`, discount_type: "percent", discount_value: "100", applies_to: "plan", target_id: stripePlan.id, is_active: true },
+  });
+  created.coupons.push(stripePlanCoupon.id);
+
+  const stripePlanCheckout = await call("/api/checkout/session", {
+    method: "POST",
+    token: sessionToken,
+    body: { plan_id: stripePlan.id, provider: "stripe", coupon_code: stripePlanCoupon.code },
+  });
+  check("a 100%-off plan coupon settles a Stripe subscription", stripePlanCheckout.status === 201 && stripePlanCheckout.body.free === true, stripePlanCheckout.body);
+  const stripeSub = await prisma.subscription.findFirst({ where: { user_id: user!.id, plan_id: stripePlan.id } });
+  check("the subscription was created off the Stripe-provider order", stripeSub != null, stripeSub);
+
+  const publicPlansWithUsd = await call("/api/public-plans");
+  const stripePlanRow = (publicPlansWithUsd.body.plans ?? []).find((p: { id: number }) => p.id === stripePlan.id);
+  check("the public plans list carries price_usd", stripePlanRow?.price_usd === 10, stripePlanRow);
+
+  section("Checkout — Stripe, ownership and unconfigured");
+
+  const foreignStripeOrder = await prisma.order.create({
+    data: {
+      user_id: otherUser.id,
+      content_id: stripeBuyable.id,
+      amount_ngn: "25",
+      currency: "USD",
+      status: "pending",
+      order_type: "direct",
+      payment_provider: "stripe",
+      stripe_session_id: `cs_e2e_fake_${RUN}`,
+    },
+  });
+  void foreignStripeOrder;
+  const stolenStripeVerify = await call(`/api/checkout/verify/cs_e2e_fake_${RUN}`, { token: sessionToken });
+  check("verifying someone else's Stripe session reference is refused", stolenStripeVerify.status === 404, stolenStripeVerify.body);
+
+  const stripeWebhookRes = await call("/api/checkout/stripe-webhook", {
+    method: "POST",
+    body: { type: "checkout.session.completed", data: { object: { id: `cs_e2e_fake_${RUN}` } } },
+  });
+  check("the Stripe webhook refuses everything when no webhook secret is configured",
+    stripeWebhookRes.status === 400, stripeWebhookRes.body);
 
   // ─── Playback ──────────────────────────────────────────────────────────────
   section("Playback — access and signed URLs");

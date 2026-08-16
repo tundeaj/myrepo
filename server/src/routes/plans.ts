@@ -47,6 +47,10 @@ plansRouter.get("/:id", async (req: Request, res: Response, next: NextFunction) 
 const PlanSchema = z.object({
   name: z.string().min(1, "Plan name is required.").max(100),
   price_ngn: z.number().min(0, "Price can't be negative."),
+  /** Independent USD figure for Stripe checkout — see Plan.price_usd's doc
+   *  comment in schema.prisma. Optional: a plan with no price_usd set simply
+   *  has no Stripe "Subscribe" option, Paystack only. */
+  price_usd: z.number().min(0, "Price can't be negative.").nullable().optional(),
   billing_interval: z.enum(["monthly", "annual"]),
   features: z.string().max(10000).nullable().optional(),
   max_concurrent_streams: z.number().int().min(1).default(1),
@@ -63,6 +67,7 @@ plansRouter.post("/", async (req: Request, res: Response, next: NextFunction) =>
       data: {
         name: body.name,
         price_ngn: body.price_ngn,
+        price_usd: body.price_usd ?? null,
         billing_interval: body.billing_interval,
         features: body.features ?? null,
         max_concurrent_streams: body.max_concurrent_streams,
@@ -116,6 +121,7 @@ plansRouter.put("/:id", async (req: Request, res: Response, next: NextFunction) 
       data: {
         name: body.name,
         price_ngn: body.price_ngn,
+        price_usd: body.price_usd ?? null,
         billing_interval: body.billing_interval,
         features: body.features ?? null,
         max_concurrent_streams: body.max_concurrent_streams,

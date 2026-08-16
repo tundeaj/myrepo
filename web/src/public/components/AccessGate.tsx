@@ -33,6 +33,9 @@ export interface AccessResult {
   reason: AccessReason;
   preview_seconds: number;
   price_ngn: number | null;
+  /** The same content's independent USD price — set only when an admin has
+   *  configured one, enabling a Stripe checkout option alongside Paystack's. */
+  price_usd: number | null;
   registration_id: number | null;
   join_token: string | null;
   /** Set only for a granted, non-native session (Zoom/Teams/Google Meet/Jitsi)
@@ -81,6 +84,7 @@ export function AccessGate({
   const [error, setError] = useState<string | null>(null);
 
   const price = formatPrice(access.price_ngn);
+  const priceUsd = access.price_usd != null ? `$${access.price_usd.toLocaleString("en-US")}` : null;
   // Returning here after signing in is the difference between a flow and a maze.
   const from = location.pathname + location.search;
 
@@ -101,23 +105,24 @@ export function AccessGate({
     }
   }
 
-  async function buy() {
+  async function buy(provider: "paystack" | "stripe" = "paystack") {
     setBusy(true);
     setError(null);
     try {
       const res = await api<{ free: boolean; authorization_url?: string; order?: unknown }>("/checkout/session", {
         method: "POST",
-        body: JSON.stringify({ content_id: contentId }),
+        body: JSON.stringify({ content_id: contentId, provider }),
       });
       if (res.free) {
-        // A coupon took it to ₦0 — the server already settled the order and
-        // granted the entitlement. Nothing to redirect to; just refresh.
+        // A coupon took it to ₦0/$0 — the server already settled the order
+        // and granted the entitlement. Nothing to redirect to; just refresh.
         const refreshed = await api<{ access: AccessResult }>(`/registrations/access/${contentId}`);
         onRegistered?.(refreshed.access);
         return;
       }
-      // Deliberately leaving the SPA: Paystack's checkout is a hosted page,
-      // and card entry does not belong inside this app's origin.
+      // Deliberately leaving the SPA either way: both Paystack's and Stripe's
+      // checkout pages are hosted, and card entry does not belong inside this
+      // app's origin.
       if (res.authorization_url) window.location.href = res.authorization_url;
     } catch (err: any) {
       setError(err?.message ?? "We couldn't start checkout. Try again.");
@@ -212,11 +217,27 @@ export function AccessGate({
     case "needs_purchase":
       return (
         <div className="space-y-2">
-          <button type="button" onClick={buy} disabled={busy} className={PRIMARY}>
-            {busy ? "Starting checkout…" : price ? `Buy · ${price}` : "Buy"}
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={() => buy("paystack")} disabled={busy} className={PRIMARY}>
+              {busy ? "Starting checkout…" : price ? `Buy · ${price}` : "Buy"}
+            </button>
+            {/* Only when an admin has set a USD price for this item — see
+                AccessPricingPanel's "Price ($)" field. Absent otherwise,
+                not a disabled/inert button, since there's nothing to buy in
+                a currency this item was never priced in. */}
+            {priceUsd && (
+              <button
+                type="button"
+                onClick={() => buy("stripe")}
+                disabled={busy}
+                className="inline-flex items-center justify-center rounded-lg border border-slate-600 px-6 py-3 text-sm font-medium text-slate-200 transition hover:bg-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/70 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {busy ? "Starting checkout…" : `Pay with card · ${priceUsd}`}
+              </button>
+            )}
+          </div>
           <p className="max-w-sm text-xs text-slate-500">
-            A one-time purchase, yours to rewatch. You'll pay on Paystack's secure checkout page.
+            A one-time purchase, yours to rewatch. You'll pay on {priceUsd ? "Paystack's or Stripe's" : "Paystack's"} secure checkout page.
           </p>
           {error && <p className="max-w-sm text-xs text-red-400">{error}</p>}
         </div>

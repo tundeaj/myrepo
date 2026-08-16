@@ -69,6 +69,8 @@ const DETAIL_SELECT = {
   suggested_price_ngn: true,
   minimum_price_ngn: true,
   compare_at_price_ngn: true,
+  price_usd: true,
+  minimum_price_usd: true,
   free_preview_seconds: true,
   is_cohort: true,
   cohort_start_date: true,
@@ -265,6 +267,9 @@ contentRouter.get("/:slug", async (req: Request, res: Response, next: NextFuncti
           content.minimum_price_ngn != null ? Number(content.minimum_price_ngn) : null,
         compare_at_price_ngn:
           content.compare_at_price_ngn != null ? Number(content.compare_at_price_ngn) : null,
+        price_usd: content.price_usd != null ? Number(content.price_usd) : null,
+        minimum_price_usd:
+          content.minimum_price_usd != null ? Number(content.minimum_price_usd) : null,
         avg_rating: Number(content.avg_rating),
         spots_left: spotsLeft,
         outcomes: parseJson<string[]>(outcomes_json, []),

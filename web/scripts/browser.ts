@@ -736,6 +736,64 @@ async function run(browser: Browser) {
     }
   }
 
+  section("Stripe pricing");
+
+  if (adminToken) {
+    // Same reasoning as Meeting providers above for why this only checks the
+    // admin form field rendering and not an actual hosted-checkout redirect:
+    // no STRIPE_SECRET_KEY is configured here (same accepted gap as
+    // Paystack), so there is no real checkout session to follow to. What IS
+    // real and checkable: the USD price this fixture is given actually comes
+    // back out of the API and renders in the field meant to hold it.
+    const startAt = new Date(Date.now() + 86_400_000).toISOString();
+    const priced = await fetch(`${API_BASE}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({
+        title: `Browser Check Stripe Price ${Date.now()}`,
+        scheduled_start_at: startAt,
+        scheduled_duration_minutes: 60,
+        access_level: "purchase",
+        price_mode: "fixed",
+        price_ngn: 4000,
+        price_usd: 25,
+      }),
+    }).then((r) => r.json());
+    const pricedId = priced?.session?.id;
+    check("a fixture purchase-tier session with a USD price is created for this check", typeof pricedId === "number", priced);
+
+    if (pricedId) {
+      const beforeErrors = pageErrors.length;
+      await page.goto(`${BASE}/admin/sessions/${pricedId}/edit`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(600);
+
+      // Not `.first()` on a shared placeholder — "Compare-at price (₦)" uses
+      // the same "Optional" placeholder and would win a naive match. Walking
+      // from the exact label text to its sibling input is unambiguous.
+      const usdField = page.locator('xpath=//label[normalize-space(text())="Price ($)"]/following-sibling::input[1]');
+      const usdValue = await usdField.inputValue().catch(() => null);
+      check("the session editor's Price ($) field renders the real USD price set via the API", usdValue === "25", { usdValue });
+
+      check("/admin/sessions/:id/edit (Price $ field) throws no uncaught render error", pageErrors.length === beforeErrors, pageErrors.slice(beforeErrors));
+
+      await fetch(`${API_BASE}/api/sessions/${pricedId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    }
+
+    const beforePlansErrors = pageErrors.length;
+    await page.goto(`${BASE}/admin/plans`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(400);
+    const addPlanButton = page.locator('button:has-text("Add Plan")').first();
+    if (await addPlanButton.count()) {
+      await addPlanButton.click();
+      await page.waitForTimeout(300);
+      const planUsdLabel = await page.locator('label:has-text("Price $")').count();
+      check("the Plans admin form offers a Price $ field alongside Price ₦", planUsdLabel > 0, { planUsdLabel });
+    } else {
+      check("the Plans admin form offers a Price $ field alongside Price ₦", false, "no Add Plan button found");
+    }
+    check("/admin/plans (Price $ field) throws no uncaught render error", pageErrors.length === beforePlansErrors, pageErrors.slice(beforePlansErrors));
+  }
+
   check("no uncaught page errors across the run", pageErrors.length === 0, pageErrors);
 
   await page.close();

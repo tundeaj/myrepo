@@ -10,6 +10,11 @@ interface Props {
   compareAtPriceNgn: string;
   suggestedPriceNgn: string;
   minimumPriceNgn: string;
+  /** Independent USD figures for Stripe checkout — not derived from the NGN
+   *  ones, and optional: leaving these blank simply means no Stripe "Buy"
+   *  option shows for this item, Paystack only. */
+  priceUsd: string;
+  minimumPriceUsd: string;
   freePreviewSeconds: string;
   onAccessLevel: (v: AccessLevel) => void;
   onPriceMode: (v: PriceMode) => void;
@@ -17,6 +22,8 @@ interface Props {
   onCompareAtPriceNgn: (v: string) => void;
   onSuggestedPriceNgn: (v: string) => void;
   onMinimumPriceNgn: (v: string) => void;
+  onPriceUsd: (v: string) => void;
+  onMinimumPriceUsd: (v: string) => void;
   onFreePreviewSeconds: (v: string) => void;
   errors: Record<string, string>;
 }
@@ -73,6 +80,8 @@ export function AccessPricingPanel({
   compareAtPriceNgn,
   suggestedPriceNgn,
   minimumPriceNgn,
+  priceUsd,
+  minimumPriceUsd,
   freePreviewSeconds,
   onAccessLevel,
   onPriceMode,
@@ -80,6 +89,8 @@ export function AccessPricingPanel({
   onCompareAtPriceNgn,
   onSuggestedPriceNgn,
   onMinimumPriceNgn,
+  onPriceUsd,
+  onMinimumPriceUsd,
   onFreePreviewSeconds,
   errors,
 }: Props) {
@@ -156,6 +167,20 @@ export function AccessPricingPanel({
                 placeholder="Optional"
               />
             </Field>
+            <Field
+              label="Price ($)"
+              hint="Optional — enables a Stripe checkout option alongside Paystack. Leave blank for Paystack (₦) only."
+            >
+              <input
+                type="number"
+                className={inputClass}
+                min={0}
+                step={1}
+                value={priceUsd}
+                onChange={(e) => onPriceUsd(e.target.value)}
+                placeholder="Optional"
+              />
+            </Field>
           </div>
         )}
 
@@ -182,6 +207,21 @@ export function AccessPricingPanel({
                 value={minimumPriceNgn}
                 onChange={(e) => onMinimumPriceNgn(e.target.value)}
                 placeholder="0"
+              />
+            </Field>
+            <Field
+              label="Minimum price ($)"
+              hint="Optional — the Stripe-side minimum, independent of the naira one above."
+              error={errors.minimumPriceUsd}
+            >
+              <input
+                type="number"
+                className={inputClass}
+                min={0}
+                step={1}
+                value={minimumPriceUsd}
+                onChange={(e) => onMinimumPriceUsd(e.target.value)}
+                placeholder="Optional"
               />
             </Field>
           </div>
