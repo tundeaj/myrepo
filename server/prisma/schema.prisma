@@ -1692,6 +1692,31 @@ model ProviderConnection {
   @@map("provider_connections")
 }
 
+// Not the same thing as Attendance above — that one hangs off a Registration
+// (free, registered-tier content only) and is never written by any live code
+// path today. This is the signal this app CAN observe for a non-native
+// meeting session at any access level: the moment a signed-in viewer was
+// redirected to the real Zoom/Teams/Meet/Jitsi join_url. It is an intent-to-
+// attend, not a measured watch time — this app has no visibility into what
+// happens after the redirect. lib/earnings.ts's computeSubscriptionAccrual()
+// converts each row into a policy-configured number of credited seconds
+// (monetisation.non_native_attendance_credit_seconds) rather than pretending
+// to have measured anything. No unique constraint: a real recurring session
+// (a weekly Zoom class, say) is genuinely attended more than once a month,
+// and each attendance is its own row — routes/playback.ts dedupes only
+// rapid repeat pings from the same visit, not distinct real attendances.
+model MeetingAttendance {
+  id          Int             @id @default(autoincrement())
+  user_id     Int
+  content_id  Int
+  provider    MeetingProvider
+  joined_at   DateTime        @default(now())
+
+  @@index([user_id, content_id])
+  @@index([content_id])
+  @@map("meeting_attendances")
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // HOMEPAGE ENGINE
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

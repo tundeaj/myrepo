@@ -1830,6 +1830,133 @@ async function main() {
     });
   }
 
+  // ─── Subscription accrual — non-native meeting attendance ──────────────────
+  //
+  // The gap this closes: a Zoom/Teams/Google Meet/Jitsi session has no
+  // watch-time telemetry, so before this it would accrue nothing for its
+  // speakers no matter how many subscribers attended. POST
+  // /playback/meeting-attendance and computeSubscriptionAccrual()'s use of
+  // it are what this section proves.
+  section("Subscription accrual — non-native attendance");
+
+  try {
+    const periodMonth = new Date().toISOString().slice(0, 7);
+    await setMonetisationSettings({
+      "monetisation.subscription_accrual_enabled": true,
+      "monetisation.subscription_min_watch_seconds": "200",
+      "monetisation.non_native_attendance_credit_seconds": "250",
+    });
+
+    // A real, dedicated viewer (not the shared sessionToken fixture, which
+    // other sections already touch) with its own session, so the
+    // meeting-attendance calls below are unambiguously "as this subscriber."
+    const attendEmail = `e2e-attend-${RUN}@example.test`;
+    const attendReg = await call("/api/auth/register", {
+      method: "POST",
+      body: { email: attendEmail, password: "correct-horse-battery", full_name: "E2E Attendee", country: "NG", job_role: "Tester" },
+    });
+    const attendToken = attendReg.body.token as string;
+    const attendUser = await prisma.user.findUnique({ where: { email: attendEmail } });
+    if (attendUser) created.users.push(attendUser.id);
+
+    const attendSpeaker = await prisma.speaker.create({ data: { full_name: `E2E Attend Speaker ${RUN}`, slug: `e2e-attend-speaker-${RUN}` } });
+    created.speakers.push(attendSpeaker.id);
+
+    // A real subscriber-tier Jitsi session, created through the actual admin
+    // endpoint (not a raw prisma insert) so meeting_provider is genuinely set
+    // the way an admin would set it.
+    const jitsiAttendCreate = await call("/api/sessions", {
+      method: "POST",
+      token: adminToken,
+      body: {
+        title: `E2E Attend Jitsi ${RUN}`, slug: `e2e-attend-jitsi-${RUN}`,
+        scheduled_start_at: new Date(Date.now() + 86_400_000).toISOString(), scheduled_duration_minutes: 60,
+        meeting_provider: "jitsi", access_level: "subscriber", status: "registration_open",
+      },
+    });
+    const jitsiAttendId = jitsiAttendCreate.body.session?.id as number;
+    if (jitsiAttendId) created.content.push(jitsiAttendId);
+    await prisma.contentSpeaker.create({ data: { content_id: jitsiAttendId, speaker_id: attendSpeaker.id, revenue_share_pct: 100 } });
+
+    // A native, subscriber-tier control — attendance recording must refuse
+    // it outright; it's what /session (not this endpoint) is for.
+    const nativeControl = await makeContent("subscriber", { slug: `e2e-attend-native-${RUN}` });
+
+    const anonPing = await call("/api/playback/meeting-attendance", { method: "POST", body: { content_id: jitsiAttendId } });
+    check("an anonymous request cannot record attendance", anonPing.status === 401, anonPing.body);
+
+    const nativePing = await call("/api/playback/meeting-attendance", { method: "POST", token: attendToken, body: { content_id: nativeControl.id } });
+    check("recording attendance on a native session is refused — there's nothing third-party to attend", nativePing.status === 400, nativePing.body);
+
+    const noAccessPing = await call("/api/playback/meeting-attendance", { method: "POST", token: attendToken, body: { content_id: jitsiAttendId } });
+    check("recording attendance before the viewer actually has access is refused", noAccessPing.status === 403, noAccessPing.body);
+
+    // Now give them real access — the same subscription→access_level:
+    // subscriber path every other subscriber-tier check in this suite uses.
+    const attendPlan = await prisma.plan.create({ data: { name: `E2E Attend Plan ${RUN}`, price_ngn: "5000", billing_interval: "monthly", is_active: true } });
+    created.plans.push(attendPlan.id);
+    await prisma.subscription.create({ data: { user_id: attendUser!.id, plan_id: attendPlan.id, status: "active", current_period_end: new Date(Date.now() + 30 * 86_400_000) } });
+
+    const firstPing = await call("/api/playback/meeting-attendance", { method: "POST", token: attendToken, body: { content_id: jitsiAttendId } });
+    check("a granted, non-native attendance ping succeeds", firstPing.status === 200 && firstPing.body.ok === true, firstPing.body);
+    const countAfterFirst = await prisma.meetingAttendance.count({ where: { user_id: attendUser!.id, content_id: jitsiAttendId } });
+    check("exactly one attendance row exists after the first ping", countAfterFirst === 1, countAfterFirst);
+
+    const secondPing = await call("/api/playback/meeting-attendance", { method: "POST", token: attendToken, body: { content_id: jitsiAttendId } });
+    check("a second ping moments later is treated as the same visit, not a new one", secondPing.status === 200, secondPing.body);
+    const countAfterSecond = await prisma.meetingAttendance.count({ where: { user_id: attendUser!.id, content_id: jitsiAttendId } });
+    check("still exactly one row — the dedupe window collapsed the repeat ping", countAfterSecond === 1, countAfterSecond);
+
+    // Preview/run before backdating the existing row: nothing has happened
+    // in the CURRENT period yet from the accrual's point of view once we
+    // move the one row outside the dedupe window — do that first, then
+    // assert.
+    await prisma.meetingAttendance.updateMany({
+      where: { user_id: attendUser!.id, content_id: jitsiAttendId },
+      data: { joined_at: new Date(Date.now() - 11 * 60_000) }, // just past the 10-minute dedupe window
+    });
+    const thirdPing = await call("/api/playback/meeting-attendance", { method: "POST", token: attendToken, body: { content_id: jitsiAttendId } });
+    check("a ping after the dedupe window has passed is a genuinely new attendance", thirdPing.status === 200, thirdPing.body);
+    const countAfterGap = await prisma.meetingAttendance.count({ where: { user_id: attendUser!.id, content_id: jitsiAttendId } });
+    check("a real second row now exists — two real attendances, not one inflated further", countAfterGap === 2, countAfterGap);
+
+    // 2 attendances × 250 credited seconds each = 500s, ≥ the 200s minimum
+    // this section set — qualifies.
+    const preview = await call(`/api/payouts/subscription-accrual-preview?period_month=${periodMonth}`, { token: adminToken });
+    const previewSub = (preview.body.subscribers ?? []).find((s: { user_id: number }) => s.user_id === attendUser!.id);
+    check("the non-native attendee appears in the accrual preview with no watch-time telemetry at all", Boolean(previewSub), preview.body.subscribers);
+    const previewItem = previewSub?.content.find((c: { content_id: number }) => c.content_id === jitsiAttendId);
+    check("the credited attendance (2 × 250s = 500s) qualifies against the 200s minimum", Boolean(previewItem), previewSub?.content);
+    check("a single qualifying non-native item gets the subscriber's full period amount", previewItem?.share_of_period_amount_ngn === 5000, previewItem);
+
+    const run = await call("/api/payouts/subscription-accrual", { method: "POST", token: adminToken, body: { period_month: periodMonth } });
+    // Not asserting an exact created/total_ngn count here: this run is
+    // genuinely global (see runSubscriptionAccrual's own doc), so it can
+    // legitimately also sweep up a still-unaccrued fixture left behind by
+    // an earlier section in the same period_month (e.g. the earlier
+    // "an annual plan's period amount is its price divided by 12" check
+    // only ever previews its fixture, never actually runs it). What this
+    // section owns and verifies is its OWN speaker's EarningLine, below.
+    check("the accrual run succeeds", run.status === 200 && run.body.created >= 1, run.body);
+
+    const line = await prisma.earningLine.findFirst({ where: { speaker_id: attendSpeaker.id, content_id: jitsiAttendId, period_month: periodMonth } });
+    check("the written EarningLine's watch_hours reflects the credited (not measured) seconds — 500s = 0.14h, rounded", Number(line?.watch_hours) === Math.round((500 / 3600) * 100) / 100, line?.watch_hours);
+    check("earned_ngn matches the speaker's full share of the period amount", Number(line?.earned_ngn) === 5000, line?.earned_ngn);
+
+    // Below-threshold check: a single attendance's credit alone, with the
+    // minimum raised past it, does not qualify.
+    await setMonetisationSettings({ "monetisation.subscription_min_watch_seconds": "600" });
+    const belowThresholdPreview = await call(`/api/payouts/subscription-accrual-preview?period_month=${periodMonth}`, { token: adminToken });
+    const belowThresholdSub = (belowThresholdPreview.body.subscribers ?? []).find((s: { user_id: number }) => s.user_id === attendUser!.id);
+    check("raising the minimum past the credited total excludes it — this isn't hardcoded to always qualify", !belowThresholdSub || belowThresholdSub.content.every((c: { content_id: number }) => c.content_id !== jitsiAttendId), belowThresholdSub);
+  } finally {
+    await setMonetisationSettings({
+      "monetisation.subscription_accrual_enabled": null,
+      "monetisation.subscription_min_watch_seconds": null,
+      "monetisation.non_native_attendance_credit_seconds": null,
+    });
+  }
+
   // ─── Users admin — list/search/filter, detail activity, role/active management ──
   section("Users admin");
 
@@ -2212,6 +2339,9 @@ async function main() {
   }
 
   // ─── Cleanup ───────────────────────────────────────────────────────────────
+  await prisma.meetingAttendance.deleteMany({
+    where: { OR: [{ user_id: { in: created.users } }, { content_id: { in: created.content } }] },
+  });
   await prisma.rating.deleteMany({ where: { content_id: { in: created.content } } });
   await prisma.streamSession.deleteMany({ where: { content_id: { in: created.content } } });
   await prisma.registration.deleteMany({ where: { content_id: { in: created.content } } });

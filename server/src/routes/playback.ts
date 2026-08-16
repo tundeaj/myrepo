@@ -254,6 +254,61 @@ playbackRouter.post("/:id/end", async (req: Request, res: Response, next: NextFu
   }
 });
 
+// ─── POST /playback/meeting-attendance ────────────────────────────────────────
+//
+// The non-native counterpart of POST /session above. A Zoom/Teams/Google
+// Meet/Jitsi session has no media asset for the native player to sign a URL
+// for — Player.tsx never calls /session for one; it redirects straight to
+// access.join_url instead. This is the one signal this app CAN observe for
+// that path: a signed-in viewer with real access was redirected to the real
+// meeting. lib/earnings.ts's computeSubscriptionAccrual() converts each row
+// into a policy-configured credited watch time
+// (monetisation.non_native_attendance_credit_seconds) — it is an intent-to-
+// attend, never claimed as a measured one.
+const MeetingAttendanceSchema = z.object({ content_id: z.number().int().positive() });
+
+// A page reload, a duplicate effect fire, or someone clicking Join twice in
+// quick succession is one visit, not several — collapse pings inside this
+// window into the row already created for it. A ping after a longer gap (a
+// different day, a different week of a recurring session) is a genuinely
+// distinct attendance and gets its own row; see the model's own schema.prisma
+// doc comment for why there's no unique constraint doing this instead.
+const ATTENDANCE_DEDUPE_WINDOW_MS = 10 * 60_000;
+
+playbackRouter.post("/meeting-attendance", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const userId = optionalUserId(req);
+    if (!userId) throw new ApiError(401, "You need to sign in to do that.");
+
+    const body = MeetingAttendanceSchema.parse(req.body);
+    const content = await prisma.contentItem.findUnique({
+      where: { id: body.content_id },
+      select: { id: true, meeting_provider: true },
+    });
+    if (!content) throw new ApiError(404, "That content isn't available.");
+    if (content.meeting_provider === "native") {
+      throw new ApiError(400, "This session runs on the native player — there's no third-party attendance to record.");
+    }
+
+    const access = await resolveAccess(userId, content.id);
+    if (!access.can_view) throw new ApiError(403, "You don't have access to this yet.");
+
+    const recentPing = await prisma.meetingAttendance.findFirst({
+      where: { user_id: userId, content_id: content.id, joined_at: { gte: new Date(Date.now() - ATTENDANCE_DEDUPE_WINDOW_MS) } },
+    });
+    if (!recentPing) {
+      await prisma.meetingAttendance.create({
+        data: { user_id: userId, content_id: content.id, provider: content.meeting_provider },
+      });
+    }
+
+    res.json({ ok: true });
+  } catch (err) {
+    if (err instanceof z.ZodError) return next(new ApiError(422, err.errors[0]?.message ?? "Validation error"));
+    next(err);
+  }
+});
+
 /** Plain number, 0-100. Prisma accepts a number directly for a Decimal
  *  column — no need to construct one by hand. */
 async function completionPercent(contentId: number, lessonId: number | null, watchSeconds: number): Promise<number> {

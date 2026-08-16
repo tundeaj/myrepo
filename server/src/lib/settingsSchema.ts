@@ -126,6 +126,15 @@ export const SETTINGS_FIELDS: Record<string, SettingField[]> = {
       min: 0,
       max: 3600,
     },
+    {
+      key: "monetisation.non_native_attendance_credit_seconds",
+      label: "Third-party meeting attendance credit (seconds)",
+      helper: "A Zoom/Teams/Google Meet/Jitsi session has no watch-time telemetry — this app only knows a subscriber was redirected to join it. This is the watch-time credit given per attendance for subscription revenue accrual, standing in for a real measurement this app cannot take.",
+      control: "number",
+      default: "300",
+      min: 0,
+      max: 3600,
+    },
   ],
   content_policy: [
     { key: "content_policy.review_required", label: "Review required before publish", helper: "Instructor-submitted content must be approved before it goes live.", control: "toggle", default: "false" },

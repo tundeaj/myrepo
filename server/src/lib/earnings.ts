@@ -142,6 +142,12 @@ function planPeriodAmount(plan: { price_ngn: unknown; billing_interval: string }
 export async function computeSubscriptionAccrual(periodMonth: string): Promise<SubscriptionAccrualSubscriber[]> {
   const { start, end } = monthBounds(periodMonth);
   const minWatchSeconds = parsePositiveOrZero(await getSetting("monetisation.subscription_min_watch_seconds"), 60);
+  // A third-party meeting session (Zoom/Teams/Google Meet/Jitsi) has no
+  // watch-time telemetry this app can see — see MeetingAttendance's own
+  // schema.prisma doc comment and POST /playback/meeting-attendance. This is
+  // the credited stand-in per attendance, an admin's own policy choice, not
+  // a guess baked into the code.
+  const attendanceCreditSeconds = parsePositiveOrZero(await getSetting("monetisation.non_native_attendance_credit_seconds"), 300);
 
   // A subscription that existed at any point before the period closed —
   // this doesn't try to prorate a subscriber who joined or cancelled
@@ -165,15 +171,30 @@ export async function computeSubscriptionAccrual(periodMonth: string): Promise<S
     const periodAmount = planPeriodAmount(plan);
     if (periodAmount <= 0) continue;
 
-    const sessions = await prisma.playbackSession.findMany({
-      where: { user_id: sub.user_id, content_id: { not: null }, started_at: { gte: start, lt: end } },
-      select: { content_id: true, watch_seconds: true },
-    });
-    if (sessions.length === 0) continue;
+    const [sessions, attendances] = await Promise.all([
+      prisma.playbackSession.findMany({
+        where: { user_id: sub.user_id, content_id: { not: null }, started_at: { gte: start, lt: end } },
+        select: { content_id: true, watch_seconds: true },
+      }),
+      // Non-native content's own signal — see POST /playback/meeting-attendance.
+      // Both sources feed the exact same map below; everything downstream
+      // (the qualifying threshold, the per-content revenue split) treats a
+      // credited attendance and a really-measured second identically, on
+      // purpose — the split only cares about relative share within a period,
+      // and this is the only value this app has for that content at all.
+      prisma.meetingAttendance.findMany({
+        where: { user_id: sub.user_id, joined_at: { gte: start, lt: end } },
+        select: { content_id: true },
+      }),
+    ]);
+    if (sessions.length === 0 && attendances.length === 0) continue;
 
     const watchByContent = new Map<number, number>();
     for (const s of sessions) {
       watchByContent.set(s.content_id!, (watchByContent.get(s.content_id!) ?? 0) + s.watch_seconds);
+    }
+    for (const a of attendances) {
+      watchByContent.set(a.content_id, (watchByContent.get(a.content_id) ?? 0) + attendanceCreditSeconds);
     }
 
     // Only subscriber-tier content is subscription revenue's to claim — a

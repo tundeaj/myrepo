@@ -102,17 +102,32 @@ export function Player() {
         if (cancelled) return;
         setSummary(content);
 
+        const token = getToken();
+
         // A non-native session has no media asset for /api/playback/session
         // to find — this route only exists for the native player. Someone
         // landing here directly (a stale bookmark, browser back, a shared
         // /watch/:slug/play link) for a Zoom/Teams/Meet/Jitsi session should
         // land on the real meeting, not a "couldn't start playback" dead end.
         if (content.access.can_view && content.access.join_url) {
+          // Best-effort, not awaited — the redirect below shouldn't wait on
+          // it, and this app has no visibility into what happens after the
+          // viewer leaves for the meeting anyway. See
+          // POST /playback/meeting-attendance for what this actually feeds:
+          // subscription revenue accrual's only signal for non-native
+          // content. Signed-out visitors have nothing to attribute revenue
+          // to, so there's nothing to record for them.
+          if (token) {
+            fetch("/api/playback/meeting-attendance", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+              body: JSON.stringify({ content_id: content.content.id }),
+            }).catch(() => undefined);
+          }
           window.location.replace(content.access.join_url);
           return;
         }
 
-        const token = getToken();
         const res = await fetch("/api/playback/session", {
           method: "POST",
           headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
