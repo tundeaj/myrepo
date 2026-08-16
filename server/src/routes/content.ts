@@ -210,6 +210,39 @@ contentRouter.get("/:slug", async (req: Request, res: Response, next: NextFuncti
 
     const roleBySpeaker = new Map(speakerLinks.map((l) => [l.speaker_id, l.role]));
 
+    // Sponsors — the "session_page" placement only. content_sponsors has
+    // supported "player" and "hero" placements since the schema's beginning
+    // too, but those render inside genuinely different components (the
+    // player overlay, the homepage hero banner) and are a real, separate,
+    // still-open gap — not silently assumed covered by this one detail-page
+    // badge. A currently-active window means starts_at/ends_at either unset
+    // (open-ended) or straddling now; an inactive sponsor's links are
+    // excluded even if the window itself is still open, same rule
+    // routes/contentSponsors.ts enforces at write time.
+    const now = new Date();
+    const activeSponsorLinks = await prisma.contentSponsor.findMany({
+      where: {
+        content_id: content.id,
+        placement: "session_page",
+        AND: [
+          { OR: [{ starts_at: null }, { starts_at: { lte: now } }] },
+          { OR: [{ ends_at: null }, { ends_at: { gte: now } }] },
+        ],
+      },
+      select: { sponsor_id: true, message: true },
+      orderBy: { id: "asc" },
+    });
+    const sponsorEntities = activeSponsorLinks.length
+      ? await prisma.sponsor.findMany({
+          where: { id: { in: activeSponsorLinks.map((l) => l.sponsor_id) }, is_active: true },
+          select: { id: true, name: true, logo_url: true, website_url: true },
+        })
+      : [];
+    const sponsorEntityById = new Map(sponsorEntities.map((s) => [s.id, s]));
+    const sponsors = activeSponsorLinks
+      .filter((l) => sponsorEntityById.has(l.sponsor_id))
+      .map((l) => ({ ...sponsorEntityById.get(l.sponsor_id)!, message: l.message }));
+
     const curriculum =
       content.content_type === "course" ? await buildCurriculum(content.id) : null;
 
@@ -277,6 +310,7 @@ contentRouter.get("/:slug", async (req: Request, res: Response, next: NextFuncti
       },
       speakers: speakers.map((s) => ({ ...s, role: roleBySpeaker.get(s.id) ?? "speaker" })),
       categories,
+      sponsors,
       curriculum,
       session_config: sessionConfig,
       reviews,

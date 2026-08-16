@@ -1849,6 +1849,104 @@ async function main() {
   const deleteLinkAgain = await call(`/api/content-sponsors/${linkOnBId}`, { method: "DELETE", token: adminToken });
   check("removing an already-removed link 404s", deleteLinkAgain.status === 404, deleteLinkAgain.body);
 
+  // ─── Public content detail — sponsored content ─────────────────────────────
+  //
+  // routes/content.ts's own public detail endpoint now surfaces the
+  // "session_page" placement's currently-active sponsors — this exercises
+  // that from the outside, the same way "Public payload allowlists" above
+  // exercises the rest of that endpoint's structural guarantees.
+  section("Public content detail — sponsored content");
+
+  const pubSponsor = await call("/api/sponsors", {
+    method: "POST",
+    token: adminToken,
+    body: { name: `E2E Pub Sponsor ${RUN}`, logo_url: "https://example.test/logo.png", website_url: "https://example.test", contact_email: `pub-sponsor-${RUN}@example.test` },
+  });
+  const pubSponsorId = pubSponsor.body.sponsor?.id;
+  if (pubSponsorId) created.sponsors.push(pubSponsorId);
+
+  const pubSponsoredContent = await makeContent("public", { slug: `e2e-pub-sponsored-${RUN}` });
+
+  const noSponsorsYet = await call(`/api/content/${pubSponsoredContent.slug}`);
+  check("a content item with no sponsors returns an empty sponsors array, not a missing field", Array.isArray(noSponsorsYet.body.sponsors) && noSponsorsYet.body.sponsors.length === 0, noSponsorsYet.body.sponsors);
+
+  const sessionPageLink = await call("/api/content-sponsors", {
+    method: "POST",
+    token: adminToken,
+    body: { content_id: pubSponsoredContent.id, sponsor_id: pubSponsorId, placement: "session_page", message: "E2E sponsor message" },
+  });
+  const sessionPageLinkId = sessionPageLink.body.link?.id;
+  if (sessionPageLinkId) created.contentSponsors.push(sessionPageLinkId);
+
+  const playerLink = await call("/api/content-sponsors", {
+    method: "POST",
+    token: adminToken,
+    body: { content_id: pubSponsoredContent.id, sponsor_id: pubSponsorId, placement: "player" },
+  });
+  const playerLinkId = playerLink.body.link?.id;
+  if (playerLinkId) created.contentSponsors.push(playerLinkId);
+
+  const withSponsor = await call(`/api/content/${pubSponsoredContent.slug}`);
+  // The same sponsor is ALSO linked at "player" (above) — if the query
+  // dropped its placement filter, this would come back as 2 entries (one
+  // per link, undeduped) instead of 1; length===1 is what actually catches
+  // that, not a raw-string check (nothing here even selects `placement`).
+  check("only the session_page link is counted — the player link on the same pair isn't double-surfaced", withSponsor.body.sponsors?.length === 1, withSponsor.body.sponsors);
+  check("the active session_page sponsor appears in the public payload", withSponsor.body.sponsors?.[0]?.id === pubSponsorId, withSponsor.body.sponsors);
+  check("the sponsor's message rides along", withSponsor.body.sponsors?.[0]?.message === "E2E sponsor message", withSponsor.body.sponsors);
+  check("the sponsor's logo and website are public", withSponsor.body.sponsors?.[0]?.logo_url === "https://example.test/logo.png" && withSponsor.body.sponsors?.[0]?.website_url === "https://example.test", withSponsor.body.sponsors);
+  const withSponsorRaw = JSON.stringify(withSponsor.body);
+  check("the sponsor's contact_email never appears in the public payload", !withSponsorRaw.includes("contact_email") && !withSponsorRaw.includes(`pub-sponsor-${RUN}@example.test`), withSponsorRaw.length);
+
+  const futureLink = await call("/api/content-sponsors", {
+    method: "POST",
+    token: adminToken,
+    body: { content_id: pubSponsoredContent.id, sponsor_id: pubSponsorId, placement: "hero", starts_at: new Date(Date.now() + 30 * 86_400_000).toISOString() },
+  });
+  const futureLinkId = futureLink.body.link?.id;
+  if (futureLinkId) created.contentSponsors.push(futureLinkId);
+  await call(`/api/content-sponsors/${futureLinkId}`, { method: "PUT", token: adminToken, body: { placement: "session_page", starts_at: new Date(Date.now() + 30 * 86_400_000).toISOString() } });
+
+  const withFutureLink = await call(`/api/content/${pubSponsoredContent.slug}`);
+  check("a sponsorship that hasn't started yet does not appear", withFutureLink.body.sponsors?.length === 1, withFutureLink.body.sponsors);
+
+  const pastEndedSponsor = await call("/api/sponsors", { method: "POST", token: adminToken, body: { name: `E2E Pub Ended Sponsor ${RUN}` } });
+  const pastEndedSponsorId = pastEndedSponsor.body.sponsor?.id;
+  if (pastEndedSponsorId) created.sponsors.push(pastEndedSponsorId);
+  const endedLink = await call("/api/content-sponsors", {
+    method: "POST",
+    token: adminToken,
+    body: { content_id: pubSponsoredContent.id, sponsor_id: pastEndedSponsorId, placement: "player" },
+  });
+  const endedLinkId = endedLink.body.link?.id;
+  if (endedLinkId) created.contentSponsors.push(endedLinkId);
+  await prisma.contentSponsor.update({ where: { id: endedLinkId }, data: { placement: "session_page", ends_at: new Date(Date.now() - 86_400_000) } });
+
+  const withEndedLink = await call(`/api/content/${pubSponsoredContent.slug}`);
+  check("a sponsorship whose window has already ended does not appear", (withEndedLink.body.sponsors ?? []).every((s: { id: number }) => s.id !== pastEndedSponsorId), withEndedLink.body.sponsors);
+
+  const deactivatedSponsor = await call("/api/sponsors", { method: "POST", token: adminToken, body: { name: `E2E Pub Deactivated Sponsor ${RUN}` } });
+  const deactivatedSponsorId = deactivatedSponsor.body.sponsor?.id;
+  if (deactivatedSponsorId) created.sponsors.push(deactivatedSponsorId);
+  const deactivatedLink = await call("/api/content-sponsors", {
+    method: "POST",
+    token: adminToken,
+    body: { content_id: pubSponsoredContent.id, sponsor_id: deactivatedSponsorId, placement: "session_page" },
+  });
+  const deactivatedLinkId = deactivatedLink.body.link?.id;
+  if (deactivatedLinkId) created.contentSponsors.push(deactivatedLinkId);
+
+  const withNewlyActiveSponsor = await call(`/api/content/${pubSponsoredContent.slug}`);
+  check("a second, currently-active sponsor joins the first rather than replacing it", withNewlyActiveSponsor.body.sponsors?.length === 2, withNewlyActiveSponsor.body.sponsors);
+
+  await call(`/api/sponsors/${deactivatedSponsorId}`, { method: "PUT", token: adminToken, body: { name: `E2E Pub Deactivated Sponsor ${RUN}`, is_active: false } });
+  const withDeactivatedSponsor = await call(`/api/content/${pubSponsoredContent.slug}`);
+  check(
+    "a sponsor deactivated after the link was created no longer appears — the link itself doesn't need touching",
+    withDeactivatedSponsor.body.sponsors?.length === 1 && withDeactivatedSponsor.body.sponsors[0]?.id === pubSponsorId,
+    withDeactivatedSponsor.body.sponsors,
+  );
+
   // ─── Advertisers & Ads — admin CRUD ─────────────────────────────────────────
   section("Advertisers & Ads — admin CRUD");
 

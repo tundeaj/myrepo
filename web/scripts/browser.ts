@@ -935,6 +935,69 @@ async function run(browser: Browser) {
     if (csSponsorId) await fetch(`${API_BASE}/api/sponsors/${csSponsorId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
   }
 
+  // ─── Public sponsor display — the detail page's "Sponsored by" section ────────
+  section("Public sponsor display");
+
+  if (adminToken) {
+    const stamp = Date.now();
+    const psSponsorName = `Browser Check Public Sponsor ${stamp}`;
+    const createdPsSponsor = await fetch(`${API_BASE}/api/sponsors`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ name: psSponsorName }),
+    }).then((r) => r.json());
+    const psSponsorId = createdPsSponsor?.sponsor?.id;
+    check("a fixture sponsor is created for this check", typeof psSponsorId === "number", createdPsSponsor);
+
+    const createdPsSession = await fetch(`${API_BASE}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({
+        title: `Browser Check Public Sponsor Session ${stamp}`,
+        access_level: "public",
+        // A fresh session defaults to status: "draft" — not in
+        // VISIBLE_STATUSES, so /watch/:slug would 404 without this, same
+        // reasoning the Ratings comment moderation fixture above states.
+        status: "registration_open",
+        scheduled_start_at: new Date(Date.now() + 86_400_000).toISOString(),
+        scheduled_duration_minutes: 60,
+      }),
+    }).then((r) => r.json());
+    const psSessionId = createdPsSession?.session?.id;
+    const psSlug = createdPsSession?.session?.slug;
+    check("a fixture public session is created for this check", typeof psSessionId === "number" && typeof psSlug === "string", createdPsSession);
+
+    if (psSponsorId && psSessionId && psSlug) {
+      const psLink = await fetch(`${API_BASE}/api/content-sponsors`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ content_id: psSessionId, sponsor_id: psSponsorId, placement: "session_page", message: "Browser check sponsor message" }),
+      }).then((r) => r.json());
+      const psLinkId = psLink?.link?.id;
+      check("the fixture sponsor is linked at session_page placement", typeof psLinkId === "number", psLink);
+
+      const beforePsErrors = pageErrors.length;
+      await page.goto(`${BASE}/watch/${psSlug}`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(600);
+
+      const hasSponsoredByLabel = await page.locator("text=Sponsored by").count();
+      check("the detail page renders a 'Sponsored by' section for the real fixture link", hasSponsoredByLabel > 0, { hasSponsoredByLabel });
+
+      const hasSponsorName = await page.locator(`text=${psSponsorName}`).count();
+      check("the sponsor's own name renders (no logo_url set, so it falls back to a text badge)", hasSponsorName > 0, { hasSponsorName });
+
+      const hasSponsorMessage = await page.locator("text=Browser check sponsor message").count();
+      check("the link's message renders alongside the sponsor", hasSponsorMessage > 0, { hasSponsorMessage });
+
+      check("/watch/:slug (Sponsored by section) throws no uncaught render error", pageErrors.length === beforePsErrors, pageErrors.slice(beforePsErrors));
+
+      if (psLinkId) await fetch(`${API_BASE}/api/content-sponsors/${psLinkId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    }
+
+    if (psSessionId) await fetch(`${API_BASE}/api/sessions/${psSessionId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    if (psSponsorId) await fetch(`${API_BASE}/api/sponsors/${psSponsorId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+  }
+
   check("no uncaught page errors across the run", pageErrors.length === 0, pageErrors);
 
   await page.close();

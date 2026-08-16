@@ -82,6 +82,7 @@ interface DetailPayload extends PublicBootstrap {
   };
   speakers: DetailSpeaker[];
   categories: { id: number; slug: string | null; name: string }[];
+  sponsors: { id: number; name: string | null; logo_url: string | null; website_url: string | null; message: string | null }[];
   curriculum: Module[] | null;
   session_config: {
     chat_enabled: boolean;
@@ -244,6 +245,45 @@ function Speakers({ speakers }: { speakers: DetailSpeaker[] }) {
             </div>
           </Link>
         ))}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * "session_page" placement only — content_sponsors has supported "player"
+ * and "hero" placements since the schema's beginning too, but those render
+ * inside genuinely different components (the player overlay, the homepage
+ * hero banner) and are a real, separate, still-open gap, not silently
+ * assumed covered here. The server has already filtered to sponsors whose
+ * window is currently active and who are themselves still active — this
+ * component trusts that and just renders whatever it's handed.
+ */
+function SponsoredBy({ sponsors }: { sponsors: DetailPayload["sponsors"] }) {
+  if (!sponsors.length) return null;
+  return (
+    <section className="space-y-3 border-t border-slate-800 pt-6">
+      <p className="text-xs font-medium uppercase tracking-wide text-slate-600">Sponsored by</p>
+      <div className="flex flex-wrap items-center gap-4">
+        {sponsors.map((s) => {
+          const inner = (
+            <span className="flex items-center gap-2">
+              {s.logo_url ? (
+                <img src={s.logo_url} alt="" loading="lazy" className="h-8 w-auto max-w-[8rem] object-contain" />
+              ) : (
+                <span className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-400">{s.name ?? "Sponsor"}</span>
+              )}
+              {s.message && <span className="text-xs text-slate-500">{s.message}</span>}
+            </span>
+          );
+          return s.website_url ? (
+            <a key={s.id} href={s.website_url} target="_blank" rel="noopener noreferrer sponsored" className="transition hover:opacity-80">
+              {inner}
+            </a>
+          ) : (
+            <span key={s.id}>{inner}</span>
+          );
+        })}
       </div>
     </section>
   );
@@ -579,7 +619,7 @@ export function Detail() {
   if (loading) return <PublicPageSkeleton />;
   if (error || !data) return <PublicError kind={error ?? "failed"} onRetry={retry} />;
 
-  const { content, speakers, categories, curriculum, session_config, reviews, access, settings } = data;
+  const { content, speakers, categories, sponsors, curriculum, session_config, reviews, access, settings } = data;
   const liveAccess = accessOverride ?? access;
   const ratingCommentMode = (settings["content_policy.rating_comments_mode"] as CommentMode | undefined) ?? "hidden";
   const heroImage = buildImageUrl(content.master_image_url, 1600);
@@ -673,6 +713,8 @@ export function Detail() {
         <ReviewsList reviews={reviews} />
 
         <ContentFaqs contentId={content.id} />
+
+        <SponsoredBy sponsors={sponsors} />
 
         {content.content_last_updated_at && (
           <p className="text-xs text-slate-600">
