@@ -34,7 +34,7 @@ import { usersRouter } from "./routes/users.js";
 import { homepageRouter } from "./routes/homepage.js";
 import { contentRouter, publicCategoriesRouter, publicSpeakersRouter } from "./routes/content.js";
 import { signupRouter } from "./routes/signup.js";
-import { registrationsRouter } from "./routes/registrations.js";
+import { registrationsRouter, registrationsAdminRouter } from "./routes/registrations.js";
 import { accountRouter } from "./routes/account.js";
 import { transcriptsRouter } from "./routes/transcripts.js";
 import { calendarRouter, publicCalendarRouter } from "./routes/calendar.js";
@@ -108,6 +108,7 @@ app.use("/api/public-contact", publicContactRouter);
 // Registrations and account are the viewer's own data, scoped by token.
 app.use("/api/signup", signupRouter);
 app.use("/api/registrations", requireAuth, registrationsRouter);
+app.use("/api/registrations-admin", requireAuth, requireAdmin, registrationsAdminRouter);
 app.use("/api/account", requireAuth, accountRouter);
 app.use("/api/ratings", requireAuth, ratingsRouter);
 app.use("/api/ratings-moderation", requireAuth, requireAdmin, ratingsModerationRouter);

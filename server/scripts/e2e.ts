@@ -1917,6 +1917,73 @@ async function main() {
     }
   }
 
+  // ─── Registrations admin ───────────────────────────────────────────────────
+  section("Registrations admin");
+
+  {
+    const regUser = await prisma.user.create({
+      data: { email: `e2e-regadmin-${RUN}@example.test`, full_name: `E2E Reg Admin Fixture ${RUN}`, role: "viewer", email_verified: true, password_hash: null },
+    });
+    created.users.push(regUser.id);
+    // registration_count starts at 1, as the real POST /registrations flow
+    // would have left it, so the counter-accounting assertions below move
+    // between real-looking numbers instead of drifting negative.
+    const regContent = await makeContent("registered", { slug: `e2e-regadmin-${RUN}`, registration_count: 1 });
+    const registration = await prisma.registration.create({ data: { user_id: regUser.id, content_id: regContent.id, status: "waitlisted" } });
+
+    const viewerList = await call(`/api/registrations-admin?content_id=${regContent.id}`, { token: sessionToken });
+    check("a signed-in VIEWER cannot list registrations admin-wide", viewerList.status === 403, viewerList.body);
+
+    const badContentId = await call("/api/registrations-admin?content_id=not-a-number", { token: adminToken });
+    check("an invalid content_id is rejected", badContentId.status === 400, badContentId.body);
+
+    const badStatus = await call("/api/registrations-admin?status=not-a-status", { token: adminToken });
+    check("an invalid status filter is rejected", badStatus.status === 400, badStatus.body);
+
+    const scoped = await call(`/api/registrations-admin?content_id=${regContent.id}`, { token: adminToken });
+    check("the admin list, scoped to the fixture session, includes the real fixture registration", scoped.body.registrations?.length === 1 && scoped.body.registrations[0].id === registration.id, scoped.body);
+    check("the row carries the registrant's real user record, not just an id", scoped.body.registrations?.[0]?.user?.email === regUser.email, scoped.body.registrations?.[0]?.user);
+    check("the row carries the real session's content record", scoped.body.registrations?.[0]?.content?.id === regContent.id, scoped.body.registrations?.[0]?.content);
+
+    const searched = await call(`/api/registrations-admin?search=e2e-regadmin-${RUN}`, { token: adminToken });
+    check("search by registrant email finds the fixture registration", (searched.body.registrations ?? []).some((r: { id: number }) => r.id === registration.id), searched.body.registrations?.length);
+
+    const scopedConfirmedOnly = await call(`/api/registrations-admin?content_id=${regContent.id}&status=confirmed`, { token: adminToken });
+    check("a status filter that doesn't match the fixture's real status excludes it", (scopedConfirmedOnly.body.registrations ?? []).length === 0, scopedConfirmedOnly.body);
+
+    const viewerPatch = await call(`/api/registrations-admin/${registration.id}`, { method: "PATCH", token: sessionToken, body: { status: "confirmed" } });
+    check("a signed-in VIEWER cannot patch a registration's status", viewerPatch.status === 403, viewerPatch.body);
+
+    const badEnum = await call(`/api/registrations-admin/${registration.id}`, { method: "PATCH", token: adminToken, body: { status: "not-a-status" } });
+    check("an invalid status value is rejected on patch", badEnum.status === 422, badEnum.body);
+
+    const missing = await call("/api/registrations-admin/999999999", { method: "PATCH", token: adminToken, body: { status: "confirmed" } });
+    check("patching a registration that doesn't exist 404s", missing.status === 404, missing.body);
+
+    // Promote off the waitlist — the one thing an admin can do that a viewer
+    // can't do for themself.
+    const promote = await call(`/api/registrations-admin/${registration.id}`, { method: "PATCH", token: adminToken, body: { status: "confirmed" } });
+    check("promoting from waitlisted to confirmed succeeds", promote.status === 200 && promote.body.registration?.status === "confirmed", promote.body);
+
+    const samePatch = await call(`/api/registrations-admin/${registration.id}`, { method: "PATCH", token: adminToken, body: { status: "confirmed" } });
+    check("patching to the status it's already in is rejected rather than silently no-op'd", samePatch.status === 400, samePatch.body);
+
+    const contentAfterPromote = await prisma.contentItem.findUnique({ where: { id: regContent.id }, select: { registration_count: true } });
+    check("promoting waitlisted → confirmed does NOT move registration_count — both were already counted as signed up", contentAfterPromote?.registration_count === 1, contentAfterPromote);
+
+    const cancel = await call(`/api/registrations-admin/${registration.id}`, { method: "PATCH", token: adminToken, body: { status: "cancelled" } });
+    check("admin-cancelling a registration succeeds", cancel.status === 200 && cancel.body.registration?.status === "cancelled", cancel.body);
+
+    const contentAfterCancel = await prisma.contentItem.findUnique({ where: { id: regContent.id }, select: { registration_count: true } });
+    check("cancelling decrements registration_count by exactly one", contentAfterCancel?.registration_count === 0, contentAfterCancel);
+
+    const restore = await call(`/api/registrations-admin/${registration.id}`, { method: "PATCH", token: adminToken, body: { status: "confirmed" } });
+    check("restoring a cancelled registration succeeds", restore.status === 200 && restore.body.registration?.status === "confirmed", restore.body);
+
+    const contentAfterRestore = await prisma.contentItem.findUnique({ where: { id: regContent.id }, select: { registration_count: true } });
+    check("restoring from cancelled re-increments registration_count by exactly one", contentAfterRestore?.registration_count === 1, contentAfterRestore);
+  }
+
   // ─── Cleanup ───────────────────────────────────────────────────────────────
   await prisma.rating.deleteMany({ where: { content_id: { in: created.content } } });
   await prisma.streamSession.deleteMany({ where: { content_id: { in: created.content } } });

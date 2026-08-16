@@ -612,6 +612,35 @@ async function run(browser: Browser) {
     check("/admin/users (self-change attempt) throws no uncaught render error", pageErrors.length === beforeUsersErrors, pageErrors.slice(beforeUsersErrors));
   }
 
+  section("Registrations admin");
+
+  if (adminToken) {
+    // No fixture is created here either — same reasoning as Users admin:
+    // registrationsAdminRouter has no delete endpoint, and building a
+    // throwaway session + registration over pure HTTP just to immediately
+    // orphan it is worse than using what's already there. The seed data
+    // itself has real registrations (and one session with real attendance
+    // records) on every fresh install, which is enough to exercise real
+    // rendering; the filter/search/status-transition/counter-accounting
+    // matrix is already covered at the API level by e2e's own fixtures.
+    const beforeRegErrors = pageErrors.length;
+    await page.goto(`${BASE}/admin/registrations`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(500);
+
+    await page.locator('input[placeholder*="title or slug"]').fill("Scaling Payments");
+    await page.waitForTimeout(600);
+    const pickerResult = page.locator('button:has-text("Scaling Payments in West Africa")').first();
+    const hasPickerResult = await pickerResult.count();
+    check("the session picker returns a real seeded session", hasPickerResult > 0, { hasPickerResult });
+    if (hasPickerResult > 0) {
+      await pickerResult.click();
+      await page.waitForTimeout(600);
+      const hasRegistrantRow = await page.locator("table").count();
+      check("/admin/registrations, scoped to a real session, renders real registrant rows", hasRegistrantRow > 0, { hasRegistrantRow });
+    }
+    check("/admin/registrations throws no uncaught render error", pageErrors.length === beforeRegErrors, pageErrors.slice(beforeRegErrors));
+  }
+
   check("no uncaught page errors across the run", pageErrors.length === 0, pageErrors);
 
   await page.close();
