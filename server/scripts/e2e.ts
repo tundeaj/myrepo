@@ -1717,6 +1717,47 @@ async function main() {
   const secondTriage = await call(`/api/contact-requests/${contactId}`, { method: "PUT", token: adminToken, body: { status: "closed" } });
   check("responded_at does NOT move on a later status change — it's a first-touch timestamp", secondTriage.body.request?.responded_at === respondedAtFirst, secondTriage.body.request?.responded_at);
 
+  // ─── Contact Requests — assigning to a real teammate ───────────────────────
+  //
+  // assigned_to used to take any positive integer with no check that it
+  // named a real account — the admin UI's own comment used to say as much.
+  // A "teammate" is any non-viewer account (instructor/admin/super_admin)
+  // that's currently active.
+  const viewerUser = await prisma.user.findUnique({ where: { email } });
+
+  const assignToGhost = await call(`/api/contact-requests/${contactId}`, { method: "PUT", token: adminToken, body: { status: "in_progress", assigned_to: 999999999 } });
+  check("assigning to a user that doesn't exist is refused", assignToGhost.status === 404, assignToGhost.body);
+
+  const assignToViewer = await call(`/api/contact-requests/${contactId}`, { method: "PUT", token: adminToken, body: { status: "in_progress", assigned_to: viewerUser?.id } });
+  check("assigning to a plain viewer account is refused", assignToViewer.status === 422, assignToViewer.body);
+
+  const inactiveStaff = await prisma.user.create({
+    data: { email: `e2e-contact-inactive-staff-${RUN}@example.test`, role: "instructor", email_verified: true, password_hash: null, is_active: false },
+  });
+  created.users.push(inactiveStaff.id);
+  const assignToInactive = await call(`/api/contact-requests/${contactId}`, { method: "PUT", token: adminToken, body: { status: "in_progress", assigned_to: inactiveStaff.id } });
+  check("assigning to a deactivated staff account is refused", assignToInactive.status === 409, assignToInactive.body);
+
+  const activeStaff = await prisma.user.create({
+    data: { email: `e2e-contact-staff-${RUN}@example.test`, role: "instructor", email_verified: true, password_hash: null, is_active: true },
+  });
+  created.users.push(activeStaff.id);
+  const assignToStaff = await call(`/api/contact-requests/${contactId}`, { method: "PUT", token: adminToken, body: { status: "in_progress", assigned_to: activeStaff.id } });
+  check("assigning to a real, active staff account succeeds", assignToStaff.status === 200 && assignToStaff.body.request?.assigned_to === activeStaff.id, assignToStaff.body);
+
+  const persistedAssignment = await prisma.contactRequest.findUnique({ where: { id: contactId } });
+  check("the assignment is actually persisted", persistedAssignment?.assigned_to === activeStaff.id, persistedAssignment?.assigned_to);
+
+  const noneOfTheFailedAttemptsStuck = await prisma.contactRequest.findUnique({ where: { id: contactId } });
+  check(
+    "none of the refused assignment attempts (ghost/viewer/inactive) ever actually persisted",
+    noneOfTheFailedAttemptsStuck?.assigned_to !== 999999999 && noneOfTheFailedAttemptsStuck?.assigned_to !== viewerUser?.id && noneOfTheFailedAttemptsStuck?.assigned_to !== inactiveStaff.id,
+    noneOfTheFailedAttemptsStuck?.assigned_to,
+  );
+
+  const unassign = await call(`/api/contact-requests/${contactId}`, { method: "PUT", token: adminToken, body: { status: "in_progress", assigned_to: null } });
+  check("clearing the assignment (assigned_to: null) succeeds", unassign.status === 200 && unassign.body.request?.assigned_to === null, unassign.body);
+
   const deleteContact = await call(`/api/contact-requests/${contactId}`, { method: "DELETE", token: adminToken });
   check("deleting a contact request succeeds", deleteContact.status === 200, deleteContact.body);
   const deleteContactAgain = await call(`/api/contact-requests/${contactId}`, { method: "DELETE", token: adminToken });

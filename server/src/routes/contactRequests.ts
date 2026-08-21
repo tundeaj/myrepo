@@ -136,6 +136,14 @@ const UpdateSchema = z.object({
 // assign to a teammate, leave internal notes. responded_at is set the
 // first time status moves off 'new' and is never overwritten after that —
 // it records when this request FIRST got attention, not the last edit.
+//
+// assigned_to used to take any positive integer with no check that it named
+// a real account — the admin UI's own comment said as much: "No teammate
+// picker yet ... this takes a raw user ID for now." Users admin (GET
+// /users) has existed since then, so this validates against it now: a
+// "teammate" is any non-viewer account (instructor, admin, super_admin)
+// that's currently active — a plain viewer, a deactivated account, or an id
+// that doesn't exist at all is refused rather than silently stored.
 contactRequestsRouter.put("/:id", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = Number(req.params.id);
@@ -144,6 +152,17 @@ contactRequestsRouter.put("/:id", async (req: Request, res: Response, next: Next
     if (!existing) throw new ApiError(404, "Contact request not found");
 
     const body = UpdateSchema.parse(req.body);
+
+    if (body.assigned_to != null) {
+      const assignee = await prisma.user.findUnique({
+        where: { id: body.assigned_to },
+        select: { id: true, role: true, is_active: true },
+      });
+      if (!assignee) throw new ApiError(404, "That teammate doesn't exist.");
+      if (assignee.role === "viewer") throw new ApiError(422, "Contact requests can only be assigned to staff, not a viewer account.");
+      if (!assignee.is_active) throw new ApiError(409, "That teammate's account is deactivated.");
+    }
+
     const updated = await prisma.contactRequest.update({
       where: { id },
       data: {

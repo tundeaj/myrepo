@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { api } from "../../lib/api";
 import { useToast } from "../../components/Toast";
 import { EmptyState } from "../../components/EmptyState";
@@ -26,6 +26,13 @@ interface ContactRequest {
   responded_at: string | null;
 }
 
+interface Teammate {
+  id: number;
+  full_name: string | null;
+  email: string;
+  role: "instructor" | "admin" | "super_admin";
+}
+
 const STATUSES: Status[] = ["new", "in_progress", "quoted", "won", "lost", "closed"];
 
 const STATUS_TONE: Record<Status, string> = {
@@ -37,10 +44,28 @@ const STATUS_TONE: Record<Status, string> = {
   closed: "border-slate-700 bg-slate-800 text-slate-500",
 };
 
-function TriagePanel({ request, onClose, onSaved }: { request: ContactRequest; onClose: () => void; onSaved: () => void }) {
+function TriagePanel({
+  request,
+  teammates,
+  onClose,
+  onSaved,
+}: {
+  request: ContactRequest;
+  teammates: Teammate[];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
   const { toast } = useToast();
   const [status, setStatus] = useState<Status>(request.status);
-  const [assignedTo, setAssignedTo] = useState(request.assigned_to != null ? String(request.assigned_to) : "");
+  const [assignedTo, setAssignedTo] = useState<string>(request.assigned_to != null ? String(request.assigned_to) : "");
+  // The request's own current assignee might have since been deactivated or
+  // had their role dropped to viewer — still shown as the selected option
+  // (so the panel doesn't silently blank out who it WAS assigned to), just
+  // not offered again if changed away from.
+  const currentAssignee = request.assigned_to != null ? teammates.find((t) => t.id === request.assigned_to) : undefined;
+  const assigneeOptions = currentAssignee || request.assigned_to == null
+    ? teammates
+    : [{ id: request.assigned_to, full_name: null, email: `User #${request.assigned_to}`, role: "admin" as const }, ...teammates];
   const [notes, setNotes] = useState(request.notes ?? "");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -92,9 +117,15 @@ function TriagePanel({ request, onClose, onSaved }: { request: ContactRequest; o
           </div>
 
           <div>
-            <label className="mb-1 block text-xs text-slate-400">Assigned to (admin user ID)</label>
-            <input type="number" value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} className={inputClass} placeholder="Unassigned" />
-            <p className="mt-1 text-xs text-slate-600">No teammate picker yet — user management is still a future prompt, so this takes a raw user ID for now.</p>
+            <label className="mb-1 block text-xs text-slate-400">Assigned to</label>
+            <select value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)} className={selectClass}>
+              <option value="">Unassigned</option>
+              {assigneeOptions.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.full_name ?? t.email} — {t.role.replace(/_/g, " ")}
+                </option>
+              ))}
+            </select>
           </div>
 
           <div>
@@ -129,6 +160,25 @@ export function ContactRequests() {
   const [statusFilter, setStatusFilter] = useState<Status | "all">("all");
   const [editing, setEditing] = useState<ContactRequest | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [allUsers, setAllUsers] = useState<{ id: number; full_name: string | null; email: string; role: string; is_active: boolean }[]>([]);
+
+  // Loaded once — the same GET /users Users admin itself uses, filtered
+  // client-side to real, currently-active staff. A "teammate" here is
+  // anyone who isn't a plain viewer; the server enforces the identical rule
+  // on save, so this list can never offer something the API would refuse.
+  useEffect(() => {
+    api<{ users: typeof allUsers }>("/users")
+      .then((res) => setAllUsers(res.users))
+      .catch(() => {}); // non-fatal — the picker just falls back to "Unassigned" only
+  }, []);
+
+  const teammates: Teammate[] = useMemo(
+    () =>
+      allUsers
+        .filter((u): u is typeof u & { role: "instructor" | "admin" | "super_admin" } => u.role !== "viewer" && u.is_active)
+        .map((u) => ({ id: u.id, full_name: u.full_name, email: u.email, role: u.role })),
+    [allUsers],
+  );
 
   const load = useCallback(() => {
     setLoading(true);
@@ -161,7 +211,7 @@ export function ContactRequests() {
   return (
     <div className="space-y-5">
       {editing && (
-        <TriagePanel request={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />
+        <TriagePanel request={editing} teammates={teammates} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />
       )}
 
       <div>

@@ -390,6 +390,27 @@ async function run(browser: Browser) {
     check("the real submission from this run appears in the admin inbox", hasSubmittedMessage > 0, { hasSubmittedMessage });
     check("/admin/contact-requests throws no uncaught render error", pageErrors.length === beforeAdminInboxErrors, pageErrors.slice(beforeAdminInboxErrors));
 
+    // Opening the row's triage panel and assigning it to a real teammate —
+    // this used to be a raw numeric-id text input; now it's a picker
+    // sourced from GET /users, and the seeded super admin ("Platform
+    // Admin") is always a valid, active, non-viewer option to assign to.
+    await page.locator(`text=${uniqueMessage}`).first().click();
+    await page.waitForTimeout(400);
+
+    const assignSelect = page.locator('select:has(option:has-text("Platform Admin"))');
+    const hasAssignSelect = await assignSelect.count();
+    check("the assignee picker offers a real teammate, not a raw user-id field", hasAssignSelect > 0, { hasAssignSelect });
+
+    await assignSelect.selectOption({ label: "Platform Admin — super admin" });
+    await page.locator('button:has-text("Save")').click();
+    await page.waitForTimeout(500);
+
+    await page.locator(`text=${uniqueMessage}`).first().click();
+    await page.waitForTimeout(400);
+    const assignSelectAfter = page.locator('select:has(option:has-text("Platform Admin"))');
+    const selectedAfterReload = await assignSelectAfter.inputValue();
+    check("the assignment actually persists — re-opening the panel shows it selected", selectedAfterReload.length > 0, { selectedAfterReload });
+
     // Clean up the fixture this run created — same discipline as the FAQ
     // fixture above, so repeated runs don't accumulate rows in the inbox.
     const list = await fetch(`${API_BASE}/api/contact-requests`, { headers: { Authorization: `Bearer ${adminToken}` } }).then((r) => r.json());
