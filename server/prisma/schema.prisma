@@ -1,0 +1,1971 @@
+// WEBINARFLIX — database schema
+// Faithful implementation of PROMPT 01-C from the master build prompt.
+//
+// Deviations from the source spec (documented, all deliberate):
+//  - The spec targets NoCodeBackend (a REST-first no-code backend) which never declares
+//    foreign-key constraints, only indexed integer columns (e.g. "content_id INT NOT NULL").
+//    We keep that shape here: cross-table references are plain indexed Int columns, not
+//    Prisma relations. This avoids inventing referential-integrity rules the spec never
+//    specified, and keeps the schema a direct, auditable transcription of the prompt.
+//  - `created_at` / timestamp-of-creation columns get `@default(now())` even where the
+//    spec doesn't print DEFAULT — that's the only sane default for an append-style column.
+//  - LONGTEXT (MySQL-ism) maps to Postgres `text`.
+//  - Enum values containing characters invalid in a Prisma enum identifier (e.g.
+//    'co-instructor') are declared with a safe identifier and mapped back with @map.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ENUMS
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+enum UserRole {
+  viewer
+  instructor
+  admin
+  super_admin
+}
+
+enum SeatStatus {
+  owner
+  member
+  none
+}
+
+enum ContentType {
+  webinar
+  video
+  course
+}
+
+enum ContentStatus {
+  draft
+  scheduled
+  pending_review
+  registration_open
+  starting_soon
+  live
+  ended
+  processing
+  replay_ready
+  archived
+}
+
+enum SessionFormat {
+  webinar
+  masterclass
+  panel
+  workshop
+  ama
+  lesson
+}
+
+// Which backend actually hosts the session. 'native' is this app's own
+// RTMP/VOD player (StreamSourcePanel, unchanged) — everything else hands the
+// session to a third-party meeting platform via lib/meetingProviders/, and
+// the viewer's "Join" button follows meeting_join_url out to it instead of
+// /watch/:slug/play. See lib/meetingProviders/types.ts for the adapter
+// interface this drives.
+enum MeetingProvider {
+  native
+  zoom
+  teams
+  google_meet
+  jitsi
+}
+
+// Which identity a stored OAuth token is for. Deliberately identity-shaped,
+// not meeting-provider-shaped: Google's token backs "google_meet" (a Calendar
+// event with conferenceData) and, later, Google Calendar sync; Microsoft's
+// backs "teams" (a Graph onlineMeeting) and, later, Outlook sync. One
+// connection per identity provider, not one per feature that happens to use it.
+enum OAuthProvider {
+  google
+  microsoft
+  zoom
+}
+
+enum AccessLevel {
+  public
+  registered
+  subscriber
+  purchase
+  cohort
+}
+
+enum PriceMode {
+  fixed
+  pay_what_you_can
+  free
+  sponsored
+}
+
+enum ExpiryAction {
+  archive
+  flag_for_review
+  hide_from_browse
+}
+
+enum ContentSpeakerRole {
+  host
+  speaker
+  moderator
+  instructor
+  co_instructor @map("co-instructor")
+  guest
+}
+
+enum MediaAssetType {
+  video
+  audio
+  trailer
+  substitute
+  document
+}
+
+enum MediaSourceType {
+  upload
+  hls_url
+  mp4_url
+  embed_url
+}
+
+enum TranscodeStatus {
+  pending
+  processing
+  ready
+  failed
+}
+
+enum ContentMediaRole {
+  main
+  trailer
+  substitute
+  audio_only
+  resource
+}
+
+enum LessonType {
+  vod
+  live
+  text
+  quiz
+  assignment
+}
+
+enum SubmissionType {
+  file
+  link
+  text
+}
+
+enum SubmissionStatus {
+  submitted
+  under_review
+  accepted
+  changes_requested
+}
+
+enum RegistrationStatus {
+  confirmed
+  waitlisted
+  cancelled
+}
+
+enum BillingInterval {
+  monthly
+  annual
+}
+
+enum SubscriptionStatus {
+  active
+  past_due
+  cancelled
+  expired
+  paused
+}
+
+enum EntitlementSource {
+  purchase
+  subscription
+  cohort
+  admin_grant
+}
+
+enum OrderStatus {
+  pending
+  paid
+  failed
+  refunded
+}
+
+enum OrderType {
+  direct
+  corporate_invoice
+}
+
+/// Which gateway an Order actually settled through. Paystack is NGN-only —
+/// this app's home market. Stripe is the USD rail for everyone else, added
+/// alongside it rather than in place of it: see lib/stripe.ts. Money-out
+/// (speaker payouts) is unaffected — that stays Paystack-only; Stripe Connect
+/// for cross-border payouts is a real, documented gap, not built here.
+enum PaymentProvider {
+  paystack
+  stripe
+}
+
+enum CouponDiscountType {
+  percent
+  fixed
+}
+
+enum CouponAppliesTo {
+  all
+  content
+  plan
+}
+
+enum InstructorApplicationStatus {
+  pending
+  under_review
+  approved
+  rejected
+}
+
+enum ReviewDecision {
+  pending
+  approved
+  changes_requested
+  rejected
+}
+
+enum AttributionBasis {
+  direct_sale
+  subscription_watch_share
+  sponsorship
+}
+
+enum EarningStatus {
+  accruing
+  payable
+  paid
+  reversed
+}
+
+enum PayoutRunStatus {
+  draft
+  approved
+  processing
+  complete
+  failed
+}
+
+enum PayoutLineStatus {
+  pending
+  approved
+  paid
+  failed
+}
+
+enum StreamSessionStatus {
+  starting
+  running
+  completed
+  failed_to_start
+  dropped
+  killed
+}
+
+enum DeviceType {
+  desktop
+  mobile
+  tablet
+  tv
+}
+
+enum TranscriptStatus {
+  pending
+  processing
+  ready
+  failed
+}
+
+enum ChapterType {
+  intro
+  content
+  demo
+  qa
+  summary
+  housekeeping
+}
+
+enum SubtitleSource {
+  generated
+  translated
+  uploaded
+}
+
+enum CommunitySpaceType {
+  open
+  cohort
+  course
+}
+
+enum SpaceMemberRole {
+  member
+  moderator
+}
+
+enum SponsorPlacement {
+  session_page
+  player
+  hero
+  pre_session
+}
+
+enum AdType {
+  pre_roll
+  mid_roll
+}
+
+enum PromoPlacement {
+  home_top
+  home_mid
+  category
+  session_page
+  account
+}
+
+enum PromoAudience {
+  all
+  logged_out
+  free
+  subscriber
+  not_enrolled
+}
+
+enum RestreamPlatform {
+  youtube
+  facebook
+  x
+  linkedin
+}
+
+enum BulkImportType {
+  users
+  enrol
+  register
+}
+
+enum BulkImportStatus {
+  uploaded
+  validating
+  preview
+  processing
+  complete
+  failed
+}
+
+enum ConsentMethod {
+  signup
+  checkout
+  reconsent
+  import
+}
+
+enum AuthTokenPurpose {
+  password_reset
+  email_verification
+}
+
+enum SignupFieldType {
+  text
+  email
+  phone
+  password
+  select
+  checkbox
+  image
+}
+
+enum SignupFieldContext {
+  public
+  checkout
+  corporate_seat
+  instructor
+}
+
+enum NotificationChannel {
+  email
+  in_app
+  whatsapp
+}
+
+enum CalendarProvider {
+  google
+  outlook
+  ical
+}
+
+enum RowType {
+  live_now
+  starting_soon
+  my_upcoming
+  this_week
+  just_added
+  continue_watching
+  continue_learning
+  almost_done
+  missed_live
+  my_courses
+  in_my_plan
+  free_this_week
+  upgrade_teaser
+  top_ten
+  popular_in_industry
+  category_tiles
+  similar_to_watched
+  under_30_min
+  audio_available
+  highest_rated
+  most_attended
+  featured_speakers
+  by_speaker
+  new_instructors
+}
+
+enum RowSurface {
+  home
+  live
+  courses
+  category
+  speaker
+  landing
+}
+
+enum RowPlatform {
+  web
+  mobile
+  all
+}
+
+enum RowAudience {
+  all
+  logged_out
+  registered
+  subscriber
+  enrolled
+}
+
+enum CardStyle {
+  poster
+  landscape
+  numbered
+  tile
+  speaker
+}
+
+enum RowConditionType {
+  live_exists
+  session_within_hours
+  course_progress_gte
+  incomplete_progress
+  unwatched_replay
+  inactive_days
+  logged_out
+  never_purchased
+}
+
+enum CmsPageStatus {
+  draft
+  published
+}
+
+enum LandingPageStatus {
+  draft
+  published
+}
+
+enum FaqScope {
+  global
+  content
+}
+
+enum EnquiryType {
+  general
+  corporate_training
+  speaking
+  partnership
+  support
+}
+
+enum ContactRequestStatus {
+  new
+  in_progress
+  quoted
+  won
+  lost
+  closed
+}
+
+enum RatingCommentStatus {
+  pending
+  approved
+  rejected
+}
+
+enum ModuleTier {
+  core
+  growth
+  enterprise
+}
+
+enum SetupStepCategory {
+  platform
+  instructor
+}
+
+enum SetupStepStatus {
+  pending
+  in_progress
+  complete
+  skipped
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// CORE CONTENT
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+model User {
+  id                 Int        @id @default(autoincrement())
+  email              String     @unique @db.VarChar(190)
+  password_hash      String?    @db.VarChar(255)
+  full_name          String?    @db.VarChar(150)
+  avatar_url         String?    @db.VarChar(500)
+  role               UserRole   @default(viewer)
+  country            String     @default("NG") @db.VarChar(2)
+  timezone           String     @default("Africa/Lagos") @db.VarChar(64)
+  preferred_language String     @default("en") @db.VarChar(10)
+  industry           String?    @db.VarChar(80)
+  job_role           String?    @db.VarChar(80)
+  company_name       String?    @db.VarChar(150)
+  headline           String?    @db.VarChar(200)
+  bio                String?    @db.Text
+  parent_account_id  Int?
+  seat_status        SeatStatus @default(none)
+  is_active          Boolean    @default(true)
+  email_verified     Boolean    @default(false)
+  created_at         DateTime   @default(now())
+  updated_at         DateTime   @updatedAt
+
+  @@index([email])
+  @@index([role])
+  @@index([parent_account_id])
+  @@map("users")
+}
+
+model ContentItem {
+  id                         Int             @id @default(autoincrement())
+  content_type               ContentType
+  title                      String          @db.VarChar(200)
+  title_fr                   String?         @db.VarChar(200)
+  slug                       String          @unique @db.VarChar(220)
+  short_description          String?         @db.VarChar(250)
+  short_description_fr       String?         @db.VarChar(250)
+  description_html           String?         @db.Text
+  description_html_fr        String?         @db.Text
+  master_image_url           String?         @db.VarChar(500)
+  focal_x                    Int             @default(50)
+  focal_y                    Int             @default(50)
+  image_overrides            String?         @db.Text
+  status                     ContentStatus   @default(draft)
+  scheduled_start_at         DateTime?
+  timezone                   String          @default("Africa/Lagos") @db.VarChar(64)
+  scheduled_duration_minutes Int?
+  registration_closes_at     DateTime?
+  capacity                   Int?
+  session_format             SessionFormat?
+  language                   String          @default("en") @db.VarChar(10)
+  content_rating             String          @default("general") @db.VarChar(20)
+  access_level               AccessLevel     @default(registered)
+  price_mode                 PriceMode       @default(fixed)
+  price_ngn                  Decimal?        @db.Decimal(12, 2)
+  suggested_price_ngn        Decimal?        @db.Decimal(12, 2)
+  minimum_price_ngn          Decimal?        @db.Decimal(12, 2)
+  compare_at_price_ngn       Decimal?        @db.Decimal(12, 2)
+  /// USD equivalents for Stripe checkout — independent figures, not a
+  /// computed FX conversion of the NGN price. Optional: a purchase-tier item
+  /// with no price_usd set simply has no Stripe "Buy" option, Paystack only.
+  price_usd                  Decimal?        @db.Decimal(12, 2)
+  minimum_price_usd          Decimal?        @db.Decimal(12, 2)
+  free_preview_seconds       Int             @default(0)
+  expires_at                 DateTime?
+  expiry_action              ExpiryAction?
+  stream_provider            String?         @db.VarChar(50)
+  stream_key                 String?         @db.VarChar(255)
+  playback_id                String?         @db.VarChar(255)
+  meeting_provider           MeetingProvider @default(native)
+  // Set by lib/meetingProviders/ adapters, never typed by an admin — same
+  // "the provider is the source of truth" discipline as playback_id above.
+  meeting_join_url           String?         @db.VarChar(500)
+  // Host/start link — admin- and instructor-only. Never leaves a public
+  // payload or resolveAccess(), same discipline as stream_key.
+  meeting_host_url           String?         @db.VarChar(500)
+  meeting_external_id        String?         @db.VarChar(255)
+  // Whose ProviderConnection created/owns this meeting — the admin who set
+  // the provider, by default. Needed so a later edit (or delete) knows whose
+  // OAuth token to use, since a meeting is created under ONE host account.
+  meeting_host_user_id       Int?
+  // Set instead of failing the whole session save when the provider's API
+  // call fails (token expired, provider outage, account disconnected) — an
+  // admin editing an unrelated field shouldn't lose their edit because Zoom
+  // is down. Cleared automatically the next time sync succeeds.
+  meeting_sync_error         String?         @db.VarChar(300)
+  meeting_synced_at          DateTime?
+  is_cohort                  Boolean         @default(false)
+  cohort_start_date          DateTime?       @db.Date
+  restream_enabled           Boolean         @default(false)
+  restream_cutoff_minutes    Int?
+  is_featured                Boolean         @default(false)
+  is_active                  Boolean         @default(true)
+  show_in_hero               Boolean         @default(false)
+  /// Admin-controlled position within the hero/trending carousel among
+  /// show_in_hero=true items — ascending, ties broken by scheduled_start_at
+  /// desc (see buildHero() in homepageCache.ts). Meaningless while
+  /// show_in_hero is false; routes/trending.ts is the only writer, assigning
+  /// the next value on add and re-compacting the remainder on remove, so gaps
+  /// never accumulate. Not used for anything outside the hero carousel.
+  hero_display_order         Int             @default(0)
+  has_transcript             Boolean         @default(false)
+  has_chapters               Boolean         @default(false)
+  has_substitute             Boolean         @default(false)
+  watermark_enabled          Boolean         @default(false)
+  avg_rating                 Decimal         @default(0) @db.Decimal(3, 2)
+  rating_count               Int             @default(0)
+  view_count                 Int             @default(0)
+  registration_count         Int             @default(0)
+  search_tags                String?         @db.VarChar(500)
+  seo_title                  String?         @db.VarChar(200)
+  seo_meta_description       String?         @db.VarChar(300)
+  seo_canonical_url          String?         @db.VarChar(300)
+  pre_roll_ad_id             Int?
+  mid_roll_ad_id             Int?
+  mid_roll_offset_seconds    Int?
+  publish_at                 DateTime?
+  content_last_updated_at    DateTime?
+  last_reviewed_by           Int?
+  created_by                 Int?
+  // Course-specific JSON columns (null for non-course content types)
+  outcomes_json              String?         @db.Text
+  cert_config_json           String?         @db.Text
+  created_at                 DateTime        @default(now())
+  updated_at                 DateTime        @updatedAt
+
+  @@index([status])
+  @@index([scheduled_start_at])
+  @@index([content_type])
+  @@index([access_level])
+  @@index([is_featured])
+  @@index([is_active])
+  @@index([status, scheduled_start_at])
+  @@index([content_type, status])
+  @@map("content_items")
+}
+
+model Category {
+  id             Int     @id @default(autoincrement())
+  name           String  @db.VarChar(100)
+  name_fr        String? @db.VarChar(100)
+  slug           String? @unique @db.VarChar(120)
+  description    String? @db.VarChar(300)
+  description_fr String? @db.VarChar(300)
+  image_url      String? @db.VarChar(500)
+  show_as_tile   Boolean @default(false)
+  display_order  Int     @default(0)
+  is_active      Boolean @default(true)
+
+  @@map("categories")
+}
+
+model ContentCategory {
+  id          Int @id @default(autoincrement())
+  content_id  Int
+  category_id Int
+
+  @@unique([content_id, category_id])
+  @@index([content_id])
+  @@index([category_id])
+  @@map("content_categories")
+}
+
+model SpeakerType {
+  id            Int     @id @default(autoincrement())
+  name          String  @db.VarChar(100)
+  name_fr       String? @db.VarChar(100)
+  slug          String? @db.VarChar(120)
+  display_order Int     @default(0)
+  is_active     Boolean @default(true)
+
+  @@map("speaker_types")
+}
+
+model Speaker {
+  id                      Int      @id @default(autoincrement())
+  full_name               String   @db.VarChar(150)
+  slug                    String   @unique @db.VarChar(170)
+  email                   String?  @db.VarChar(190)
+  phone                   String?  @db.VarChar(30)
+  title                   String?  @db.VarChar(150)
+  organisation            String?  @db.VarChar(150)
+  bio                     String?  @db.Text
+  bio_fr                  String?  @db.Text
+  master_image_url        String?  @db.VarChar(500)
+  focal_x                 Int      @default(50)
+  focal_y                 Int      @default(50)
+  linkedin_url            String?  @db.VarChar(300)
+  speaker_type_id         Int?
+  user_id                 Int?
+  bank_code               String?  @db.VarChar(10)
+  bank_name               String?  @db.VarChar(120)
+  account_number          String?  @db.VarChar(10)
+  account_name_resolved   String?  @db.VarChar(150)
+  paystack_recipient_code String?  @db.VarChar(120)
+  payout_verified         Boolean  @default(false)
+  commission_pct          Decimal  @default(0) @db.Decimal(5, 2)
+  is_active               Boolean  @default(true)
+  auto_approve            Boolean  @default(false)
+  created_at              DateTime @default(now())
+
+  @@index([user_id])
+  @@index([speaker_type_id])
+  @@map("speakers")
+}
+
+model ContentSpeaker {
+  id                Int                @id @default(autoincrement())
+  content_id        Int
+  speaker_id        Int
+  role              ContentSpeakerRole @default(speaker)
+  revenue_share_pct Decimal            @default(0) @db.Decimal(5, 2)
+
+  @@index([content_id])
+  @@index([speaker_id])
+  @@map("content_speakers")
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// MEDIA LIBRARY
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+model MediaAsset {
+  id                Int             @id @default(autoincrement())
+  title             String?         @db.VarChar(200)
+  asset_type        MediaAssetType
+  source_type       MediaSourceType @default(upload)
+  provider          String?         @db.VarChar(50)
+  provider_asset_id String?         @db.VarChar(255)
+  hls_url           String?         @db.VarChar(500)
+  mp4_url           String?         @db.VarChar(500)
+  embed_url         String?         @db.VarChar(500)
+  thumbnail_url     String?         @db.VarChar(500)
+  duration_seconds  Int?
+  file_size_mb      Int?
+  resolution        String?         @db.VarChar(20)
+  transcode_status  TranscodeStatus @default(pending)
+  is_protected      Boolean         @default(true)
+  storage_zone      String?         @db.VarChar(100)
+  tags              String?         @db.VarChar(500)
+  uploaded_by       Int?
+  created_at        DateTime        @default(now())
+  updated_at        DateTime        @updatedAt
+
+  @@index([asset_type])
+  @@index([transcode_status])
+  @@index([uploaded_by])
+  @@index([is_protected])
+  @@map("media_assets")
+}
+
+model ContentMedia {
+  id             Int              @id @default(autoincrement())
+  content_id     Int?
+  lesson_id      Int?
+  media_asset_id Int
+  role           ContentMediaRole @default(main)
+  display_order  Int              @default(0)
+
+  @@index([content_id])
+  @@index([lesson_id])
+  @@index([media_asset_id])
+  @@map("content_media")
+}
+
+model ImageVariant {
+  id                 Int     @id @default(autoincrement())
+  variant_key        String  @unique @db.VarChar(40)
+  label              String  @db.VarChar(80)
+  width              Int
+  height             Int
+  aspect_ratio       String  @db.VarChar(10)
+  imagekit_transform String  @db.VarChar(200)
+  usage_note         String? @db.VarChar(200)
+  is_active          Boolean @default(true)
+  display_order      Int     @default(0)
+
+  @@map("image_variants")
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// COURSES
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+model CourseModule {
+  id                        Int     @id @default(autoincrement())
+  course_id                 Int
+  title                     String? @db.VarChar(200)
+  title_fr                  String? @db.VarChar(200)
+  display_order             Int     @default(0)
+  drip_days_after_enrolment Int     @default(0)
+
+  @@index([course_id])
+  @@map("course_modules")
+}
+
+model CourseLesson {
+  id               Int        @id @default(autoincrement())
+  module_id        Int
+  title            String?    @db.VarChar(200)
+  title_fr         String?    @db.VarChar(200)
+  lesson_type      LessonType @default(vod)
+  vod_playback_url String?    @db.VarChar(500)
+  duration_seconds Int?
+  body_html        String?    @db.Text
+  display_order    Int        @default(0)
+  is_preview       Boolean    @default(false)
+
+  @@index([module_id])
+  @@map("course_lessons")
+}
+
+model LessonProgress {
+  id            Int       @id @default(autoincrement())
+  user_id       Int
+  lesson_id     Int
+  watch_seconds Int       @default(0)
+  completed     Boolean   @default(false)
+  completed_at  DateTime?
+  updated_at    DateTime  @updatedAt
+
+  @@unique([user_id, lesson_id])
+  @@map("lesson_progress")
+}
+
+model Assignment {
+  id                    Int             @id @default(autoincrement())
+  lesson_id             Int
+  instructions_html     String?         @db.Text
+  submission_type       SubmissionType?
+  max_file_mb           Int             @default(25)
+  due_days_after_unlock Int             @default(7)
+  is_peer_visible       Boolean         @default(false)
+  passing_score         Int?
+
+  @@map("assignments")
+}
+
+model AssignmentSubmission {
+  id            Int              @id @default(autoincrement())
+  assignment_id Int
+  user_id       Int
+  submitted_at  DateTime         @default(now())
+  file_url      String?          @db.VarChar(500)
+  link_url      String?          @db.VarChar(300)
+  text_body     String?          @db.Text
+  status        SubmissionStatus @default(submitted)
+  score         Int?
+  feedback      String?          @db.Text
+  reviewed_by   Int?
+  reviewed_at   DateTime?
+
+  @@unique([assignment_id, user_id])
+  @@map("assignment_submissions")
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// REGISTRATIONS & ATTENDANCE
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+model Registration {
+  id                Int                @id @default(autoincrement())
+  user_id           Int
+  content_id        Int
+  registered_at     DateTime           @default(now())
+  status            RegistrationStatus @default(confirmed)
+  join_token        String             @unique @default(uuid()) @db.VarChar(64)
+  custom_answers    String?            @db.Text
+  reminder_24h_sent Boolean            @default(false)
+  reminder_1h_sent  Boolean            @default(false)
+  reminder_10m_sent Boolean            @default(false)
+
+  @@unique([user_id, content_id])
+  @@index([content_id])
+  @@index([status])
+  @@map("registrations")
+}
+
+model Attendance {
+  id              Int       @id @default(autoincrement())
+  registration_id Int
+  joined_at       DateTime?
+  left_at         DateTime?
+  watch_seconds   Int       @default(0)
+  attended        Boolean   @default(false)
+
+  @@index([registration_id])
+  @@map("attendance")
+}
+
+model QaQuestion {
+  id           Int      @id @default(autoincrement())
+  content_id   Int
+  user_id      Int?
+  question     String?  @db.Text
+  upvotes      Int      @default(0)
+  is_answered  Boolean  @default(false)
+  is_anonymous Boolean  @default(false)
+  created_at   DateTime @default(now())
+
+  @@index([content_id])
+  @@map("qa_questions")
+}
+
+model SessionConfig {
+  id                 Int     @id @default(autoincrement())
+  content_id         Int     @unique
+  chat_enabled       Boolean @default(true)
+  qa_enabled         Boolean @default(true)
+  polls_enabled      Boolean @default(false)
+  chat_moderated     Boolean @default(true)
+  allow_anonymous_qa Boolean @default(true)
+
+  @@map("session_config")
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ENTITLEMENTS & COMMERCE
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+model Plan {
+  id                     Int             @id @default(autoincrement())
+  name                   String?         @db.VarChar(100)
+  price_ngn              Decimal?        @db.Decimal(12, 2)
+  /// USD equivalent for Stripe checkout — see ContentItem.price_usd.
+  price_usd              Decimal?        @db.Decimal(12, 2)
+  billing_interval       BillingInterval @default(monthly)
+  features               String?         @db.Text
+  max_concurrent_streams Int             @default(1)
+  seat_count             Int             @default(1)
+  is_team_plan           Boolean         @default(false)
+  is_active              Boolean         @default(true)
+
+  @@map("plans")
+}
+
+model Subscription {
+  id                         Int                @id @default(autoincrement())
+  user_id                    Int
+  plan_id                    Int
+  status                     SubscriptionStatus @default(active)
+  current_period_end         DateTime?
+  paused_until               DateTime?
+  cancelled_at               DateTime?
+  paystack_subscription_code String?            @db.VarChar(120)
+  created_at                 DateTime           @default(now())
+
+  @@index([user_id])
+  @@index([status])
+  @@map("subscriptions")
+}
+
+model Entitlement {
+  id         Int               @id @default(autoincrement())
+  user_id    Int
+  content_id Int
+  source     EntitlementSource
+  granted_at DateTime          @default(now())
+  expires_at DateTime?
+
+  @@index([user_id])
+  @@index([content_id])
+  @@map("entitlements")
+}
+
+model Order {
+  id                 Int             @id @default(autoincrement())
+  user_id            Int
+  content_id         Int?
+  plan_id            Int?
+  /// Named _ngn from Prompt 13, before Stripe existed. Kept as-is rather than
+  /// renamed — a cosmetic rename would touch every payouts/invoices read site
+  /// for no functional gain. `currency` is this row's real source of truth;
+  /// a Stripe order carries "USD" in amount_ngn's units, not naira.
+  amount_ngn         Decimal?        @db.Decimal(12, 2)
+  currency           String          @default("NGN") @db.VarChar(3)
+  status             OrderStatus     @default(pending)
+  order_type         OrderType       @default(direct)
+  payment_provider   PaymentProvider @default(paystack)
+  invoice_requested  Boolean         @default(false)
+  invoice_url        String?         @db.VarChar(500)
+  invoice_number     String?         @db.VarChar(40)
+  invoice_due_date   DateTime?       @db.Date
+  coupon_id          Int?
+  paystack_reference String?         @db.VarChar(120)
+  /// Stripe Checkout Session id ("cs_..."), the equivalent of
+  /// paystack_reference above — this order's handle at its own gateway.
+  stripe_session_id  String?         @db.VarChar(200)
+  created_at         DateTime        @default(now())
+
+  @@index([user_id])
+  @@index([status])
+  @@index([paystack_reference])
+  @@index([stripe_session_id])
+  @@index([order_type])
+  @@map("orders")
+}
+
+model Coupon {
+  id               Int                 @id @default(autoincrement())
+  code             String              @unique @db.VarChar(40)
+  discount_type    CouponDiscountType?
+  discount_value   Decimal?            @db.Decimal(10, 2)
+  applies_to       CouponAppliesTo?
+  target_id        Int?
+  max_redemptions  Int?
+  redemption_count Int                 @default(0)
+  valid_from       DateTime?
+  valid_until      DateTime?
+  min_order_ngn    Decimal?            @db.Decimal(10, 2)
+  is_active        Boolean             @default(true)
+  created_by       Int?
+
+  @@map("coupons")
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// INSTRUCTORS & PAYOUTS
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+model InstructorApplication {
+  id               Int                         @id @default(autoincrement())
+  full_name        String?                     @db.VarChar(150)
+  email            String?                     @db.VarChar(190)
+  phone            String?                     @db.VarChar(30)
+  expertise_areas  String?                     @db.VarChar(300)
+  proposed_topics  String?                     @db.Text
+  linkedin_url     String?                     @db.VarChar(300)
+  sample_video_url String?                     @db.VarChar(500)
+  audience_size    String?                     @db.VarChar(60)
+  status           InstructorApplicationStatus @default(pending)
+  reviewer_id      Int?
+  reviewed_at      DateTime?
+  rejection_reason String?                     @db.Text
+  created_at       DateTime                    @default(now())
+
+  @@map("instructor_applications")
+}
+
+model ReviewQueueItem {
+  id           Int            @id @default(autoincrement())
+  content_id   Int?
+  submitted_by Int?
+  submitted_at DateTime       @default(now())
+  reviewer_id  Int?
+  reviewed_at  DateTime?
+  decision     ReviewDecision @default(pending)
+  notes        String?        @db.Text
+
+  @@map("review_queue")
+}
+
+model EarningLine {
+  id                Int               @id @default(autoincrement())
+  speaker_id        Int
+  content_id        Int
+  order_id          Int?
+  subscription_id   Int?
+  period_month      String?           @db.VarChar(7)
+  gross_ngn         Decimal?          @db.Decimal(14, 2)
+  share_pct         Decimal?          @db.Decimal(5, 2)
+  earned_ngn        Decimal?          @db.Decimal(14, 2)
+  attribution_basis AttributionBasis?
+  watch_hours       Decimal?          @db.Decimal(10, 2)
+  holdback_until    DateTime?
+  status            EarningStatus     @default(accruing)
+  created_at        DateTime          @default(now())
+  /// Set the moment a payout run claims this line (status becomes payable →
+  /// still 'payable' until the run pays out, then flips to 'paid'). No
+  /// @relation, matching every other cross-model reference in this schema —
+  /// but without SOME marker here, two draft runs created back to back would
+  /// both aggregate the same unclaimed earning line and pay it out twice.
+  payout_line_id    Int?
+
+  @@index([speaker_id])
+  @@index([period_month])
+  @@index([status])
+  @@index([payout_line_id])
+  @@map("earning_lines")
+}
+
+model PayoutRun {
+  id              Int             @id @default(autoincrement())
+  period_month    String?         @db.VarChar(7)
+  status          PayoutRunStatus @default(draft)
+  total_gross_ngn Decimal?        @db.Decimal(14, 2)
+  total_wht_ngn   Decimal?        @db.Decimal(14, 2)
+  total_net_ngn   Decimal?        @db.Decimal(14, 2)
+  approved_by     Int?
+  approved_at     DateTime?
+  completed_at    DateTime?
+
+  @@map("payout_runs")
+}
+
+/// NOTE: rows are APPEND-ONLY once status = 'paid'. Enforce in the service layer.
+model PayoutLine {
+  id                Int              @id @default(autoincrement())
+  payout_run_id     Int
+  speaker_id        Int
+  gross_ngn         Decimal?         @db.Decimal(14, 2)
+  commission_ngn    Decimal?         @db.Decimal(14, 2)
+  wht_applicable    Boolean          @default(false)
+  wht_rate          Decimal          @default(0) @db.Decimal(5, 2)
+  wht_amount_ngn    Decimal          @default(0) @db.Decimal(14, 2)
+  net_ngn           Decimal?         @db.Decimal(14, 2)
+  payment_reference String?          @db.VarChar(120)
+  status            PayoutLineStatus @default(pending)
+  paid_at           DateTime?
+  failure_reason    String?          @db.VarChar(300)
+  statement_url     String?          @db.VarChar(500)
+
+  @@index([payout_run_id])
+  @@index([speaker_id])
+  @@index([status])
+  @@map("payout_lines")
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ANALYTICS
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+model StreamSession {
+  id                   Int                  @id @default(autoincrement())
+  content_id           Int?
+  stream_key_used      String?              @db.VarChar(255)
+  status               StreamSessionStatus?
+  started_at           DateTime?
+  ended_at             DateTime?
+  duration_seconds     Int?
+  peak_viewers         Int                  @default(0)
+  peak_at              DateTime?
+  avg_viewers          Int                  @default(0)
+  reconnect_count      Int                  @default(0)
+  avg_bitrate_kbps     Int?
+  dropped_frames       Int?
+  failure_reason       String?              @db.VarChar(300)
+  incident_notified_at DateTime?
+
+  @@index([content_id])
+  @@index([status])
+  @@index([started_at])
+  @@map("stream_sessions")
+}
+
+model StreamHealthSample {
+  id                 Int      @id @default(autoincrement())
+  stream_session_id  Int
+  sampled_at         DateTime @default(now())
+  bitrate_kbps       Int?
+  framerate          Int?
+  dropped_frames     Int?
+  concurrent_viewers Int?
+
+  @@index([stream_session_id, sampled_at])
+  @@map("stream_health_samples")
+}
+
+model PlaybackSession {
+  id                Int         @id @default(autoincrement())
+  user_id           Int?
+  content_id        Int?
+  lesson_id         Int?
+  started_at        DateTime    @default(now())
+  ended_at          DateTime?
+  watch_seconds     Int         @default(0)
+  completion_pct    Decimal     @default(0) @db.Decimal(5, 2)
+  device_type       DeviceType?
+  os                String?     @db.VarChar(60)
+  browser           String?     @db.VarChar(60)
+  country           String?     @db.VarChar(2)
+  region            String?     @db.VarChar(80)
+  network_type      String?     @db.VarChar(20)
+  avg_bitrate_kbps  Int?
+  load_time_ms      Int?
+  buffering_events  Int         @default(0)
+  buffering_seconds Int         @default(0)
+  quality_changes   Int         @default(0)
+  error_code        String?     @db.VarChar(60)
+  playback_speed    Decimal     @default(1.0) @db.Decimal(3, 2)
+
+  @@index([content_id])
+  @@index([user_id])
+  @@index([started_at])
+  @@index([region])
+  @@index([device_type])
+  @@map("playback_sessions")
+}
+
+model UsageDaily {
+  id                Int      @id @default(autoincrement())
+  date              DateTime @unique @db.Date
+  storage_gb        Decimal  @default(0) @db.Decimal(12, 3)
+  bandwidth_gb      Decimal  @default(0) @db.Decimal(12, 3)
+  transcode_minutes Int      @default(0)
+  cost_usd          Decimal  @default(0) @db.Decimal(12, 2)
+  fx_rate_ngn       Decimal? @db.Decimal(12, 2)
+  cost_ngn          Decimal  @default(0) @db.Decimal(14, 2)
+
+  @@map("usage_daily")
+}
+
+model ContentUsage {
+  id                 Int     @id @default(autoincrement())
+  content_id         Int
+  period_month       String  @db.VarChar(7)
+  views              Int     @default(0)
+  watch_hours        Decimal @default(0) @db.Decimal(12, 2)
+  bandwidth_gb       Decimal @default(0) @db.Decimal(12, 3)
+  estimated_cost_ngn Decimal @default(0) @db.Decimal(14, 2)
+  revenue_ngn        Decimal @default(0) @db.Decimal(14, 2)
+  margin_ngn         Decimal @default(0) @db.Decimal(14, 2)
+
+  @@unique([content_id, period_month])
+  @@map("content_usage")
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// TRANSCRIPTS & CHAPTERS
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+model Transcript {
+  id             Int              @id @default(autoincrement())
+  content_id     Int?
+  media_asset_id Int?
+  language       String           @default("en") @db.VarChar(10)
+  full_text      String?          @db.Text
+  word_count     Int?
+  status         TranscriptStatus @default(pending)
+  provider       String?          @db.VarChar(50)
+  generated_at   DateTime?
+  edited_by      Int?
+  edited_at      DateTime?
+
+  @@map("transcripts")
+}
+
+model TranscriptSegment {
+  id            Int      @id @default(autoincrement())
+  transcript_id Int
+  start_seconds Decimal? @db.Decimal(10, 2)
+  end_seconds   Decimal? @db.Decimal(10, 2)
+  speaker_label String?  @db.VarChar(80)
+  text          String?  @db.Text
+
+  @@index([transcript_id, start_seconds])
+  @@map("transcript_segments")
+}
+
+model Chapter {
+  id             Int          @id @default(autoincrement())
+  content_id     Int
+  title          String?      @db.VarChar(200)
+  title_fr       String?      @db.VarChar(200)
+  start_seconds  Int?
+  chapter_type   ChapterType?
+  is_skippable   Boolean      @default(false)
+  display_order  Int?
+  auto_generated Boolean      @default(true)
+  edited_by      Int?
+
+  @@index([content_id, start_seconds])
+  @@map("chapters")
+}
+
+model SubtitleTrack {
+  id             Int             @id @default(autoincrement())
+  content_id     Int?
+  media_asset_id Int?
+  language       String?         @db.VarChar(10)
+  label          String?         @db.VarChar(60)
+  vtt_url        String?         @db.VarChar(500)
+  source         SubtitleSource?
+  is_default     Boolean         @default(false)
+  is_reviewed    Boolean         @default(false)
+
+  @@index([content_id])
+  @@map("subtitle_tracks")
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// COMMUNITY
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+model CommunitySpace {
+  id                Int                @id @default(autoincrement())
+  name              String?            @db.VarChar(150)
+  slug              String             @unique @db.VarChar(170)
+  description       String?            @db.Text
+  space_type        CommunitySpaceType @default(open)
+  linked_content_id Int?
+  is_active         Boolean            @default(true)
+  created_at        DateTime           @default(now())
+
+  @@map("community_spaces")
+}
+
+model SpaceMember {
+  id        Int             @id @default(autoincrement())
+  space_id  Int
+  user_id   Int
+  role      SpaceMemberRole @default(member)
+  joined_at DateTime        @default(now())
+
+  @@unique([space_id, user_id])
+  @@map("space_members")
+}
+
+model SpacePost {
+  id             Int      @id @default(autoincrement())
+  space_id       Int
+  user_id        Int
+  body           String?  @db.Text
+  attachment_url String?  @db.VarChar(500)
+  is_pinned      Boolean  @default(false)
+  created_at     DateTime @default(now())
+
+  @@index([space_id, created_at])
+  @@map("space_posts")
+}
+
+model PostComment {
+  id         Int      @id @default(autoincrement())
+  post_id    Int
+  user_id    Int
+  body       String?  @db.Text
+  created_at DateTime @default(now())
+
+  @@index([post_id])
+  @@map("post_comments")
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// RATINGS, CERTIFICATES & RESOURCES
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+model Rating {
+  id             Int                 @id @default(autoincrement())
+  user_id        Int
+  content_id     Int
+  score          Int
+  comment        String?             @db.Text
+  /// Governed by the content_policy.rating_comments_mode setting — see
+  /// routes/ratings.ts. 'auto_publish' mode sets this to 'approved' the
+  /// moment a comment is written; 'review_required' leaves it 'pending'
+  /// until an admin acts; 'hidden' mode never surfaces a comment publicly
+  /// regardless of this value. Re-set on every write a comment changes on,
+  /// not preserved across edits — an edited comment needs fresh review.
+  comment_status RatingCommentStatus @default(pending)
+  created_at     DateTime            @default(now())
+
+  @@unique([user_id, content_id])
+  @@index([content_id])
+  @@map("ratings")
+}
+
+model Certificate {
+  id                Int      @id @default(autoincrement())
+  user_id           Int
+  content_id        Int
+  issued_at         DateTime @default(now())
+  verification_code String   @unique @default(uuid()) @db.VarChar(40)
+  pdf_url           String?  @db.VarChar(500)
+
+  @@index([user_id])
+  @@index([verification_code])
+  @@map("certificates")
+}
+
+model Resource {
+  id                   Int      @id @default(autoincrement())
+  content_id           Int?
+  lesson_id            Int?
+  title                String?  @db.VarChar(200)
+  file_url             String?  @db.VarChar(500)
+  file_type            String?  @db.VarChar(20)
+  file_size_kb         Int?
+  requires_entitlement Boolean  @default(true)
+  created_at           DateTime @default(now())
+
+  @@index([content_id])
+  @@index([lesson_id])
+  @@map("resources")
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// MONETISATION — SPONSORS & ADS
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+model Sponsor {
+  id            Int     @id @default(autoincrement())
+  name          String? @db.VarChar(150)
+  logo_url      String? @db.VarChar(500)
+  website_url   String? @db.VarChar(300)
+  contact_email String? @db.VarChar(190)
+  is_active     Boolean @default(true)
+
+  @@map("sponsors")
+}
+
+model ContentSponsor {
+  id              Int               @id @default(autoincrement())
+  content_id      Int
+  sponsor_id      Int
+  sponsorship_ngn Decimal?          @db.Decimal(12, 2)
+  placement       SponsorPlacement?
+  message         String?           @db.VarChar(300)
+  starts_at       DateTime?
+  ends_at         DateTime?
+
+  @@map("content_sponsors")
+}
+
+model Ad {
+  id               Int     @id @default(autoincrement())
+  name             String? @db.VarChar(150)
+  ad_type          AdType?
+  video_url        String? @db.VarChar(500)
+  click_url        String? @db.VarChar(500)
+  duration_seconds Int?
+  advertiser_id    Int?
+  is_active        Boolean @default(true)
+
+  @@map("ads")
+}
+
+/// NOTE: Advertisers are companies buying ad placements on free-tier content only.
+/// Linked to ads.advertiser_id for campaign attribution and reporting.
+model Advertiser {
+  id            Int      @id @default(autoincrement())
+  company_name  String   @db.VarChar(150)
+  contact_name  String?  @db.VarChar(150)
+  contact_email String?  @db.VarChar(190)
+  contact_phone String?  @db.VarChar(30)
+  website_url   String?  @db.VarChar(300)
+  logo_url      String?  @db.VarChar(500)
+  notes         String?  @db.Text
+  is_active     Boolean  @default(true)
+  created_at    DateTime @default(now())
+
+  @@map("advertisers")
+}
+
+model PromoBanner {
+  id                Int             @id @default(autoincrement())
+  title             String?         @db.VarChar(200)
+  body              String?         @db.VarChar(500)
+  image_url         String?         @db.VarChar(500)
+  cta_label         String?         @db.VarChar(80)
+  cta_url           String?         @db.VarChar(300)
+  placement         PromoPlacement?
+  audience          PromoAudience?
+  target_content_id Int?
+  country           String?         @db.VarChar(2)
+  starts_at         DateTime?
+  ends_at           DateTime?
+  impressions       Int             @default(0)
+  clicks            Int             @default(0)
+  is_active         Boolean         @default(true)
+  display_order     Int             @default(0)
+
+  @@map("promo_banners")
+}
+
+model RestreamTarget {
+  id         Int              @id @default(autoincrement())
+  content_id Int
+  platform   RestreamPlatform
+  rtmp_url   String?          @db.VarChar(500)
+  stream_key String?          @db.VarChar(255)
+  is_enabled Boolean          @default(false)
+
+  @@index([content_id])
+  @@map("restream_targets")
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// BULK IMPORT
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+model BulkImport {
+  id                Int              @id @default(autoincrement())
+  import_type       BulkImportType
+  target_content_id Int?
+  file_url          String?          @db.VarChar(500)
+  total_rows        Int?
+  succeeded         Int?
+  updated           Int?
+  skipped           Int?
+  failed            Int?
+  status            BulkImportStatus @default(uploaded)
+  error_report_url  String?          @db.VarChar(500)
+  created_by        Int?
+  created_at        DateTime         @default(now())
+
+  @@map("bulk_imports")
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// CONSENT & POLICIES
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+model Policy {
+  id                 Int       @id @default(autoincrement())
+  policy_key         String    @db.VarChar(60)
+  title              String?   @db.VarChar(200)
+  title_fr           String?   @db.VarChar(200)
+  body_html          String?   @db.Text
+  body_html_fr       String?   @db.Text
+  version            Int       @default(1)
+  effective_from     DateTime?
+  requires_reconsent Boolean   @default(false)
+  is_active          Boolean   @default(true)
+
+  @@unique([policy_key, version])
+  @@map("policies")
+}
+
+/// NOTE: APPEND-ONLY. Never update or delete — enforced in the service layer.
+model ConsentRecord {
+  id             Int            @id @default(autoincrement())
+  user_id        Int
+  policy_key     String?        @db.VarChar(60)
+  policy_version Int?
+  /// A withdrawal is a NEW row with granted=false, never an edit or a delete.
+  /// Without this column the table can only say "accepted", which makes the
+  /// append-only rule unimplementable. Current state for a policy is the newest
+  /// row by accepted_at.
+  granted        Boolean        @default(true)
+  accepted_at    DateTime       @default(now())
+  ip_address     String?        @db.VarChar(45)
+  user_agent     String?        @db.VarChar(300)
+  consent_method ConsentMethod?
+
+  @@index([user_id, policy_key])
+  @@map("consent_records")
+}
+
+/// Password-reset and email-verification tokens.
+///
+/// The token itself is never stored — only a SHA-256 hash of it. A leaked
+/// database read otherwise hands over live account-recovery links for every
+/// pending reset.
+model AuthToken {
+  id          Int              @id @default(autoincrement())
+  user_id     Int
+  token_hash  String           @unique @db.VarChar(64)
+  purpose     AuthTokenPurpose
+  expires_at  DateTime
+  consumed_at DateTime?
+  created_at  DateTime         @default(now())
+
+  @@index([user_id])
+  @@index([token_hash])
+  @@map("auth_tokens")
+}
+
+model SignupField {
+  id            Int                 @id @default(autoincrement())
+  field_key     String?             @db.VarChar(60)
+  label         String?             @db.VarChar(100)
+  label_fr      String?             @db.VarChar(100)
+  field_type    SignupFieldType?
+  context       SignupFieldContext?
+  is_enabled    Boolean             @default(true)
+  is_required   Boolean             @default(false)
+  display_order Int                 @default(0)
+  options       String?             @db.Text
+  help_text     String?             @db.VarChar(200)
+
+  @@map("signup_fields")
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// NOTIFICATIONS
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+model Notification {
+  id         Int      @id @default(autoincrement())
+  user_id    Int
+  type       String?  @db.VarChar(50)
+  title      String?  @db.VarChar(200)
+  body       String?  @db.Text
+  link_url   String?  @db.VarChar(500)
+  is_read    Boolean  @default(false)
+  created_at DateTime @default(now())
+
+  @@index([user_id, is_read])
+  @@map("notifications")
+}
+
+model NotificationPreference {
+  id         Int                 @id @default(autoincrement())
+  user_id    Int?
+  event_key  String              @db.VarChar(60)
+  channel    NotificationChannel
+  is_enabled Boolean             @default(true)
+
+  @@unique([user_id, event_key, channel])
+  @@map("notification_preferences")
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// USER PREFERENCES
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+model UserPreference {
+  id                     Int               @id @default(autoincrement())
+  user_id                Int               @unique
+  timezone               String?           @db.VarChar(64)
+  language               String?           @db.VarChar(10)
+  subtitle_language      String?           @db.VarChar(10)
+  default_quality        String?           @db.VarChar(10)
+  data_saver             Boolean           @default(false)
+  default_playback_speed Decimal           @default(1.0) @db.Decimal(3, 2)
+  subtitles_on           Boolean           @default(true)
+  autoplay_next          Boolean           @default(true)
+  reminder_offsets       String            @default("1440,60,10") @db.VarChar(60)
+  calendar_sync_enabled  Boolean           @default(false)
+  calendar_provider      CalendarProvider?
+  quiet_hours_start      DateTime?         @db.Time
+  quiet_hours_end        DateTime?         @db.Time
+  weekly_digest          Boolean           @default(true)
+
+  @@map("user_preferences")
+}
+
+model UserDevice {
+  id                 Int      @id @default(autoincrement())
+  user_id            Int?
+  device_fingerprint String?  @db.VarChar(120)
+  device_name        String?  @db.VarChar(100)
+  device_type        String?  @db.VarChar(20)
+  os                 String?  @db.VarChar(60)
+  browser            String?  @db.VarChar(60)
+  first_seen_at      DateTime @default(now())
+  last_seen_at       DateTime @default(now())
+  last_ip            String?  @db.VarChar(45)
+  last_country       String?  @db.VarChar(2)
+  is_active          Boolean  @default(true)
+
+  @@unique([user_id, device_fingerprint])
+  @@map("user_devices")
+}
+
+/// NOTE: ics_token drives the /calendar/:token.ics download endpoint — a permanent
+/// per-user-per-session link that calendar apps poll. Revoke by setting is_active=false.
+model CalendarEvent {
+  id                Int              @id @default(autoincrement())
+  user_id           Int
+  content_id        Int
+  provider          CalendarProvider
+  provider_event_id String?          @db.VarChar(200)
+  ics_token         String           @unique @default(uuid()) @db.VarChar(64)
+  synced_at         DateTime?
+  is_active         Boolean          @default(true)
+
+  @@unique([user_id, content_id, provider])
+  @@index([ics_token])
+  @@map("calendar_events")
+}
+
+// One OAuth grant per (user, identity provider) — a signed-in admin/instructor
+// connecting their own Zoom/Google/Microsoft account so meetings get created
+// under THEIR name, not a shared platform account (the same reason a real
+// Zoom/Teams integration has to be per-user: whoever's account hosts the
+// meeting is who Zoom/Teams/Meet consider the organiser). access_token and
+// refresh_token are as sensitive as a password — never returned by any GET
+// endpoint; see serializeProviderConnection().
+model ProviderConnection {
+  id                     Int           @id @default(autoincrement())
+  user_id                Int
+  provider               OAuthProvider
+  access_token           String        @db.Text
+  refresh_token          String?       @db.Text
+  expires_at             DateTime
+  external_account_email String?       @db.VarChar(190)
+  connected_at           DateTime      @default(now())
+
+  @@unique([user_id, provider])
+  @@map("provider_connections")
+}
+
+// Not the same thing as Attendance above — that one hangs off a Registration
+// (free, registered-tier content only) and is never written by any live code
+// path today. This is the signal this app CAN observe for a non-native
+// meeting session at any access level: the moment a signed-in viewer was
+// redirected to the real Zoom/Teams/Meet/Jitsi join_url. It is an intent-to-
+// attend, not a measured watch time — this app has no visibility into what
+// happens after the redirect. lib/earnings.ts's computeSubscriptionAccrual()
+// converts each row into a policy-configured number of credited seconds
+// (monetisation.non_native_attendance_credit_seconds) rather than pretending
+// to have measured anything. No unique constraint: a real recurring session
+// (a weekly Zoom class, say) is genuinely attended more than once a month,
+// and each attendance is its own row — routes/playback.ts dedupes only
+// rapid repeat pings from the same visit, not distinct real attendances.
+model MeetingAttendance {
+  id         Int             @id @default(autoincrement())
+  user_id    Int
+  content_id Int
+  provider   MeetingProvider
+  joined_at  DateTime        @default(now())
+
+  @@index([user_id, content_id])
+  @@index([content_id])
+  @@map("meeting_attendances")
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// HOMEPAGE ENGINE
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+model ContentRow {
+  id              Int         @id @default(autoincrement())
+  row_key         String?     @db.VarChar(60)
+  label           String?     @db.VarChar(120)
+  label_fr        String?     @db.VarChar(120)
+  row_type        RowType
+  surface         RowSurface?
+  platform        RowPlatform @default(all)
+  audience        RowAudience @default(all)
+  params          String?     @db.Text
+  card_limit      Int         @default(15)
+  display_order   Int         @default(0)
+  is_enabled      Boolean     @default(true)
+  hide_when_empty Boolean     @default(true)
+  card_style      CardStyle   @default(poster)
+
+  @@map("content_rows")
+}
+
+model RowRule {
+  id              Int               @id @default(autoincrement())
+  rule_key        String?           @db.VarChar(60)
+  description     String            @db.VarChar(200)
+  condition_type  RowConditionType?
+  condition_value Int?
+  promote_row_key String?           @db.VarChar(60)
+  priority        Int?
+  is_enabled      Boolean           @default(true)
+
+  @@map("row_rules")
+}
+
+model HomepageCache {
+  id           Int       @id @default(autoincrement())
+  cache_key    String    @unique @db.VarChar(120)
+  payload      String?   @db.Text
+  generated_at DateTime  @default(now())
+  expires_at   DateTime?
+  row_count    Int?
+  item_count   Int?
+
+  @@index([cache_key])
+  @@index([expires_at])
+  @@map("homepage_cache")
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// CMS & SITE
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+model CmsPage {
+  id                   Int           @id @default(autoincrement())
+  slug                 String        @unique @db.VarChar(120)
+  title                String?       @db.VarChar(200)
+  title_fr             String?       @db.VarChar(200)
+  body_html            String?       @db.Text
+  body_html_fr         String?       @db.Text
+  status               CmsPageStatus @default(draft)
+  seo_title            String?       @db.VarChar(200)
+  seo_meta_description String?       @db.VarChar(300)
+  is_system_page       Boolean       @default(false)
+  updated_by           Int?
+  updated_at           DateTime      @updatedAt
+
+  @@map("cms_pages")
+}
+
+model LandingPage {
+  id                Int               @id @default(autoincrement())
+  slug              String            @unique @db.VarChar(120)
+  title             String?           @db.VarChar(200)
+  hero_headline     String?           @db.VarChar(300)
+  hero_subheadline  String?           @db.VarChar(400)
+  hero_image_url    String?           @db.VarChar(500)
+  sections          String?           @db.Text
+  cta_label         String?           @db.VarChar(80)
+  cta_url           String?           @db.VarChar(300)
+  target_content_id Int?
+  is_front_page     Boolean           @default(false)
+  utm_source        String?           @db.VarChar(80)
+  utm_medium        String?           @db.VarChar(80)
+  utm_campaign      String?           @db.VarChar(80)
+  status            LandingPageStatus @default(draft)
+  views             Int               @default(0)
+  conversions       Int               @default(0)
+
+  @@map("landing_pages")
+}
+
+model Faq {
+  id             Int       @id @default(autoincrement())
+  question       String?   @db.VarChar(300)
+  question_fr    String?   @db.VarChar(300)
+  answer_html    String?   @db.Text
+  answer_html_fr String?   @db.Text
+  scope          FaqScope?
+  content_id     Int?
+  category       String?   @db.VarChar(60)
+  display_order  Int?
+  is_published   Boolean   @default(false)
+  views          Int       @default(0)
+  helpful_yes    Int       @default(0)
+  helpful_no     Int       @default(0)
+
+  @@map("faqs")
+}
+
+/// One signed-in viewer's vote on one FAQ's helpfulness. The unique
+/// (faq_id, user_id) pair is the whole mechanism: a first vote counts, a
+/// repeat click of the same choice is a no-op, and switching yes<->no moves
+/// the aggregate count on Faq rather than double-counting it — see
+/// routes/faqs.ts's POST /public-faqs/:id/helpful, the only writer.
+/// Anonymous votes are NOT recorded here — there's no stable identity to key
+/// them on anywhere in this codebase (no anon-id cookie mechanism), so they
+/// stay an honest, undeduped increment on Faq.helpful_yes/helpful_no, same
+/// as before this table existed.
+model FaqVote {
+  id         Int      @id @default(autoincrement())
+  faq_id     Int
+  user_id    Int
+  helpful    Boolean
+  created_at DateTime @default(now())
+
+  @@unique([faq_id, user_id])
+  @@map("faq_votes")
+}
+
+model ContactRequest {
+  id           Int                  @id @default(autoincrement())
+  name         String?              @db.VarChar(150)
+  email        String?              @db.VarChar(190)
+  phone        String?              @db.VarChar(30)
+  company      String?              @db.VarChar(150)
+  enquiry_type EnquiryType?
+  message      String?              @db.Text
+  source_page  String?              @db.VarChar(200)
+  status       ContactRequestStatus @default(new)
+  assigned_to  Int?
+  notes        String?              @db.Text
+  created_at   DateTime             @default(now())
+  responded_at DateTime?
+
+  @@map("contact_requests")
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SETTINGS & CONFIGURATION
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+model Setting {
+  id            Int      @id @default(autoincrement())
+  setting_key   String   @unique @db.VarChar(100)
+  setting_value String?  @db.Text
+  setting_group String?  @db.VarChar(50)
+  is_secret     Boolean  @default(false)
+  updated_at    DateTime @updatedAt
+  updated_by    Int?
+
+  @@index([setting_group])
+  @@map("settings")
+}
+
+model AppModule {
+  flag_key    String     @id @db.VarChar(60)
+  label       String?    @db.VarChar(120)
+  description String?    @db.VarChar(300)
+  tier        ModuleTier @default(core)
+  depends_on  String?    @db.VarChar(300)
+  is_enabled  Boolean    @default(true)
+  updated_at  DateTime   @updatedAt
+  updated_by  Int?
+
+  @@map("modules")
+}
+
+model SetupStep {
+  id            Int               @id @default(autoincrement())
+  step_key      String            @unique @db.VarChar(60)
+  label         String?           @db.VarChar(150)
+  description   String?           @db.VarChar(300)
+  category      SetupStepCategory @default(platform)
+  display_order Int               @default(0)
+  status        SetupStepStatus   @default(pending)
+  completed_at  DateTime?
+  completed_by  Int?
+  config_route  String?           @db.VarChar(200)
+
+  @@map("setup_steps")
+}
+
+model UiTranslation {
+  id              Int      @id @default(autoincrement())
+  translation_key String   @unique @db.VarChar(120)
+  en              String?  @db.Text
+  fr              String?  @db.Text
+  context         String?  @db.VarChar(200)
+  is_reviewed     Boolean  @default(false)
+  updated_at      DateTime @updatedAt
+
+  @@map("ui_translations")
+}
+
+model FooterLink {
+  id            Int     @id @default(autoincrement())
+  label         String? @db.VarChar(100)
+  label_fr      String? @db.VarChar(100)
+  url           String? @db.VarChar(300)
+  column_group  String? @db.VarChar(50)
+  display_order Int     @default(0)
+  opens_new_tab Boolean @default(false)
+  is_active     Boolean @default(true)
+  is_required   Boolean @default(false)
+
+  @@map("footer_links")
+}

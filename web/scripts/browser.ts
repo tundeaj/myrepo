@@ -1,0 +1,1174 @@
+/**
+ * Browser checks — the class of defect nothing else here catches.
+ *
+ * Three bugs shipped in this project that `tsc`, the build and the API suite all
+ * passed clean (fixed in ad79e55):
+ *
+ *   1. an absolutely-positioned gradient painted over the detail page's title,
+ *      meta, countdown and entire access gate — on every detail page
+ *   2. the first homepage row landed on top of the hero's CTAs, because a
+ *      negative margin in one file exceeded the padding reserved in another
+ *   3. every public page was titled "Webinarflix Admin", and a fresh install
+ *      rendered no hero at all
+ *
+ * All three are geometry and rendered output. `toBeVisible()` would not have
+ * caught the first two either — an element covered by another is still
+ * "visible" to the DOM. So these assert what a person sees: is the element's
+ * own centre point actually hittable, and do the two boxes overlap.
+ *
+ * Usage:
+ *   BASE=http://127.0.0.1:5173 npx tsx scripts/browser.ts
+ *
+ * Needs the web dev server and the API running against a seeded database.
+ * CHROMIUM_PATH overrides the browser binary when the bundled build doesn't
+ * match the installed Playwright.
+ */
+import { chromium, type Page, type Browser } from "playwright";
+
+const BASE = process.env.BASE ?? "http://127.0.0.1:5173";
+const API_BASE = process.env.API_BASE ?? "http://127.0.0.1:4000";
+const CHROMIUM_PATH = process.env.CHROMIUM_PATH;
+
+let passed = 0;
+const failures: string[] = [];
+
+function check(name: string, condition: boolean, detail?: unknown) {
+  if (condition) {
+    passed++;
+    console.log(`  ✓ ${name}`);
+  } else {
+    failures.push(name);
+    console.log(`  ✗ ${name}${detail !== undefined ? ` — ${JSON.stringify(detail)}` : ""}`);
+  }
+}
+
+function section(title: string) {
+  console.log(`\n── ${title} ${"─".repeat(Math.max(0, 58 - title.length))}`);
+}
+
+/**
+ * The assertion that would have caught the gradient bug.
+ *
+ * Asks the browser what element is actually at the centre of this one. If the
+ * answer is something else — and not one of its own descendants — then whatever
+ * is on top is covering it, however "visible" the DOM believes it to be.
+ */
+async function isActuallyOnTop(page: Page, selector: string): Promise<{ ok: boolean; covering?: string }> {
+  return page.evaluate((sel) => {
+    const el = document.querySelector(sel);
+    if (!el) return { ok: false, covering: "element not found" };
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) return { ok: false, covering: "zero size" };
+    const x = r.left + r.width / 2;
+    const y = r.top + Math.min(r.height / 2, 20);
+    const hit = document.elementFromPoint(x, y);
+    if (!hit) return { ok: false, covering: "nothing at point (offscreen?)" };
+    if (el.contains(hit) || hit.contains(el)) return { ok: true };
+    return {
+      ok: false,
+      covering: `${hit.tagName.toLowerCase()}.${(hit.className || "").toString().split(" ").slice(0, 3).join(".")}`,
+    };
+  }, selector);
+}
+
+/** The assertion that would have caught the hero/row collision. */
+async function boxesOverlap(page: Page, a: string, b: string) {
+  return page.evaluate(
+    ([selA, selB]) => {
+      const ea = document.querySelector(selA);
+      const eb = document.querySelector(selB);
+      if (!ea || !eb) return { found: false, overlap: false };
+      const ra = ea.getBoundingClientRect();
+      const rb = eb.getBoundingClientRect();
+      const overlap =
+        ra.left < rb.right && ra.right > rb.left && ra.top < rb.bottom && ra.bottom > rb.top;
+      return {
+        found: true,
+        overlap,
+        a: { top: Math.round(ra.top), bottom: Math.round(ra.bottom) },
+        b: { top: Math.round(rb.top), bottom: Math.round(rb.bottom) },
+      };
+    },
+    [a, b],
+  );
+}
+
+async function run(browser: Browser) {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  const pageErrors: string[] = [];
+  page.on("pageerror", (e) => pageErrors.push(e.message));
+
+  // ─── Homepage ──────────────────────────────────────────────────────────────
+  section("Homepage");
+
+  await page.goto(BASE, { waitUntil: "networkidle" });
+  await page.waitForTimeout(1200);
+
+  check("document title is not the admin console's",
+    !(await page.title()).includes("Admin"), await page.title());
+
+  const heroTitle = page.locator("h1, h2").first();
+  check("a hero renders on a freshly seeded install",
+    (await page.locator("h1").count()) > 0 || (await heroTitle.count()) > 0);
+
+  // REGRESSION (ad79e55): the first row header sat on top of the hero CTAs,
+  // because a negative margin in Home.tsx exceeded the padding reserved in
+  // Hero.tsx. Two files, neither wrong on its own.
+  //
+  // Take the LOWEST edge of any laid-out control inside the hero — zero-size
+  // elements are skipped, since a hidden mobile menu button reports 0,0 and
+  // makes this assertion pass no matter what. Then compare against the first
+  // row heading below it.
+  // True 2D intersection, not just "is one lower than the other". The hero's
+  // slide-indicator pips sit bottom-RIGHT and legitimately extend past a
+  // left-aligned row heading without touching it; a vertical-only comparison
+  // fails on those and teaches you to ignore it.
+  const collision = await page.evaluate(() => {
+    const hero = document.querySelector("section");
+    if (!hero) return null;
+    const controls = Array.from(hero.querySelectorAll("a, button"))
+      .map((e) => ({ text: (e as HTMLElement).innerText.slice(0, 20), r: e.getBoundingClientRect() }))
+      .filter((c) => c.r.width > 0 && c.r.height > 0);
+
+    const heading = Array.from(document.querySelectorAll("h2"))
+      .map((h) => ({ text: (h as HTMLElement).innerText.slice(0, 24), r: h.getBoundingClientRect() }))
+      .filter((x) => x.r.height > 0)
+      .sort((a, b) => a.r.top - b.r.top)[0];
+    if (!heading || !controls.length) return null;
+
+    const hit = controls.find(
+      (c) =>
+        c.r.left < heading.r.right &&
+        c.r.right > heading.r.left &&
+        c.r.top < heading.r.bottom &&
+        c.r.bottom > heading.r.top,
+    );
+
+    return {
+      clear: hit === undefined,
+      heading: heading.text,
+      overlapping: hit
+        ? { control: hit.text, bottom: Math.round(hit.r.bottom), headingTop: Math.round(heading.r.top) }
+        : null,
+    };
+  });
+  check("no hero control overlaps the first row header",
+    collision === null || collision.clear === true, collision);
+
+  const cardLinks = await page.locator('a[href^="/watch/"]').count();
+  check("cards link to /watch/:slug", cardLinks > 0, cardLinks);
+
+  check("no uncaught page errors on the homepage", pageErrors.length === 0, pageErrors);
+
+  // ─── Detail page ───────────────────────────────────────────────────────────
+  section("Detail page");
+
+  const firstCard = page.locator('a[href^="/watch/"]').first();
+  const href = await firstCard.getAttribute("href");
+  await page.goto(`${BASE}${href}`, { waitUntil: "networkidle" });
+  await page.waitForTimeout(1000);
+
+  check("the detail route resolves rather than bouncing to /",
+    new URL(page.url()).pathname === href, page.url());
+  check("document title carries the item title, not the admin console's",
+    !(await page.title()).includes("Admin") && (await page.title()).length > 3, await page.title());
+
+  // REGRESSION (ad79e55): the gradient overlay painted over all of this.
+  const titleOnTop = await isActuallyOnTop(page, "h1");
+  check("the detail title is not covered by the gradient overlay", titleOnTop.ok, titleOnTop);
+
+  const h1Text = await page.locator("h1").first().innerText();
+  check("the title has actual text", h1Text.trim().length > 0, h1Text);
+
+  const gate = await isActuallyOnTop(page, 'main button, a[href="/signin"], button[disabled]');
+  check("the access gate control is not covered", gate.ok !== false || gate.covering === "element not found", gate);
+
+  const gateText = await page.locator("body").innerText();
+  check("the gate states something actionable",
+    /sign in|register|watch|buy|not available|cohort/i.test(gateText));
+
+  check("no uncaught page errors on the detail page", pageErrors.length === 0, pageErrors);
+
+  // ─── Other public routes resolve ───────────────────────────────────────────
+  section("Public routes resolve");
+
+  for (const path of ["/browse", "/signin", "/register", "/forgot-password"]) {
+    await page.goto(`${BASE}${path}`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(400);
+    check(`${path} resolves rather than redirecting to /`,
+      new URL(page.url()).pathname === path, page.url());
+  }
+
+  // ─── Registration, in a real browser ───────────────────────────────────────
+  section("Registration through the UI");
+
+  const email = `browser-${Date.now().toString(36)}@example.test`;
+  await page.goto(`${BASE}/register`, { waitUntil: "networkidle" });
+  await page.waitForTimeout(800);
+
+  const fieldCount = await page.locator("form input, form select").count();
+  check("the form renders fields from signup_fields", fieldCount > 0, fieldCount);
+
+  await page.fill("#full_name", "Browser Tester").catch(() => undefined);
+  await page.fill("#email", email).catch(() => undefined);
+  await page.fill("#password", "correct-horse-battery").catch(() => undefined);
+  await page.selectOption("#country", "NG").catch(() => undefined);
+
+  await page.click('button[type="submit"]');
+  await page.waitForTimeout(1800);
+
+  const afterStepOne = await page.locator("body").innerText();
+  const advanced = /step 2|industry|job role|company/i.test(afterStepOne) ||
+    new URL(page.url()).pathname !== "/register";
+  check("submitting step one advances or completes", advanced, page.url());
+
+  // Step two is optional, so completing it must be possible without filling it.
+  if (new URL(page.url()).pathname === "/register") {
+    await page.click('button[type="submit"]');
+    await page.waitForTimeout(2000);
+  }
+
+  const signedIn = await page.evaluate(() => Object.keys(localStorage).some((k) => /token|auth/i.test(k)));
+  check("registering signs the viewer in", signedIn || new URL(page.url()).pathname === "/",
+    { url: page.url(), signedIn });
+
+  // ─── Registering for a session through the gate ────────────────────────────
+  section("Access gate");
+
+  await page.goto(`${BASE}${href}`, { waitUntil: "networkidle" });
+  await page.waitForTimeout(1200);
+
+  const registerBtn = page.locator('button:has-text("Register free")');
+  if ((await registerBtn.count()) > 0 && (await registerBtn.first().isEnabled())) {
+    await registerBtn.first().click();
+    await page.waitForTimeout(2200);
+    const after = await page.locator("body").innerText();
+    check("registering through the gate grants access without a reload",
+      /you have access|manage your sessions|watch now|join live/i.test(after),
+      after.slice(0, 200));
+  } else {
+    // Not a failure: the seeded item may not be `registered` tier for this user.
+    console.log("  · gate not in a registerable state for this fixture — skipped");
+  }
+
+  // ─── Admin content-authoring pages ─────────────────────────────────────────
+  // Added after a real bug: AddEditSession.tsx and AddEditCourse.tsx called
+  // react-router's useBlocker(), which throws "must be used within a data
+  // router" under this app's plain BrowserRouter — an uncaught render error
+  // with no boundary, so the ENTIRE page rendered blank. Invisible to tsc (a
+  // runtime router-config mismatch, not a type error), invisible to the API
+  // suite (pure frontend), and invisible to this file before now, because
+  // nothing here ever visited an admin route. Exactly the class of defect
+  // this file's own header comment describes existing to catch — it just
+  // hadn't reached these two pages yet.
+  section("Admin content-authoring pages");
+
+  const adminLogin = await fetch(`${API_BASE}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: "admin@webinarflix.dev", password: "ChangeMe123!" }),
+  }).then((r) => r.json());
+  const adminToken = adminLogin?.token as string | undefined;
+  check("the seeded admin account can log in for this check", typeof adminToken === "string", adminLogin);
+
+  if (adminToken) {
+    await page.evaluate((token) => localStorage.setItem("webinarflix_token", token), adminToken);
+
+    const sessionsList = await fetch(`${API_BASE}/api/sessions?per_page=1`, {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    }).then((r) => r.json());
+    const realSessionId = sessionsList?.sessions?.[0]?.id;
+
+    for (const path of ["/admin/sessions/new", realSessionId ? `/admin/sessions/${realSessionId}/edit` : null, "/admin/courses/new"]) {
+      if (!path) continue;
+      const beforeErrorCount = pageErrors.length;
+      await page.goto(`${BASE}${path}`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(800);
+      const hasContent = await page.locator("text=/Session Details|Course Details|Title/i").count();
+      check(`${path} renders real content, not a blank crashed page`, hasContent > 0, { path, hasContent });
+      check(`${path} throws no uncaught render error`, pageErrors.length === beforeErrorCount, pageErrors.slice(beforeErrorCount));
+    }
+  }
+
+  // ─── FAQs — admin page + public page ────────────────────────────────────────
+  // Both were PlaceholderPage/nonexistent until this gap-sweep pass — real
+  // browser coverage from day one this time, not bolted on after a crash
+  // was found the hard way (see the section above).
+  section("FAQs");
+
+  if (adminToken) {
+    const beforeAdminFaqErrors = pageErrors.length;
+    await page.goto(`${BASE}/admin/faqs`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(500);
+    const hasFaqAdminContent = await page.locator("text=/FAQs|Add FAQ|No FAQs yet/i").count();
+    check("/admin/faqs renders real content, not a blank crashed page", hasFaqAdminContent > 0, { hasFaqAdminContent });
+    check("/admin/faqs throws no uncaught render error", pageErrors.length === beforeAdminFaqErrors, pageErrors.slice(beforeAdminFaqErrors));
+
+    // A real fixture, created and torn down through the same API the admin
+    // page itself calls — proves the public page actually renders live
+    // server data, not just its own empty state.
+    const created = await fetch(`${API_BASE}/api/faqs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({
+        question: `Browser check FAQ ${Date.now()}?`,
+        answer_html: "<p>Its answer, rendered on the public page.</p>",
+        scope: "global",
+        category: "Browser check",
+        is_published: true,
+      }),
+    }).then((r) => r.json());
+    const faqId = created?.faq?.id;
+    check("a fixture FAQ is created for this check", typeof faqId === "number", created);
+
+    if (faqId) {
+      const beforePublicFaqErrors = pageErrors.length;
+      await page.goto(`${BASE}/faqs`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(500);
+      const questionLocator = page.locator(`text=${created.faq.question}`);
+      check("the public /faqs page renders the fixture's question", (await questionLocator.count()) > 0, created.faq.question);
+
+      await questionLocator.first().click();
+      await page.waitForTimeout(400);
+      const hasAnswer = await page.locator("text=Its answer, rendered on the public page.").count();
+      check("clicking the question expands its answer", hasAnswer > 0, { hasAnswer });
+      check("/faqs throws no uncaught render error", pageErrors.length === beforePublicFaqErrors, pageErrors.slice(beforePublicFaqErrors));
+
+      // The admin's own token is already sitting in localStorage from the
+      // earlier "Admin content-authoring pages" section — reused here as
+      // simply "a signed-in user" (routes/faqs.ts's dedup doesn't
+      // special-case role), to exercise the real vote-flip UX rather than
+      // re-proving the add flow's own auth, which e2e already covers
+      // thoroughly.
+      const beforeVoteErrors = pageErrors.length;
+      const yesButton = page.locator('button:has-text("Yes (")').first();
+      const noButton = page.locator('button:has-text("No (")').first();
+
+      await yesButton.click();
+      await page.waitForTimeout(400);
+      const afterYes = await page.locator("text=/Yes \\(1\\)/").count();
+      check("clicking Yes as a signed-in viewer records a real, server-backed vote", afterYes > 0, { afterYes });
+
+      const hasChangeHint = await page.locator("text=tap the other to change your vote").count();
+      check("a signed-in viewer is offered the option to change their vote", hasChangeHint > 0, { hasChangeHint });
+
+      await noButton.click();
+      await page.waitForTimeout(400);
+      const afterFlipYes = await page.locator("text=/Yes \\(0\\)/").count();
+      const afterFlipNo = await page.locator("text=/No \\(1\\)/").count();
+      check("flipping the vote moves the count instead of double-counting", afterFlipYes > 0 && afterFlipNo > 0, { afterFlipYes, afterFlipNo });
+
+      check("/faqs (vote flip) throws no uncaught render error", pageErrors.length === beforeVoteErrors, pageErrors.slice(beforeVoteErrors));
+
+      await fetch(`${API_BASE}/api/faqs/${faqId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    }
+  }
+
+  // ─── Contact Requests — public form + admin inbox ──────────────────────────
+  section("Contact Requests");
+
+  const beforeContactFormErrors = pageErrors.length;
+  await page.goto(`${BASE}/contact`, { waitUntil: "networkidle" });
+  await page.waitForTimeout(500);
+  const messageBox = page.locator('textarea[placeholder="How can we help?"]');
+  check("the public /contact form renders its message field", (await messageBox.count()) > 0, {});
+
+  const uniqueMessage = `Browser check message ${Date.now()}`;
+  await page.locator('input[placeholder="Email"]').fill(`browser-contact-${Date.now().toString(36)}@example.test`);
+  await messageBox.fill(uniqueMessage);
+  await page.locator('button[type="submit"]').click();
+  await page.waitForTimeout(600);
+  const hasConfirmation = await page.locator("text=/message has been sent/i").count();
+  check("submitting the contact form shows a confirmation", hasConfirmation > 0, { hasConfirmation });
+  check("/contact throws no uncaught render error", pageErrors.length === beforeContactFormErrors, pageErrors.slice(beforeContactFormErrors));
+
+  if (adminToken) {
+    const beforeAdminInboxErrors = pageErrors.length;
+    await page.goto(`${BASE}/admin/contact-requests`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(500);
+    const hasSubmittedMessage = await page.locator(`text=${uniqueMessage}`).count();
+    check("the real submission from this run appears in the admin inbox", hasSubmittedMessage > 0, { hasSubmittedMessage });
+    check("/admin/contact-requests throws no uncaught render error", pageErrors.length === beforeAdminInboxErrors, pageErrors.slice(beforeAdminInboxErrors));
+
+    // Opening the row's triage panel and assigning it to a real teammate —
+    // this used to be a raw numeric-id text input; now it's a picker
+    // sourced from GET /users, and the seeded super admin ("Platform
+    // Admin") is always a valid, active, non-viewer option to assign to.
+    await page.locator(`text=${uniqueMessage}`).first().click();
+    await page.waitForTimeout(400);
+
+    const assignSelect = page.locator('select:has(option:has-text("Platform Admin"))');
+    const hasAssignSelect = await assignSelect.count();
+    check("the assignee picker offers a real teammate, not a raw user-id field", hasAssignSelect > 0, { hasAssignSelect });
+
+    await assignSelect.selectOption({ label: "Platform Admin — super admin" });
+    await page.locator('button:has-text("Save")').click();
+    await page.waitForTimeout(500);
+
+    await page.locator(`text=${uniqueMessage}`).first().click();
+    await page.waitForTimeout(400);
+    const assignSelectAfter = page.locator('select:has(option:has-text("Platform Admin"))');
+    const selectedAfterReload = await assignSelectAfter.inputValue();
+    check("the assignment actually persists — re-opening the panel shows it selected", selectedAfterReload.length > 0, { selectedAfterReload });
+
+    // Clean up the fixture this run created — same discipline as the FAQ
+    // fixture above, so repeated runs don't accumulate rows in the inbox.
+    const list = await fetch(`${API_BASE}/api/contact-requests`, { headers: { Authorization: `Bearer ${adminToken}` } }).then((r) => r.json());
+    const created = (list?.requests ?? []).find((r: { message?: string }) => r.message === uniqueMessage);
+    if (created) await fetch(`${API_BASE}/api/contact-requests/${created.id}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+  }
+
+  // ─── Categories — admin CRUD ────────────────────────────────────────────────
+  section("Categories");
+
+  if (adminToken) {
+    const catName = `Browser Check Cat ${Date.now()}`;
+    const createdCat = await fetch(`${API_BASE}/api/categories`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ name: catName }),
+    }).then((r) => r.json());
+    const catId = createdCat?.category?.id;
+    check("a fixture category is created for this check", typeof catId === "number", createdCat);
+
+    if (catId) {
+      const beforeCatErrors = pageErrors.length;
+      await page.goto(`${BASE}/admin/categories`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(500);
+      const hasCatRow = await page.locator(`text=${catName}`).count();
+      check("/admin/categories renders the real fixture category", hasCatRow > 0, { hasCatRow });
+      check("/admin/categories throws no uncaught render error", pageErrors.length === beforeCatErrors, pageErrors.slice(beforeCatErrors));
+
+      await fetch(`${API_BASE}/api/categories/${catId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    }
+  }
+
+  // ─── Sponsors, Advertisers, Ads ─────────────────────────────────────────────
+  section("Sponsors, Advertisers, Ads");
+
+  if (adminToken) {
+    const sponsorName = `Browser Check Sponsor ${Date.now()}`;
+    const createdSponsor = await fetch(`${API_BASE}/api/sponsors`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ name: sponsorName }),
+    }).then((r) => r.json());
+    const sponsorId = createdSponsor?.sponsor?.id;
+    check("a fixture sponsor is created for this check", typeof sponsorId === "number", createdSponsor);
+
+    if (sponsorId) {
+      const beforeSponsorErrors = pageErrors.length;
+      await page.goto(`${BASE}/admin/sponsors`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(500);
+      const hasSponsorRow = await page.locator(`text=${sponsorName}`).count();
+      check("/admin/sponsors renders the real fixture sponsor", hasSponsorRow > 0, { hasSponsorRow });
+      check("/admin/sponsors throws no uncaught render error", pageErrors.length === beforeSponsorErrors, pageErrors.slice(beforeSponsorErrors));
+      await fetch(`${API_BASE}/api/sponsors/${sponsorId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    }
+
+    const advertiserName = `Browser Check Advertiser ${Date.now()}`;
+    const createdAdvertiser = await fetch(`${API_BASE}/api/advertisers`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ company_name: advertiserName }),
+    }).then((r) => r.json());
+    const advertiserId = createdAdvertiser?.advertiser?.id;
+    check("a fixture advertiser is created for this check", typeof advertiserId === "number", createdAdvertiser);
+
+    if (advertiserId) {
+      const beforeAdvErrors = pageErrors.length;
+      await page.goto(`${BASE}/admin/advertisers`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(500);
+      const hasAdvRow = await page.locator(`text=${advertiserName}`).count();
+      check("/admin/advertisers renders the real fixture advertiser", hasAdvRow > 0, { hasAdvRow });
+      check("/admin/advertisers throws no uncaught render error", pageErrors.length === beforeAdvErrors, pageErrors.slice(beforeAdvErrors));
+
+      const adName = `Browser Check Ad ${Date.now()}`;
+      const createdAd = await fetch(`${API_BASE}/api/ads`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ name: adName, ad_type: "pre_roll", advertiser_id: advertiserId }),
+      }).then((r) => r.json());
+      const adId = createdAd?.ad?.id;
+      check("a fixture ad is created for this check", typeof adId === "number", createdAd);
+
+      if (adId) {
+        const beforeAdErrors = pageErrors.length;
+        await page.goto(`${BASE}/admin/ads`, { waitUntil: "networkidle" });
+        await page.waitForTimeout(500);
+        const hasAdRow = await page.locator(`text=${adName}`).count();
+        check("/admin/ads renders the real fixture ad", hasAdRow > 0, { hasAdRow });
+        check("/admin/ads throws no uncaught render error", pageErrors.length === beforeAdErrors, pageErrors.slice(beforeAdErrors));
+
+        // Also confirm the AdvertisementPanel picker in the session editor
+        // itself now offers this ad — the whole point of building this.
+        await page.goto(`${BASE}/admin/sessions/new`, { waitUntil: "networkidle" });
+        await page.waitForTimeout(500);
+        const hasAdOption = await page.locator(`option:has-text("${adName}")`).count();
+        check("the session editor's Advertisement panel now offers the real fixture ad", hasAdOption > 0, { hasAdOption });
+
+        await fetch(`${API_BASE}/api/ads/${adId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+      }
+      await fetch(`${API_BASE}/api/advertisers/${advertiserId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    }
+  }
+
+  // ─── Ratings comment moderation — the decision gate itself ─────────────────
+  // Two things worth proving in a real browser: the policy setting renders
+  // as a real, savable control in the generic Settings Hub (not just a raw
+  // API field nobody can reach), and the moderation queue page it unlocks
+  // actually renders a real pending comment.
+  section("Ratings comment moderation");
+
+  if (adminToken) {
+    const beforeSettingsErrors = pageErrors.length;
+    await page.goto(`${BASE}/admin/settings?group=content_policy`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(500);
+    const hasModeControl = await page.locator("text=Rating comments").count();
+    check("the rating-comments decision gate renders as a real Settings Hub control", hasModeControl > 0, { hasModeControl });
+    check("/admin/settings?group=content_policy throws no uncaught render error", pageErrors.length === beforeSettingsErrors, pageErrors.slice(beforeSettingsErrors));
+
+    // Real fixture: switch to review_required, submit a commented rating,
+    // confirm it lands in the moderation queue's rendered page.
+    await fetch(`${API_BASE}/api/settings/content_policy`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ values: { "content_policy.rating_comments_mode": "review_required" } }),
+    });
+
+    // A real, throwaway public-access session — not an arbitrary real
+    // seeded one, since rating requires resolveAccess(...).can_view and
+    // this app has no admin bypass for that check (same access ladder
+    // applies to every signed-in user, admins included).
+    const createdSession = await fetch(`${API_BASE}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({
+        title: `Browser check moderation fixture ${Date.now()}`,
+        access_level: "public",
+        // A fresh session defaults to status: "draft", which resolveAccess
+        // treats as not-yet-visible regardless of access_level — same
+        // VISIBLE_STATUSES gate every public page respects. Without this,
+        // the rating POST below would 403.
+        status: "registration_open",
+        scheduled_start_at: new Date(Date.now() + 86400000).toISOString(),
+        scheduled_duration_minutes: 60,
+      }),
+    }).then((r) => r.json());
+    const targetContentId = createdSession?.session?.id;
+    check("a fixture public session is created to rate", typeof targetContentId === "number", createdSession);
+
+    if (targetContentId) {
+      const commentText = `Browser check pending comment ${Date.now()}`;
+      await fetch(`${API_BASE}/api/ratings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ content_id: targetContentId, score: 3, comment: commentText }),
+      });
+
+      const beforeQueueErrors = pageErrors.length;
+      await page.goto(`${BASE}/admin/ratings/moderation`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(500);
+      const hasCommentRow = await page.locator(`text=${commentText}`).count();
+      check("the moderation queue renders the real pending comment", hasCommentRow > 0, { hasCommentRow });
+      check("/admin/ratings/moderation throws no uncaught render error", pageErrors.length === beforeQueueErrors, pageErrors.slice(beforeQueueErrors));
+
+      // Clean up: withdraw the rating first (DELETE /api/sessions/:id
+      // doesn't cascade-delete ratings — see deleteRelated() — so skipping
+      // this would leave an orphaned row behind), then delete the fixture
+      // session itself.
+      await fetch(`${API_BASE}/api/ratings/${targetContentId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+      await fetch(`${API_BASE}/api/sessions/${targetContentId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    }
+
+    // Reset the decision gate back to its default — this check shouldn't
+    // leave the live dev server's moderation policy switched on.
+    await fetch(`${API_BASE}/api/settings/content_policy`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ values: { "content_policy.rating_comments_mode": null } }),
+    });
+  }
+
+  // ─── Subscription revenue accrual — the decision gate, and the panel it
+  // unlocks ─────────────────────────────────────────────────────────────────
+  // The deep computation (watch-time weighting, idempotency, annual-plan
+  // proration) already has 17 real assertions against the live API in
+  // scripts/e2e.ts — this checks what's specifically this layer's job: the
+  // setting renders as a real control, and the panel it gates renders
+  // correctly against this dev server's REAL current state, which is
+  // "disabled" (the honest default) — proving the off-state actually
+  // disables the Run button, not just that the page doesn't crash.
+  section("Subscription revenue accrual");
+
+  if (adminToken) {
+    const beforeMonetisationErrors = pageErrors.length;
+    await page.goto(`${BASE}/admin/settings?group=monetisation`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(500);
+    const hasAccrualControl = await page.locator("text=Subscription revenue accrual").count();
+    check("the subscription-accrual decision gate renders as a real Settings Hub control", hasAccrualControl > 0, { hasAccrualControl });
+    check("/admin/settings?group=monetisation throws no uncaught render error", pageErrors.length === beforeMonetisationErrors, pageErrors.slice(beforeMonetisationErrors));
+
+    const beforePayoutsErrors = pageErrors.length;
+    await page.goto(`${BASE}/admin/payouts`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(500);
+    await page.locator('button:has-text("Subscription Accrual")').click();
+    await page.waitForTimeout(600);
+    const hasOffWarning = await page.locator("text=/turned off/i").count();
+    check("the panel honestly shows the feature's real current (off) state", hasOffWarning > 0, { hasOffWarning });
+    const runButton = page.locator('button:has-text("Run Accrual")');
+    const runDisabled = await runButton.isDisabled().catch(() => null);
+    check("Run is actually disabled while the feature is off, not just visually", runDisabled === true, { runDisabled });
+    check("/admin/payouts (Subscription Accrual panel) throws no uncaught render error", pageErrors.length === beforePayoutsErrors, pageErrors.slice(beforePayoutsErrors));
+  }
+
+  section("Users admin");
+
+  if (adminToken) {
+    // No fixture account is created here on purpose — this router has no
+    // delete endpoint at all (an intentional safety choice: an admin account
+    // is never something to silently orphan away), so a browser-created
+    // fixture would be permanent junk in the users table on every run. The
+    // seeded admin account is already there on every run and is enough to
+    // exercise real rendering; the deeper create/search/filter/role/active
+    // matrix is already covered at the API level by the e2e suite's own
+    // fixture accounts, which it DOES clean up (via prisma, not this HTTP-only
+    // script).
+    const beforeUsersErrors = pageErrors.length;
+    await page.goto(`${BASE}/admin/users`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(500);
+    const hasSeededAdminRow = await page.locator("text=admin@webinarflix.dev").count();
+    check("/admin/users renders the real seeded admin account", hasSeededAdminRow > 0, { hasSeededAdminRow });
+    check("/admin/users throws no uncaught render error", pageErrors.length === beforeUsersErrors, pageErrors.slice(beforeUsersErrors));
+
+    // The self-change guard (an admin can't edit their own role through this
+    // page) is server-enforced — confirm it holds through the real UI, not
+    // just the API: try to change the signed-in admin's own role from their
+    // own row, then reload and confirm it didn't take.
+    const ownRow = page.locator("tr", { hasText: "admin@webinarflix.dev" });
+    const ownRoleSelect = ownRow.locator("select").first();
+    const roleBefore = await ownRoleSelect.inputValue().catch(() => null);
+    if (roleBefore) {
+      await ownRoleSelect.selectOption("viewer");
+      await page.waitForTimeout(500);
+      await page.reload({ waitUntil: "networkidle" });
+      await page.waitForTimeout(500);
+      const roleAfter = await page.locator("tr", { hasText: "admin@webinarflix.dev" }).locator("select").first().inputValue().catch(() => null);
+      check("the self-change guard blocks an admin editing their own role through the real UI, not just the API", roleAfter === roleBefore, { roleBefore, roleAfter });
+    }
+    check("/admin/users (self-change attempt) throws no uncaught render error", pageErrors.length === beforeUsersErrors, pageErrors.slice(beforeUsersErrors));
+  }
+
+  section("Registrations admin");
+
+  if (adminToken) {
+    // No fixture is created here either — same reasoning as Users admin:
+    // registrationsAdminRouter has no delete endpoint, and building a
+    // throwaway session + registration over pure HTTP just to immediately
+    // orphan it is worse than using what's already there. The seed data
+    // itself has real registrations (and one session with real attendance
+    // records) on every fresh install, which is enough to exercise real
+    // rendering; the filter/search/status-transition/counter-accounting
+    // matrix is already covered at the API level by e2e's own fixtures.
+    const beforeRegErrors = pageErrors.length;
+    await page.goto(`${BASE}/admin/registrations`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(500);
+
+    await page.locator('input[placeholder*="title or slug"]').fill("Scaling Payments");
+    await page.waitForTimeout(600);
+    const pickerResult = page.locator('button:has-text("Scaling Payments in West Africa")').first();
+    const hasPickerResult = await pickerResult.count();
+    check("the session picker returns a real seeded session", hasPickerResult > 0, { hasPickerResult });
+    if (hasPickerResult > 0) {
+      await pickerResult.click();
+      await page.waitForTimeout(600);
+      const hasRegistrantRow = await page.locator("table").count();
+      check("/admin/registrations, scoped to a real session, renders real registrant rows", hasRegistrantRow > 0, { hasRegistrantRow });
+    }
+    check("/admin/registrations throws no uncaught render error", pageErrors.length === beforeRegErrors, pageErrors.slice(beforeRegErrors));
+  }
+
+  section("Speakers admin");
+
+  if (adminToken) {
+    // Unlike Users/Registrations, this router has a real DELETE — so, same
+    // as Categories/Sponsors/Ads earlier in this suite, a fixture is created
+    // and torn down via fetch rather than left behind.
+    const speakerName = `Browser Check Speaker ${Date.now()}`;
+    const createdSpeaker = await fetch(`${API_BASE}/api/speakers`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ full_name: speakerName, title: "Browser Check Title" }),
+    }).then((r) => r.json());
+    const speakerId = createdSpeaker?.speaker?.id;
+    check("a fixture speaker is created for this check", typeof speakerId === "number", createdSpeaker);
+
+    if (speakerId) {
+      const beforeSpeakerErrors = pageErrors.length;
+      await page.goto(`${BASE}/admin/speakers`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(500);
+      const hasSpeakerRow = await page.locator(`text=${speakerName}`).count();
+      check("/admin/speakers renders the real fixture speaker", hasSpeakerRow > 0, { hasSpeakerRow });
+      check("/admin/speakers throws no uncaught render error", pageErrors.length === beforeSpeakerErrors, pageErrors.slice(beforeSpeakerErrors));
+
+      // Edit through the real UI, not just the API — open the slide-over,
+      // change organisation, save, and confirm it actually persisted.
+      await page.locator(`text=${speakerName}`).first().click();
+      await page.waitForTimeout(500);
+      await page.locator('label:has-text("Organisation") + input, label:has-text("Organisation") ~ input').first().fill("Browser Check Org");
+      await page.locator('button:has-text("Save changes")').click();
+      await page.waitForTimeout(600);
+      const afterEdit = await fetch(`${API_BASE}/api/speakers/${speakerId}`, { headers: { Authorization: `Bearer ${adminToken}` } }).then((r) => r.json());
+      check("editing a speaker through the real UI persists the change", afterEdit?.speaker?.organisation === "Browser Check Org", afterEdit?.speaker);
+
+      await fetch(`${API_BASE}/api/speakers/${speakerId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    }
+  }
+
+  section("Session Categories (nav alias)");
+
+  if (adminToken) {
+    // Not a separate feature — Category has no content_type column, so
+    // /admin/sessions/categories is the same page as /admin/categories,
+    // reached from a second nav location. Just confirm the alias route
+    // actually renders the real page rather than a blank crash.
+    const beforeAliasErrors = pageErrors.length;
+    await page.goto(`${BASE}/admin/sessions/categories`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(500);
+    const hasCategoriesHeading = await page.locator("h1:has-text(\"Categories\")").count();
+    check("/admin/sessions/categories renders the real Categories page, not a placeholder", hasCategoriesHeading > 0, { hasCategoriesHeading });
+    check("/admin/sessions/categories throws no uncaught render error", pageErrors.length === beforeAliasErrors, pageErrors.slice(beforeAliasErrors));
+  }
+
+  section("Meeting providers");
+
+  if (adminToken) {
+    // Real DELETE exists here too — fixture created and torn down via fetch,
+    // same as Speakers above. Jitsi specifically, because it's the one
+    // provider this environment can create a REAL meeting for (no OAuth app
+    // configured for Zoom/Google/Microsoft here, same as CI) — so this is
+    // the one path where "renders the real join link" is checking something
+    // truthfully live, not just a rendered placeholder.
+    const startAt = new Date(Date.now() + 86_400_000).toISOString();
+    const created = await fetch(`${API_BASE}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ title: `Browser Check Jitsi ${Date.now()}`, scheduled_start_at: startAt, scheduled_duration_minutes: 60, meeting_provider: "jitsi" }),
+    }).then((r) => r.json());
+    const sessionId = created?.session?.id;
+    check("a fixture Jitsi session is created for this check", typeof sessionId === "number", created);
+
+    if (sessionId) {
+      const beforeErrors = pageErrors.length;
+      await page.goto(`${BASE}/admin/sessions/${sessionId}/edit`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(600);
+
+      const hasPanel = await page.locator('h2:has-text("Meeting Platform")').count();
+      check("the Meeting Platform panel renders on the session editor", hasPanel > 0, { hasPanel });
+
+      const hasRealJoinLink = await page.locator(`text=${created.session.meeting_join_url}`).count();
+      check("the real Jitsi join link (created via the API above) renders in the panel", hasRealJoinLink > 0, { hasRealJoinLink, expected: created.session.meeting_join_url });
+
+      const hasStreamSourceWhileJitsi = await page.locator('h2:has-text("Stream Source")').count();
+      check("Stream Source is hidden while a third-party provider is selected", hasStreamSourceWhileJitsi === 0, { hasStreamSourceWhileJitsi });
+
+      await page.locator('select').filter({ hasText: "Native (Webinarflix player)" }).selectOption("native");
+      await page.waitForTimeout(400);
+      const hasStreamSourceAfterNative = await page.locator('h2:has-text("Stream Source")').count();
+      check("selecting Native brings Stream Source back", hasStreamSourceAfterNative > 0, { hasStreamSourceAfterNative });
+
+      check("/admin/sessions/:id/edit (Meeting Platform panel) throws no uncaught render error", pageErrors.length === beforeErrors, pageErrors.slice(beforeErrors));
+
+      await fetch(`${API_BASE}/api/sessions/${sessionId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    }
+  }
+
+  section("Stripe pricing");
+
+  if (adminToken) {
+    // Same reasoning as Meeting providers above for why this only checks the
+    // admin form field rendering and not an actual hosted-checkout redirect:
+    // no STRIPE_SECRET_KEY is configured here (same accepted gap as
+    // Paystack), so there is no real checkout session to follow to. What IS
+    // real and checkable: the USD price this fixture is given actually comes
+    // back out of the API and renders in the field meant to hold it.
+    const startAt = new Date(Date.now() + 86_400_000).toISOString();
+    const priced = await fetch(`${API_BASE}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({
+        title: `Browser Check Stripe Price ${Date.now()}`,
+        scheduled_start_at: startAt,
+        scheduled_duration_minutes: 60,
+        access_level: "purchase",
+        price_mode: "fixed",
+        price_ngn: 4000,
+        price_usd: 25,
+      }),
+    }).then((r) => r.json());
+    const pricedId = priced?.session?.id;
+    check("a fixture purchase-tier session with a USD price is created for this check", typeof pricedId === "number", priced);
+
+    if (pricedId) {
+      const beforeErrors = pageErrors.length;
+      await page.goto(`${BASE}/admin/sessions/${pricedId}/edit`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(600);
+
+      // Not `.first()` on a shared placeholder — "Compare-at price (₦)" uses
+      // the same "Optional" placeholder and would win a naive match. Walking
+      // from the exact label text to its sibling input is unambiguous.
+      const usdField = page.locator('xpath=//label[normalize-space(text())="Price ($)"]/following-sibling::input[1]');
+      const usdValue = await usdField.inputValue().catch(() => null);
+      check("the session editor's Price ($) field renders the real USD price set via the API", usdValue === "25", { usdValue });
+
+      check("/admin/sessions/:id/edit (Price $ field) throws no uncaught render error", pageErrors.length === beforeErrors, pageErrors.slice(beforeErrors));
+
+      await fetch(`${API_BASE}/api/sessions/${pricedId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    }
+
+    const beforePlansErrors = pageErrors.length;
+    await page.goto(`${BASE}/admin/plans`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(400);
+    const addPlanButton = page.locator('button:has-text("Add Plan")').first();
+    if (await addPlanButton.count()) {
+      await addPlanButton.click();
+      await page.waitForTimeout(300);
+      const planUsdLabel = await page.locator('label:has-text("Price $")').count();
+      check("the Plans admin form offers a Price $ field alongside Price ₦", planUsdLabel > 0, { planUsdLabel });
+    } else {
+      check("the Plans admin form offers a Price $ field alongside Price ₦", false, "no Add Plan button found");
+    }
+    check("/admin/plans (Price $ field) throws no uncaught render error", pageErrors.length === beforePlansErrors, pageErrors.slice(beforePlansErrors));
+  }
+
+  section("Trending");
+
+  if (adminToken) {
+    const stamp = Date.now();
+    const startAt = new Date(Date.now() + 86_400_000).toISOString();
+    const makeFixture = (title: string) =>
+      fetch(`${API_BASE}/api/sessions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ title, scheduled_start_at: startAt, scheduled_duration_minutes: 60 }),
+      }).then((r) => r.json());
+
+    const [first, second] = await Promise.all([
+      makeFixture(`Browser Check Trend First ${stamp}`),
+      makeFixture(`Browser Check Trend Second ${stamp}`),
+    ]);
+    const firstId = first?.session?.id;
+    const secondId = second?.session?.id;
+    check("two fixture sessions are created for this check", typeof firstId === "number" && typeof secondId === "number", { first, second });
+
+    if (firstId && secondId) {
+      // Real API calls, not the UI's own "Add" search box — this section is
+      // about the ordered list rendering and promote/demote wiring, not
+      // re-proving the add flow the search box drives (covered by the
+      // dedicated fixture-creation flow the Meeting providers section
+      // already established, and by e2e's own thorough coverage of add()).
+      await fetch(`${API_BASE}/api/trending`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ content_id: firstId }),
+      });
+      await fetch(`${API_BASE}/api/trending`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ content_id: secondId }),
+      });
+
+      const beforeErrors = pageErrors.length;
+      await page.goto(`${BASE}/admin/trending`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(600);
+
+      const rowTitles = () => page.locator("tbody tr td:nth-child(2) span.font-medium").allTextContents();
+      const titlesBeforePromote = await rowTitles();
+      check("both fixtures render in the trending table, in add order",
+        titlesBeforePromote.indexOf(`Browser Check Trend First ${stamp}`) < titlesBeforePromote.indexOf(`Browser Check Trend Second ${stamp}`),
+        titlesBeforePromote);
+
+      // The second fixture's row — promote it and confirm the table
+      // re-orders for real, not just the underlying data.
+      const secondRow = page.locator("tbody tr", { hasText: `Browser Check Trend Second ${stamp}` });
+      await secondRow.locator('button[aria-label="Promote"]').click();
+      await page.waitForTimeout(400);
+      const titlesAfterPromote = await rowTitles();
+      check("clicking Promote actually moves the row earlier in the table",
+        titlesAfterPromote.indexOf(`Browser Check Trend Second ${stamp}`) < titlesAfterPromote.indexOf(`Browser Check Trend First ${stamp}`),
+        titlesAfterPromote);
+
+      // No fixture here has real PlaybackSession/MeetingAttendance rows
+      // behind it (that's e2e's job, against real activity data) — this
+      // just proves the "Suggested" section's presence tracks the real API
+      // response instead of crashing or silently mismatching it, whatever
+      // that response happens to be.
+      const suggestRes = await fetch(`${API_BASE}/api/trending/suggestions`, {
+        headers: { Authorization: `Bearer ${adminToken}` },
+      }).then((r) => r.json());
+      const suggestionCount = (suggestRes.suggestions ?? []).length;
+      const hasSuggestLabel = await page.locator("text=Recently popular, not yet trending").count();
+      check("the Suggested section's presence matches the real suggestions response",
+        (suggestionCount > 0) === (hasSuggestLabel > 0), { suggestionCount, hasSuggestLabel });
+
+      check("/admin/trending throws no uncaught render error", pageErrors.length === beforeErrors, pageErrors.slice(beforeErrors));
+
+      await fetch(`${API_BASE}/api/trending/${firstId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+      await fetch(`${API_BASE}/api/trending/${secondId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+      await fetch(`${API_BASE}/api/sessions/${firstId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+      await fetch(`${API_BASE}/api/sessions/${secondId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    }
+  }
+
+  // ─── Content Sponsors — linking a sponsor to content from the Sponsors page ──
+  section("Content Sponsors");
+
+  if (adminToken) {
+    const stamp = Date.now();
+    const csSponsorName = `Browser Check CS Sponsor ${stamp}`;
+    const createdCsSponsor = await fetch(`${API_BASE}/api/sponsors`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ name: csSponsorName }),
+    }).then((r) => r.json());
+    const csSponsorId = createdCsSponsor?.sponsor?.id;
+    check("a fixture sponsor is created for this check", typeof csSponsorId === "number", createdCsSponsor);
+
+    const csSessionTitle = `Browser Check CS Session ${stamp}`;
+    const createdCsSession = await fetch(`${API_BASE}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ title: csSessionTitle, scheduled_start_at: new Date(Date.now() + 86_400_000).toISOString(), scheduled_duration_minutes: 60 }),
+    }).then((r) => r.json());
+    const csSessionId = createdCsSession?.session?.id;
+    check("a fixture session is created for this check", typeof csSessionId === "number", createdCsSession);
+
+    if (csSponsorId && csSessionId) {
+      // Real API call, not the slide-over's own search box — same split
+      // Trending's own section above makes: this is about the slide-over
+      // actually rendering a real link, not re-proving the add flow itself
+      // (e2e's job, and thorough there).
+      const createdLink = await fetch(`${API_BASE}/api/content-sponsors`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ content_id: csSessionId, sponsor_id: csSponsorId, placement: "player", sponsorship_ngn: 25000 }),
+      }).then((r) => r.json());
+      const csLinkId = createdLink?.link?.id;
+      check("the fixture sponsor is linked to the fixture session", typeof csLinkId === "number", createdLink);
+
+      const beforeCsErrors = pageErrors.length;
+      await page.goto(`${BASE}/admin/sponsors`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(500);
+
+      const csSponsorRow = page.locator("tbody tr", { hasText: csSponsorName });
+      await csSponsorRow.locator('button:has-text("Content")').click();
+      await page.waitForTimeout(500);
+
+      const hasLinkedSession = await page.locator(`text=${csSessionTitle}`).count();
+      check("the content-sponsorships slide-over renders the real fixture link", hasLinkedSession > 0, { hasLinkedSession });
+
+      const hasPlacementLabel = await page.locator("text=Player").count();
+      check("the link's placement renders as its human label", hasPlacementLabel > 0, { hasPlacementLabel });
+
+      const hasAmount = await page.locator("text=/₦\\s?25,000/").count();
+      check("the link's sponsorship amount renders formatted in Naira", hasAmount > 0, { hasAmount });
+
+      check("/admin/sponsors' content slide-over throws no uncaught render error", pageErrors.length === beforeCsErrors, pageErrors.slice(beforeCsErrors));
+
+      if (csLinkId) await fetch(`${API_BASE}/api/content-sponsors/${csLinkId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    }
+
+    if (csSessionId) await fetch(`${API_BASE}/api/sessions/${csSessionId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    if (csSponsorId) await fetch(`${API_BASE}/api/sponsors/${csSponsorId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+  }
+
+  // ─── Public sponsor display — the detail page's "Sponsored by" section ────────
+  section("Public sponsor display");
+
+  if (adminToken) {
+    const stamp = Date.now();
+    const psSponsorName = `Browser Check Public Sponsor ${stamp}`;
+    const createdPsSponsor = await fetch(`${API_BASE}/api/sponsors`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ name: psSponsorName }),
+    }).then((r) => r.json());
+    const psSponsorId = createdPsSponsor?.sponsor?.id;
+    check("a fixture sponsor is created for this check", typeof psSponsorId === "number", createdPsSponsor);
+
+    const createdPsSession = await fetch(`${API_BASE}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({
+        title: `Browser Check Public Sponsor Session ${stamp}`,
+        access_level: "public",
+        // A fresh session defaults to status: "draft" — not in
+        // VISIBLE_STATUSES, so /watch/:slug would 404 without this, same
+        // reasoning the Ratings comment moderation fixture above states.
+        status: "registration_open",
+        scheduled_start_at: new Date(Date.now() + 86_400_000).toISOString(),
+        scheduled_duration_minutes: 60,
+      }),
+    }).then((r) => r.json());
+    const psSessionId = createdPsSession?.session?.id;
+    const psSlug = createdPsSession?.session?.slug;
+    check("a fixture public session is created for this check", typeof psSessionId === "number" && typeof psSlug === "string", createdPsSession);
+
+    if (psSponsorId && psSessionId && psSlug) {
+      const psLink = await fetch(`${API_BASE}/api/content-sponsors`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ content_id: psSessionId, sponsor_id: psSponsorId, placement: "session_page", message: "Browser check sponsor message" }),
+      }).then((r) => r.json());
+      const psLinkId = psLink?.link?.id;
+      check("the fixture sponsor is linked at session_page placement", typeof psLinkId === "number", psLink);
+
+      const beforePsErrors = pageErrors.length;
+      await page.goto(`${BASE}/watch/${psSlug}`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(600);
+
+      const hasSponsoredByLabel = await page.locator("text=Sponsored by").count();
+      check("the detail page renders a 'Sponsored by' section for the real fixture link", hasSponsoredByLabel > 0, { hasSponsoredByLabel });
+
+      const hasSponsorName = await page.locator(`text=${psSponsorName}`).count();
+      check("the sponsor's own name renders (no logo_url set, so it falls back to a text badge)", hasSponsorName > 0, { hasSponsorName });
+
+      const hasSponsorMessage = await page.locator("text=Browser check sponsor message").count();
+      check("the link's message renders alongside the sponsor", hasSponsorMessage > 0, { hasSponsorMessage });
+
+      check("/watch/:slug (Sponsored by section) throws no uncaught render error", pageErrors.length === beforePsErrors, pageErrors.slice(beforePsErrors));
+
+      if (psLinkId) await fetch(`${API_BASE}/api/content-sponsors/${psLinkId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    }
+
+    if (psSessionId) await fetch(`${API_BASE}/api/sessions/${psSessionId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    if (psSponsorId) await fetch(`${API_BASE}/api/sponsors/${psSponsorId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+  }
+
+  // ─── Hero sponsor display ──────────────────────────────────────────────────
+  //
+  // The "player"-placement counterpart (a badge inside Player.tsx's video
+  // overlay) is deliberately NOT exercised here — this script only ever
+  // creates fixtures through the real HTTP API, and there's no admin
+  // endpoint to attach a genuinely playable media asset to a session that
+  // way (e2e.ts's makePlayableContent does it with a direct Prisma insert,
+  // which this script has no access to). e2e's own assertions already cover
+  // the "player" placement thoroughly at the data layer — GET /api/content/:slug's
+  // `sponsors` array, tagged and filtered correctly. This section covers the
+  // one placement that's actually reachable through fixtures alone: "hero".
+  section("Hero sponsor display");
+
+  if (adminToken) {
+    const stamp = Date.now();
+    const hbSponsor = await fetch(`${API_BASE}/api/sponsors`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ name: `Browser Check Hero Sponsor ${stamp}` }),
+    }).then((r) => r.json());
+    const hbSponsorId = hbSponsor?.sponsor?.id;
+    check("a fixture sponsor is created for this check", typeof hbSponsorId === "number", hbSponsor);
+
+    const hbSessionTitle = `Browser Check Hero Session ${stamp}`;
+    const hbSession = await fetch(`${API_BASE}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({
+        title: hbSessionTitle,
+        access_level: "public",
+        status: "registration_open",
+        scheduled_start_at: new Date(Date.now() + 86_400_000).toISOString(),
+        scheduled_duration_minutes: 60,
+      }),
+    }).then((r) => r.json());
+    const hbSessionId = hbSession?.session?.id;
+    check("a fixture public session is created for this check", typeof hbSessionId === "number", hbSession);
+
+    if (hbSponsorId && hbSessionId) {
+      // Onto the real hero list — same POST /api/trending the admin Trending
+      // page's own "Add" search box uses.
+      await fetch(`${API_BASE}/api/trending`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ content_id: hbSessionId }),
+      });
+
+      const hbLink = await fetch(`${API_BASE}/api/content-sponsors`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ content_id: hbSessionId, sponsor_id: hbSponsorId, placement: "hero" }),
+      }).then((r) => r.json());
+      const hbLinkId = hbLink?.link?.id;
+      check("the fixture sponsor is linked at hero placement", typeof hbLinkId === "number", hbLink);
+
+      const beforeHbErrors = pageErrors.length;
+      // GET /api/homepage sends Cache-Control: public, max-age=60 — a
+      // deliberate perf choice for the anonymous homepage, and independent
+      // of the server-side homepage-cache table this round's awaited
+      // rebuild already keeps fresh. Without this header, the browser's own
+      // disk cache would happily replay the very first "/" load from the
+      // top of this file for up to 60s, hiding the fixture just linked
+      // above regardless of how fresh the server's data actually is. This
+      // is the test forcing revalidation, not a workaround for stale data.
+      await page.setExtraHTTPHeaders({ "Cache-Control": "no-cache" });
+      await page.goto(BASE, { waitUntil: "networkidle" });
+      await page.waitForTimeout(800);
+
+      // Added last, so it's very unlikely to already be the active slide —
+      // jump straight to it via its own rotation-indicator pill rather than
+      // waiting out the real 8s auto-advance.
+      const pill = page.locator(`button[aria-label="${hbSessionTitle}"]`);
+      const hasPill = await pill.count();
+      check("the fixture appears as a real hero slide (its rotation pill exists)", hasPill > 0, { hasPill });
+
+      if (hasPill > 0) {
+        await pill.first().click();
+        await page.waitForTimeout(500);
+
+        const hasPresentedBy = await page.locator("text=Presented by").count();
+        check("the hero slide renders a 'Presented by' badge for the real hero-placement link", hasPresentedBy > 0, { hasPresentedBy });
+
+        const hasSponsorName = await page.locator(`text=Browser Check Hero Sponsor ${stamp}`).count();
+        check("the sponsor's own name renders in the hero badge", hasSponsorName > 0, { hasSponsorName });
+      }
+
+      check("/ (hero sponsor badge) throws no uncaught render error", pageErrors.length === beforeHbErrors, pageErrors.slice(beforeHbErrors));
+
+      if (hbLinkId) await fetch(`${API_BASE}/api/content-sponsors/${hbLinkId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    }
+
+    if (hbSessionId) {
+      await fetch(`${API_BASE}/api/trending/${hbSessionId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+      await fetch(`${API_BASE}/api/sessions/${hbSessionId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    }
+    if (hbSponsorId) await fetch(`${API_BASE}/api/sponsors/${hbSponsorId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+  }
+
+  check("no uncaught page errors across the run", pageErrors.length === 0, pageErrors);
+
+  await page.close();
+}
+
+async function main() {
+  console.log(`Browser checks against ${BASE}\n`);
+  const browser = await chromium.launch(
+    CHROMIUM_PATH ? { executablePath: CHROMIUM_PATH } : {},
+  );
+  try {
+    await run(browser);
+  } finally {
+    await browser.close();
+  }
+
+  console.log(`\n${"═".repeat(62)}`);
+  console.log(`${passed} passed, ${failures.length} failed`);
+  if (failures.length) {
+    console.log("\nFailures:");
+    for (const f of failures) console.log(`  ✗ ${f}`);
+  }
+  process.exit(failures.length ? 1 : 0);
+}
+
+main().catch((err) => {
+  console.error("\nBrowser checks crashed:", err);
+  process.exit(1);
+});
