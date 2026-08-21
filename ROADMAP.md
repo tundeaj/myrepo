@@ -1,6 +1,6 @@
 # Webinarflix — Roadmap & TODO
 
-Status snapshot as of this document: **647 assertions across 8 suites, all green**, CI passing on every push to PR #1. This file tracks what's built, what's left, and the order the remaining work is planned in. It's updated at the end of each round that closes or adds a gap — treat it as the living source of truth over any single PR description.
+Status snapshot as of this document: **661 assertions across 8 suites, all green**, CI passing on every push to PR #1. This file tracks what's built, what's left, and the order the remaining work is planned in. It's updated at the end of each round that closes or adds a gap — treat it as the living source of truth over any single PR description.
 
 ---
 
@@ -24,7 +24,7 @@ Signed short-lived playback URLs with concurrency limits, chapters/subtitles, Go
 Earnings accrual, payouts admin workflow, the payouts transfer webhook, subscription revenue accrual (manual admin-run, explicitly a stated simplification — see §3).
 
 **Content operations**
-Ratings (viewer submission + aggregate recompute) with comment moderation, FAQs (admin CRUD + public read path), Contact Requests (public form + admin inbox), Categories, Sponsors/Advertisers/Ads, content-sponsor linking with its public "Sponsored by" display (session_page placement).
+Ratings (viewer submission + aggregate recompute) with comment moderation, FAQs (admin CRUD + public read path, with real per-user helpful-vote dedup for signed-in viewers), Contact Requests (public form + admin inbox), Categories, Sponsors/Advertisers/Ads, content-sponsor linking with its public "Sponsored by" display (session_page placement).
 
 **Admin management**
 Users (list/detail/role management, with self-demotion and last-admin guards), Registrations (list/filter/status), Speakers (full CRUD).
@@ -39,8 +39,8 @@ Trending hero carousel — admin-ordered, Netflix-style scrolling teasers — pl
 Phases are ordered by what unblocks fastest with the least new infrastructure. Each item names the file(s) most likely to change, so this doubles as a work-entry point.
 
 ### Phase A — Quick wins (small, self-contained, no new infrastructure)
-- [ ] **FAQ helpful-votes have no per-user dedup** — `routes/faqs.ts`, new `FaqVote` model. *In progress this round.*
-- [ ] **No teammate picker for contact-request assignment** — `routes/contactRequests.ts`, `pages/contactRequests/*`; `assigned_to` already exists on the schema, just needs a picker sourced from admin/instructor users.
+- [x] **FAQ helpful-votes have no per-user dedup** — `routes/faqs.ts` + `FaqVote` model. Signed-in viewers get real, server-enforced dedup (first vote counts, repeat is a no-op, a flip moves the count); anonymous stays an honest one-vote-per-click, stated as such rather than faked.
+- [ ] **No teammate picker for contact-request assignment** — `routes/contactRequests.ts`, `pages/contactRequests/*`; `assigned_to` already exists on the schema, just needs a picker sourced from admin/instructor users. *Up next.*
 - [ ] **`player` and `hero` sponsorship placements have no public display** — natural extension of the just-shipped `session_page` display; `Player.tsx` needs an overlay treatment, `Hero.tsx` needs a hero-appropriate badge. Two separate small changes, not one.
 
 ### Phase B — Medium (admin UI + backend work, no new infrastructure)
