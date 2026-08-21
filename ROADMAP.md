@@ -1,6 +1,6 @@
 # Webinarflix — Roadmap & TODO
 
-Status snapshot as of this document: **667 assertions across 8 suites, all green** (508 e2e + 23 mail + 6 checkout-webhook + 12 payouts-webhook + 8 stripe-webhook + 110 browser), CI passing on every push to PR #1. This file tracks what's built, what's left, and the order the remaining work is planned in. It's updated at the end of each round that closes or adds a gap — treat it as the living source of truth over any single PR description.
+Status snapshot as of this document: **681 assertions across 8 suites, all green** (515 e2e + 23 mail + 6 checkout-webhook + 12 payouts-webhook + 8 stripe-webhook + 117 browser), CI passing on every push to PR #1. This file tracks what's built, what's left, and the order the remaining work is planned in. It's updated at the end of each round that closes or adds a gap — treat it as the living source of truth over any single PR description.
 
 ---
 
@@ -24,7 +24,7 @@ Signed short-lived playback URLs with concurrency limits, chapters/subtitles, Go
 Earnings accrual, payouts admin workflow, the payouts transfer webhook, subscription revenue accrual (manual admin-run, explicitly a stated simplification — see §3).
 
 **Content operations**
-Ratings (viewer submission + aggregate recompute) with comment moderation, FAQs (admin CRUD + public read path, with real per-user helpful-vote dedup for signed-in viewers), Contact Requests (public form + admin inbox, with a real teammate picker for assignment), Categories, Sponsors/Advertisers/Ads, content-sponsor linking with its public "Sponsored by" display (session_page placement).
+Ratings (viewer submission + aggregate recompute) with comment moderation, FAQs (admin CRUD + public read path, with real per-user helpful-vote dedup for signed-in viewers), Contact Requests (public form + admin inbox, with a real teammate picker for assignment), Categories, Sponsors/Advertisers/Ads, content-sponsor linking with public display across all three placements — session_page ("Sponsored by" on the detail page), player (video overlay badge), and hero (homepage carousel badge).
 
 **Admin management**
 Users (list/detail/role management, with self-demotion and last-admin guards), Registrations (list/filter/status), Speakers (full CRUD).
@@ -38,13 +38,13 @@ Trending hero carousel — admin-ordered, Netflix-style scrolling teasers — pl
 
 Phases are ordered by what unblocks fastest with the least new infrastructure. Each item names the file(s) most likely to change, so this doubles as a work-entry point.
 
-### Phase A — Quick wins (small, self-contained, no new infrastructure)
+### Phase A — Quick wins (small, self-contained, no new infrastructure) — ✅ done
 - [x] **FAQ helpful-votes have no per-user dedup** — `routes/faqs.ts` + `FaqVote` model. Signed-in viewers get real, server-enforced dedup (first vote counts, repeat is a no-op, a flip moves the count); anonymous stays an honest one-vote-per-click, stated as such rather than faked.
 - [x] **No teammate picker for contact-request assignment** — `assigned_to` now validates against a real, active, non-viewer account (instructor/admin/super_admin) server-side, and the admin UI's raw numeric-id input is a real picker sourced from `GET /users`.
-- [ ] **`player` and `hero` sponsorship placements have no public display** — natural extension of the shipped `session_page` display; `Player.tsx` needs an overlay treatment, `Hero.tsx` needs a hero-appropriate badge. Two separate small changes, not one. *Up next — the last item in Phase A.*
+- [x] **`player` and `hero` sponsorship placements have no public display** — `lib/sponsors.ts`'s shared `resolveActiveSponsors()` now backs all three placements. `Player.tsx` gets a video-overlay badge, `Hero.tsx` gets a carousel badge alongside its LIVE/countdown badges. Found and fixed a real, pre-existing bug along the way: the hero's rotation-indicator pills had no `z-index`, so the content row overlapping the hero's bottom edge (`-mt-8`/`-mt-16`, `z-10`) sat on top of them and made them unclickable for any real visitor at sm+ widths, not just the new browser test.
 
-### Phase B — Medium (admin UI + backend work, no new infrastructure)
-- [ ] **No reviewer notification on approve/reject** — hook into the existing mail sender (see `lib/mail.ts` and its `test:mail` suite) from `routes/ratings.ts`'s moderation actions.
+### Phase B — Medium (admin UI + backend work, no new infrastructure) — *up next*
+- [ ] **No reviewer notification on approve/reject** — hook into the existing mail sender (see `lib/mail.ts` and its `test:mail` suite) from `routes/ratings.ts`'s moderation actions. *Up next.*
 - [ ] **No bulk moderation actions** — `pages/moderation/RatingComments.tsx` + a batch endpoint alongside the existing single-item approve/reject.
 - [ ] **No French-language review display** — `title_fr`/`answer_html_fr`-style columns already exist elsewhere as a pattern; ratings' `comment` has no `_fr` column yet, so this starts with a schema decision, not just UI.
 
