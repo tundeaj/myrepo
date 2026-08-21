@@ -1861,6 +1861,26 @@ model Faq {
   @@map("faqs")
 }
 
+/// One signed-in viewer's vote on one FAQ's helpfulness. The unique
+/// (faq_id, user_id) pair is the whole mechanism: a first vote counts, a
+/// repeat click of the same choice is a no-op, and switching yes<->no moves
+/// the aggregate count on Faq rather than double-counting it — see
+/// routes/faqs.ts's POST /public-faqs/:id/helpful, the only writer.
+/// Anonymous votes are NOT recorded here — there's no stable identity to key
+/// them on anywhere in this codebase (no anon-id cookie mechanism), so they
+/// stay an honest, undeduped increment on Faq.helpful_yes/helpful_no, same
+/// as before this table existed.
+model FaqVote {
+  id         Int      @id @default(autoincrement())
+  faq_id     Int
+  user_id    Int
+  helpful    Boolean
+  created_at DateTime @default(now())
+
+  @@unique([faq_id, user_id])
+  @@map("faq_votes")
+}
+
 model ContactRequest {
   id           Int                  @id @default(autoincrement())
   name         String?              @db.VarChar(150)

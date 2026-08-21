@@ -334,6 +334,32 @@ async function run(browser: Browser) {
       check("clicking the question expands its answer", hasAnswer > 0, { hasAnswer });
       check("/faqs throws no uncaught render error", pageErrors.length === beforePublicFaqErrors, pageErrors.slice(beforePublicFaqErrors));
 
+      // The admin's own token is already sitting in localStorage from the
+      // earlier "Admin content-authoring pages" section — reused here as
+      // simply "a signed-in user" (routes/faqs.ts's dedup doesn't
+      // special-case role), to exercise the real vote-flip UX rather than
+      // re-proving the add flow's own auth, which e2e already covers
+      // thoroughly.
+      const beforeVoteErrors = pageErrors.length;
+      const yesButton = page.locator('button:has-text("Yes (")').first();
+      const noButton = page.locator('button:has-text("No (")').first();
+
+      await yesButton.click();
+      await page.waitForTimeout(400);
+      const afterYes = await page.locator("text=/Yes \\(1\\)/").count();
+      check("clicking Yes as a signed-in viewer records a real, server-backed vote", afterYes > 0, { afterYes });
+
+      const hasChangeHint = await page.locator("text=tap the other to change your vote").count();
+      check("a signed-in viewer is offered the option to change their vote", hasChangeHint > 0, { hasChangeHint });
+
+      await noButton.click();
+      await page.waitForTimeout(400);
+      const afterFlipYes = await page.locator("text=/Yes \\(0\\)/").count();
+      const afterFlipNo = await page.locator("text=/No \\(1\\)/").count();
+      check("flipping the vote moves the count instead of double-counting", afterFlipYes > 0 && afterFlipNo > 0, { afterFlipYes, afterFlipNo });
+
+      check("/faqs (vote flip) throws no uncaught render error", pageErrors.length === beforeVoteErrors, pageErrors.slice(beforeVoteErrors));
+
       await fetch(`${API_BASE}/api/faqs/${faqId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
     }
   }

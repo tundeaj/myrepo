@@ -1565,9 +1565,76 @@ async function main() {
 
   const helpfulYes = await call(`/api/public-faqs/${globalFaqId}/helpful`, { method: "POST", body: { helpful: true } });
   check("marking a FAQ helpful increments helpful_yes", helpfulYes.status === 200 && helpfulYes.body.helpful_yes === 1, helpfulYes.body);
+  check("an anonymous vote is honestly reported as not deduped", helpfulYes.body.deduped === false, helpfulYes.body);
 
   const helpfulNo = await call(`/api/public-faqs/${globalFaqId}/helpful`, { method: "POST", body: { helpful: false } });
   check("marking a FAQ unhelpful increments helpful_no, not helpful_yes again", helpfulNo.status === 200 && helpfulNo.body.helpful_no === 1 && helpfulNo.body.helpful_yes === 1, helpfulNo.body);
+
+  // ─── FAQ helpful votes — real per-user dedup for a signed-in viewer ───────
+  //
+  // faq_votes (faq_id, user_id) is the mechanism — a first vote counts, a
+  // repeat of the SAME choice is a no-op, and a flip moves the aggregate
+  // rather than double-counting it. Continues from the anonymous counts
+  // just above (helpful_yes=1, helpful_no=1) rather than assuming a clean
+  // slate, same "assert relative deltas, not fixed absolutes" discipline
+  // this file already applies to Trending/suggestions.
+  section("FAQ helpful votes — per-user dedup");
+
+  const faqVoterAEmail = `e2e-faq-voter-a-${RUN}@example.test`;
+  const faqVoterAReg = await call("/api/auth/register", {
+    method: "POST",
+    body: { email: faqVoterAEmail, password: "correct-horse-battery", full_name: "E2E FAQ Voter A", country: "NG", job_role: "Tester" },
+  });
+  const faqVoterAToken = faqVoterAReg.body.token as string;
+  const faqVoterAUser = await prisma.user.findUnique({ where: { email: faqVoterAEmail } });
+  if (faqVoterAUser) created.users.push(faqVoterAUser.id);
+
+  const faqVoterBEmail = `e2e-faq-voter-b-${RUN}@example.test`;
+  const faqVoterBReg = await call("/api/auth/register", {
+    method: "POST",
+    body: { email: faqVoterBEmail, password: "correct-horse-battery", full_name: "E2E FAQ Voter B", country: "NG", job_role: "Tester" },
+  });
+  const faqVoterBToken = faqVoterBReg.body.token as string;
+  const faqVoterBUser = await prisma.user.findUnique({ where: { email: faqVoterBEmail } });
+  if (faqVoterBUser) created.users.push(faqVoterBUser.id);
+
+  const voteAFirst = await call(`/api/public-faqs/${globalFaqId}/helpful`, { method: "POST", token: faqVoterAToken, body: { helpful: true } });
+  check(
+    "a signed-in viewer's first vote is deduped and counted",
+    voteAFirst.status === 200 && voteAFirst.body.deduped === true && voteAFirst.body.changed === true && voteAFirst.body.helpful_yes === 2 && voteAFirst.body.helpful_no === 1,
+    voteAFirst.body,
+  );
+
+  const voteARepeat = await call(`/api/public-faqs/${globalFaqId}/helpful`, { method: "POST", token: faqVoterAToken, body: { helpful: true } });
+  check(
+    "the same viewer re-clicking the SAME choice is a no-op, not a second increment",
+    voteARepeat.status === 200 && voteARepeat.body.changed === false && voteARepeat.body.helpful_yes === 2 && voteARepeat.body.helpful_no === 1,
+    voteARepeat.body,
+  );
+
+  const voteAFlip = await call(`/api/public-faqs/${globalFaqId}/helpful`, { method: "POST", token: faqVoterAToken, body: { helpful: false } });
+  check(
+    "flipping to the other choice moves the count instead of double-counting",
+    voteAFlip.status === 200 && voteAFlip.body.changed === true && voteAFlip.body.helpful_yes === 1 && voteAFlip.body.helpful_no === 2,
+    voteAFlip.body,
+  );
+
+  const voteARowsAfterFlip = await prisma.faqVote.findMany({ where: { faq_id: globalFaqId, user_id: faqVoterAUser?.id } });
+  check(
+    "exactly one FaqVote row exists for viewer A on this FAQ — a flip updates in place, never duplicates",
+    voteARowsAfterFlip.length === 1 && voteARowsAfterFlip[0]?.helpful === false,
+    voteARowsAfterFlip,
+  );
+
+  const voteBFirst = await call(`/api/public-faqs/${globalFaqId}/helpful`, { method: "POST", token: faqVoterBToken, body: { helpful: true } });
+  check(
+    "a second, different signed-in viewer's vote on the same FAQ is independent of the first viewer's",
+    voteBFirst.status === 200 && voteBFirst.body.changed === true && voteBFirst.body.helpful_yes === 2 && voteBFirst.body.helpful_no === 2,
+    voteBFirst.body,
+  );
+
+  const voteOnUnpublished = await call(`/api/public-faqs/${unpublishedFaqId}/helpful`, { method: "POST", token: faqVoterAToken, body: { helpful: true } });
+  check("voting on an unpublished FAQ is refused regardless of sign-in state", voteOnUnpublished.status === 404, voteOnUnpublished.body);
 
   const editFaq = await call(`/api/faqs/${globalFaqId}`, {
     method: "PUT",
@@ -1575,7 +1642,12 @@ async function main() {
     body: { question: "Edited question?", answer_html: "<p>Edited.</p>", scope: "global", is_published: true },
   });
   check("editing a FAQ succeeds", editFaq.status === 200 && editFaq.body.faq?.question === "Edited question?", editFaq.body);
-  check("editing a FAQ does not reset its already-collected view/helpful counters", editFaq.body.faq?.views === 1 && editFaq.body.faq?.helpful_yes === 1, editFaq.body.faq);
+  // helpful_yes is 2, not 1, by this point — the "FAQ helpful votes" section
+  // above runs between the anonymous votes and this edit, and deterministically
+  // leaves this exact FAQ at yes=2/no=2 (see that section's own comments for
+  // the full sequence). The point of this assertion is still just that an
+  // edit doesn't reset counters, not the specific number.
+  check("editing a FAQ does not reset its already-collected view/helpful counters", editFaq.body.faq?.views === 1 && editFaq.body.faq?.helpful_yes === 2, editFaq.body.faq);
 
   const deleteFaq = await call(`/api/faqs/${unpublishedFaqId}`, { method: "DELETE", token: adminToken });
   check("deleting a FAQ succeeds", deleteFaq.status === 200, deleteFaq.body);
@@ -2958,6 +3030,7 @@ async function main() {
   await prisma.playbackSession.deleteMany({ where: { id: { in: created.playbackSessions } } });
   await prisma.contentSpeaker.deleteMany({ where: { content_id: { in: created.content } } });
   await prisma.speaker.deleteMany({ where: { id: { in: created.speakers } } });
+  await prisma.faqVote.deleteMany({ where: { OR: [{ faq_id: { in: created.faqs } }, { user_id: { in: created.users } }] } });
   await prisma.faq.deleteMany({ where: { id: { in: created.faqs } } });
   await prisma.contactRequest.deleteMany({ where: { id: { in: created.contactRequests } } });
   await prisma.contentCategory.deleteMany({ where: { category_id: { in: created.categories } } });

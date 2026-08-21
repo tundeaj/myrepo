@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { getToken } from "../lib/api";
 import {
   usePublicData,
   PublicShell,
@@ -29,7 +30,15 @@ function FaqRow({ faq }: { faq: Faq }) {
   const [open, setOpen] = useState(false);
   const [viewed, setViewed] = useState(false);
   const [voted, setVoted] = useState<"yes" | "no" | null>(null);
+  const [busy, setBusy] = useState(false);
   const [counts, setCounts] = useState({ helpful_yes: faq.helpful_yes, helpful_no: faq.helpful_no });
+  // routes/faqs.ts only dedupes — and so only allows changing — a SIGNED-IN
+  // viewer's vote (the faq_votes table is keyed on user_id; there's no
+  // stable anonymous identity anywhere in this codebase). An anonymous
+  // visitor still gets exactly one vote per page load, same as before this
+  // round, honestly reflected here rather than pretending a second click
+  // would count.
+  const signedIn = Boolean(getToken());
 
   function toggle() {
     const next = !open;
@@ -41,20 +50,32 @@ function FaqRow({ faq }: { faq: Faq }) {
   }
 
   async function vote(helpful: boolean) {
-    if (voted) return;
-    setVoted(helpful ? "yes" : "no");
-    setCounts((c) => (helpful ? { ...c, helpful_yes: c.helpful_yes + 1 } : { ...c, helpful_no: c.helpful_no + 1 }));
+    const choice = helpful ? "yes" : "no";
+    if (busy || voted === choice) return;
+    if (!signedIn && voted) return;
+
+    setBusy(true);
     try {
-      await fetch(`/api/public-faqs/${faq.id}/helpful`, {
+      const token = getToken();
+      const res = await fetch(`/api/public-faqs/${faq.id}/helpful`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify({ helpful }),
-      });
+      }).then((r) => r.json());
+      // The server's own counts are the source of truth — a flipped vote
+      // moves both buckets in one call, which an optimistic local increment
+      // could never reflect correctly.
+      if (typeof res.helpful_yes === "number" && typeof res.helpful_no === "number") {
+        setCounts({ helpful_yes: res.helpful_yes, helpful_no: res.helpful_no });
+      }
+      setVoted(choice);
     } catch {
-      // A failed vote just doesn't persist server-side — the optimistic tick
-      // already gave the visitor the "thanks" feeling, and re-showing the
+      // A failed vote just doesn't persist server-side — re-showing the
       // buttons for a retry would be a worse experience than a vote that
-      // silently didn't count.
+      // silently didn't count, and the button state above stays honest
+      // (not stuck showing a change that didn't happen).
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -74,18 +95,19 @@ function FaqRow({ faq }: { faq: Faq }) {
             <span>Was this helpful?</span>
             <button
               onClick={() => vote(true)}
-              disabled={voted != null}
+              disabled={busy || voted === "yes" || (!signedIn && voted != null)}
               className={`rounded border px-2 py-0.5 ${voted === "yes" ? "border-emerald-500/40 text-emerald-300" : "border-slate-700 hover:text-slate-300"} disabled:cursor-default`}
             >
               Yes ({counts.helpful_yes})
             </button>
             <button
               onClick={() => vote(false)}
-              disabled={voted != null}
+              disabled={busy || voted === "no" || (!signedIn && voted != null)}
               className={`rounded border px-2 py-0.5 ${voted === "no" ? "border-red-500/40 text-red-300" : "border-slate-700 hover:text-slate-300"} disabled:cursor-default`}
             >
               No ({counts.helpful_no})
             </button>
+            {signedIn && voted && <span className="text-slate-700">— tap the other to change your vote</span>}
           </div>
         </div>
       )}
