@@ -82,7 +82,7 @@ interface DetailPayload extends PublicBootstrap {
   };
   speakers: DetailSpeaker[];
   categories: { id: number; slug: string | null; name: string }[];
-  sponsors: { id: number; name: string | null; logo_url: string | null; website_url: string | null; message: string | null }[];
+  sponsors: { id: number; name: string | null; logo_url: string | null; website_url: string | null; message: string | null; placement: string }[];
   curriculum: Module[] | null;
   session_config: {
     chat_enabled: boolean;
@@ -251,21 +251,24 @@ function Speakers({ speakers }: { speakers: DetailSpeaker[] }) {
 }
 
 /**
- * "session_page" placement only — content_sponsors has supported "player"
- * and "hero" placements since the schema's beginning too, but those render
- * inside genuinely different components (the player overlay, the homepage
- * hero banner) and are a real, separate, still-open gap, not silently
- * assumed covered here. The server has already filtered to sponsors whose
- * window is currently active and who are themselves still active — this
- * component trusts that and just renders whatever it's handed.
+ * "session_page" placement only. `data.sponsors` carries BOTH "session_page"
+ * and "player" placements together (the same payload feeds Player.tsx, which
+ * filters to its own "player" entries) — this component is the one that
+ * picks "session_page" out of it. "hero" is a third placement, resolved
+ * separately by homepageCache.ts's buildHero() for the homepage banner, not
+ * this payload at all. The server has already filtered every entry here to
+ * ones whose window is currently active and whose sponsor is themselves
+ * still active — this component trusts that part and just picks its own
+ * placement out of what it's handed.
  */
 function SponsoredBy({ sponsors }: { sponsors: DetailPayload["sponsors"] }) {
-  if (!sponsors.length) return null;
+  const sessionPageSponsors = sponsors.filter((s) => s.placement === "session_page");
+  if (!sessionPageSponsors.length) return null;
   return (
     <section className="space-y-3 border-t border-slate-800 pt-6">
       <p className="text-xs font-medium uppercase tracking-wide text-slate-600">Sponsored by</p>
       <div className="flex flex-wrap items-center gap-4">
-        {sponsors.map((s) => {
+        {sessionPageSponsors.map((s) => {
           const inner = (
             <span className="flex items-center gap-2">
               {s.logo_url ? (

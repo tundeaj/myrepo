@@ -157,17 +157,39 @@ export function Hero({ items }: { items: ContentCard[] }) {
           Home.tsx (-mt-8 / sm:-mt-16), which tucks the first row up under the
           hero gradient. At sm:pb-12 the row header landed on top of the CTAs. */}
       <div className="absolute inset-x-0 bottom-0 p-4 pb-14 sm:p-8 sm:pb-24 lg:max-w-2xl">
-        {card.status === "live" && (
-          <span className="mb-2 inline-flex items-center gap-1.5 rounded bg-red-600 px-2 py-1 text-[11px] font-bold tracking-wide text-white">
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
-            {t("card.live")}
-          </span>
-        )}
-        {card.status !== "live" && countdown && (
-          <span className="mb-2 inline-block rounded bg-white/10 px-2 py-1 text-[11px] font-medium text-slate-200 backdrop-blur">
-            {t("hero.starts_in", { time: countdown })}
-          </span>
-        )}
+        <div className="mb-2 flex flex-wrap items-center gap-2">
+          {card.status === "live" && (
+            <span className="inline-flex items-center gap-1.5 rounded bg-red-600 px-2 py-1 text-[11px] font-bold tracking-wide text-white">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
+              {t("card.live")}
+            </span>
+          )}
+          {card.status !== "live" && countdown && (
+            <span className="inline-block rounded bg-white/10 px-2 py-1 text-[11px] font-medium text-slate-200 backdrop-blur">
+              {t("hero.starts_in", { time: countdown })}
+            </span>
+          )}
+          {/* "hero"-placement content_sponsors links, resolved server-side
+              by buildHero() — see lib/sponsors.ts. Absent entirely, not
+              shown empty, when nothing's currently active for this slide. */}
+          {card.sponsors && card.sponsors.length > 0 && (
+            <span className="inline-flex items-center gap-1.5 rounded bg-white/10 px-2 py-1 text-[11px] font-medium text-slate-200 backdrop-blur">
+              {t("hero.presented_by")}
+              {card.sponsors.map((s, i) => (
+                <span key={s.id} className="contents">
+                  {i > 0 && <span>,</span>}
+                  {s.website_url ? (
+                    <a href={s.website_url} target="_blank" rel="noopener noreferrer sponsored" className="font-semibold text-white hover:underline">
+                      {s.name ?? "Sponsor"}
+                    </a>
+                  ) : (
+                    <span className="font-semibold text-white">{s.name ?? "Sponsor"}</span>
+                  )}
+                </span>
+              ))}
+            </span>
+          )}
+        </div>
 
         <h1 className="text-2xl font-bold leading-tight text-white sm:text-4xl">{card.title}</h1>
 
@@ -202,9 +224,17 @@ export function Hero({ items }: { items: ContentCard[] }) {
         </div>
       </div>
 
-      {/* Rotation indicators */}
+      {/* Rotation indicators. Explicit z-20: Home.tsx's row directly below
+          pulls itself up over the hero's bottom edge (-mt-8/-mt-16, z-10) for
+          the intentional Netflix-style overlap on its card art — but with no
+          z-index of its own, this container sat behind that row in the same
+          root stacking context (position:relative on the hero <section>
+          doesn't create one without a z-index), so the pills were completely
+          covered and unclickable at sm+ widths for every real visitor, not
+          just this suite's fixture click. z-20 keeps them visually where
+          they are while actually receiving the click. */}
       {items.length > 1 && (
-        <div className="absolute bottom-4 right-4 hidden gap-1.5 sm:flex">
+        <div className="absolute bottom-4 right-4 z-20 hidden gap-1.5 sm:flex">
           {items.map((item, i) => (
             <button
               key={item.id}

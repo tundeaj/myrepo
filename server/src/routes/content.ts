@@ -4,6 +4,7 @@ import { prisma } from "../lib/prisma.js";
 import { verifyToken } from "../lib/jwt.js";
 import { ApiError } from "../lib/errors.js";
 import { resolveAccess } from "../lib/access.js";
+import { resolveActiveSponsors } from "../lib/sponsors.js";
 import {
   CARD_SELECT,
   decorateCards,
@@ -210,38 +211,17 @@ contentRouter.get("/:slug", async (req: Request, res: Response, next: NextFuncti
 
     const roleBySpeaker = new Map(speakerLinks.map((l) => [l.speaker_id, l.role]));
 
-    // Sponsors — the "session_page" placement only. content_sponsors has
-    // supported "player" and "hero" placements since the schema's beginning
-    // too, but those render inside genuinely different components (the
-    // player overlay, the homepage hero banner) and are a real, separate,
-    // still-open gap — not silently assumed covered by this one detail-page
-    // badge. A currently-active window means starts_at/ends_at either unset
-    // (open-ended) or straddling now; an inactive sponsor's links are
-    // excluded even if the window itself is still open, same rule
-    // routes/contentSponsors.ts enforces at write time.
-    const now = new Date();
-    const activeSponsorLinks = await prisma.contentSponsor.findMany({
-      where: {
-        content_id: content.id,
-        placement: "session_page",
-        AND: [
-          { OR: [{ starts_at: null }, { starts_at: { lte: now } }] },
-          { OR: [{ ends_at: null }, { ends_at: { gte: now } }] },
-        ],
-      },
-      select: { sponsor_id: true, message: true },
-      orderBy: { id: "asc" },
-    });
-    const sponsorEntities = activeSponsorLinks.length
-      ? await prisma.sponsor.findMany({
-          where: { id: { in: activeSponsorLinks.map((l) => l.sponsor_id) }, is_active: true },
-          select: { id: true, name: true, logo_url: true, website_url: true },
-        })
-      : [];
-    const sponsorEntityById = new Map(sponsorEntities.map((s) => [s.id, s]));
-    const sponsors = activeSponsorLinks
-      .filter((l) => sponsorEntityById.has(l.sponsor_id))
-      .map((l) => ({ ...sponsorEntityById.get(l.sponsor_id)!, message: l.message }));
+    // Sponsors — "session_page" AND "player" placements (this one payload
+    // feeds both Detail.tsx and Player.tsx, see ContentSummary in
+    // Player.tsx). "hero" is a third placement content_sponsors supports,
+    // but that one only ever matters for homepage cards, not a single
+    // content item's own payload — see homepageCache.ts's buildHero()
+    // instead, which calls the same shared resolveActiveSponsors(). Each
+    // entry carries its own `placement` so the two page components can each
+    // render only the one they own; resolveActiveSponsors() is the single
+    // shared source of truth for what counts as "currently showable."
+    const sponsorsByContent = await resolveActiveSponsors([content.id], ["session_page", "player"]);
+    const sponsors = sponsorsByContent.get(content.id) ?? [];
 
     const curriculum =
       content.content_type === "course" ? await buildCurriculum(content.id) : null;

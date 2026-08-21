@@ -2000,14 +2000,29 @@ async function main() {
   if (playerLinkId) created.contentSponsors.push(playerLinkId);
 
   const withSponsor = await call(`/api/content/${pubSponsoredContent.slug}`);
-  // The same sponsor is ALSO linked at "player" (above) — if the query
-  // dropped its placement filter, this would come back as 2 entries (one
-  // per link, undeduped) instead of 1; length===1 is what actually catches
-  // that, not a raw-string check (nothing here even selects `placement`).
-  check("only the session_page link is counted — the player link on the same pair isn't double-surfaced", withSponsor.body.sponsors?.length === 1, withSponsor.body.sponsors);
-  check("the active session_page sponsor appears in the public payload", withSponsor.body.sponsors?.[0]?.id === pubSponsorId, withSponsor.body.sponsors);
-  check("the sponsor's message rides along", withSponsor.body.sponsors?.[0]?.message === "E2E sponsor message", withSponsor.body.sponsors);
-  check("the sponsor's logo and website are public", withSponsor.body.sponsors?.[0]?.logo_url === "https://example.test/logo.png" && withSponsor.body.sponsors?.[0]?.website_url === "https://example.test", withSponsor.body.sponsors);
+  // This payload also feeds Player.tsx (see ContentSummary there), so it
+  // deliberately carries BOTH session_page and player placements together,
+  // each tagged with its own `placement` — Detail.tsx and Player.tsx each
+  // pick out only the one they own. Both links here are the SAME sponsor,
+  // so this is what actually proves neither placement was dropped nor
+  // double-counted: exactly one of each tag, not a raw-string check.
+  const withSponsorPlacements = (withSponsor.body.sponsors ?? []).map((s: { placement: string }) => s.placement).sort();
+  check(
+    "both the session_page and player links appear, each tagged with its own placement",
+    JSON.stringify(withSponsorPlacements) === JSON.stringify(["player", "session_page"]),
+    withSponsor.body.sponsors,
+  );
+  check("every entry belongs to the one sponsor linked so far", (withSponsor.body.sponsors ?? []).every((s: { id: number }) => s.id === pubSponsorId), withSponsor.body.sponsors);
+  check(
+    "the session_page entry's message rides along (the player link was created with no message)",
+    withSponsor.body.sponsors?.find((s: { placement: string }) => s.placement === "session_page")?.message === "E2E sponsor message",
+    withSponsor.body.sponsors,
+  );
+  check(
+    "the sponsor's logo and website are public on every entry",
+    (withSponsor.body.sponsors ?? []).every((s: { logo_url: string; website_url: string }) => s.logo_url === "https://example.test/logo.png" && s.website_url === "https://example.test"),
+    withSponsor.body.sponsors,
+  );
   const withSponsorRaw = JSON.stringify(withSponsor.body);
   check("the sponsor's contact_email never appears in the public payload", !withSponsorRaw.includes("contact_email") && !withSponsorRaw.includes(`pub-sponsor-${RUN}@example.test`), withSponsorRaw.length);
 
@@ -2021,7 +2036,7 @@ async function main() {
   await call(`/api/content-sponsors/${futureLinkId}`, { method: "PUT", token: adminToken, body: { placement: "session_page", starts_at: new Date(Date.now() + 30 * 86_400_000).toISOString() } });
 
   const withFutureLink = await call(`/api/content/${pubSponsoredContent.slug}`);
-  check("a sponsorship that hasn't started yet does not appear", withFutureLink.body.sponsors?.length === 1, withFutureLink.body.sponsors);
+  check("a sponsorship that hasn't started yet does not appear — still just the original session_page + player pair", withFutureLink.body.sponsors?.length === 2, withFutureLink.body.sponsors);
 
   const pastEndedSponsor = await call("/api/sponsors", { method: "POST", token: adminToken, body: { name: `E2E Pub Ended Sponsor ${RUN}` } });
   const pastEndedSponsorId = pastEndedSponsor.body.sponsor?.id;
@@ -2037,6 +2052,7 @@ async function main() {
 
   const withEndedLink = await call(`/api/content/${pubSponsoredContent.slug}`);
   check("a sponsorship whose window has already ended does not appear", (withEndedLink.body.sponsors ?? []).every((s: { id: number }) => s.id !== pastEndedSponsorId), withEndedLink.body.sponsors);
+  check("...and the active count stays at 2, unaffected by the ended one", withEndedLink.body.sponsors?.length === 2, withEndedLink.body.sponsors);
 
   const deactivatedSponsor = await call("/api/sponsors", { method: "POST", token: adminToken, body: { name: `E2E Pub Deactivated Sponsor ${RUN}` } });
   const deactivatedSponsorId = deactivatedSponsor.body.sponsor?.id;
@@ -2050,13 +2066,13 @@ async function main() {
   if (deactivatedLinkId) created.contentSponsors.push(deactivatedLinkId);
 
   const withNewlyActiveSponsor = await call(`/api/content/${pubSponsoredContent.slug}`);
-  check("a second, currently-active sponsor joins the first rather than replacing it", withNewlyActiveSponsor.body.sponsors?.length === 2, withNewlyActiveSponsor.body.sponsors);
+  check("a second, currently-active sponsor's session_page link joins the original session_page+player pair rather than replacing them", withNewlyActiveSponsor.body.sponsors?.length === 3, withNewlyActiveSponsor.body.sponsors);
 
   await call(`/api/sponsors/${deactivatedSponsorId}`, { method: "PUT", token: adminToken, body: { name: `E2E Pub Deactivated Sponsor ${RUN}`, is_active: false } });
   const withDeactivatedSponsor = await call(`/api/content/${pubSponsoredContent.slug}`);
   check(
     "a sponsor deactivated after the link was created no longer appears — the link itself doesn't need touching",
-    withDeactivatedSponsor.body.sponsors?.length === 1 && withDeactivatedSponsor.body.sponsors[0]?.id === pubSponsorId,
+    withDeactivatedSponsor.body.sponsors?.length === 2 && (withDeactivatedSponsor.body.sponsors ?? []).every((s: { id: number }) => s.id === pubSponsorId),
     withDeactivatedSponsor.body.sponsors,
   );
 
@@ -2963,6 +2979,81 @@ async function main() {
   const posB = heroIds.indexOf(trendB.id);
   check("both trending fixtures actually appear in the public hero payload", posA !== -1 && posB !== -1, heroIds);
   check("A sorts before B in the public hero — the same order the admin's promote/demote left them in", posA < posB, { posA, posB, heroIds });
+
+  // ─── Trending — hero placement sponsor display ────────────────────────────
+  //
+  // content_sponsors' "hero" placement is resolved by buildHero() itself
+  // (via the shared lib/sponsors.ts helper) and attached only to hero cards
+  // — a completely different code path from routes/content.ts's
+  // session_page/player handling exercised earlier. routes/contentSponsors.ts's
+  // mutations rebuild the homepage cache (same "never let a stale cache
+  // block the edit" call routes/trending.ts already makes), so a hero-
+  // placement change is expected to show up on the very next
+  // GET /api/homepage, not after some TTL.
+  section("Trending — hero placement sponsor display");
+
+  const heroSponsor = await call("/api/sponsors", { method: "POST", token: adminToken, body: { name: `E2E Hero Sponsor ${RUN}` } });
+  const heroSponsorId = heroSponsor.body.sponsor?.id;
+  if (heroSponsorId) created.sponsors.push(heroSponsorId);
+
+  const heroLink = await call("/api/content-sponsors", {
+    method: "POST",
+    token: adminToken,
+    body: { content_id: trendA.id, sponsor_id: heroSponsorId, placement: "hero", message: "E2E hero sponsor message" },
+  });
+  const heroLinkId = heroLink.body.link?.id;
+  if (heroLinkId) created.contentSponsors.push(heroLinkId);
+
+  const homepageWithHeroSponsor = await call("/api/homepage?surface=home&platform=web&audience=logged_out");
+  const heroCardA = (homepageWithHeroSponsor.body.hero ?? []).find((c: { id: number }) => c.id === trendA.id);
+  const heroCardB = (homepageWithHeroSponsor.body.hero ?? []).find((c: { id: number }) => c.id === trendB.id);
+  check(
+    "the hero-placement link appears on A's own hero card the moment it's created — no TTL wait",
+    (heroCardA?.sponsors ?? []).some((s: { id: number }) => s.id === heroSponsorId),
+    heroCardA?.sponsors,
+  );
+  check(
+    "the sponsor's message rides along on the hero card too",
+    heroCardA?.sponsors?.find((s: { id: number }) => s.id === heroSponsorId)?.message === "E2E hero sponsor message",
+    heroCardA?.sponsors,
+  );
+  check(
+    "B's own hero card is unaffected — the sponsor doesn't leak onto a sibling slide",
+    !(heroCardB?.sponsors ?? []).some((s: { id: number }) => s.id === heroSponsorId),
+    heroCardB?.sponsors,
+  );
+
+  // The reverse isolation: a session_page/player placement on this SAME
+  // content/sponsor pair must NOT show up on the hero card — buildHero()
+  // only ever reads its own "hero" placement, the mirror of the
+  // session_page/player-only assertions in the section above.
+  const nonHeroLink = await call("/api/content-sponsors", {
+    method: "POST",
+    token: adminToken,
+    body: { content_id: trendA.id, sponsor_id: heroSponsorId, placement: "player" },
+  });
+  const nonHeroLinkId = nonHeroLink.body.link?.id;
+  if (nonHeroLinkId) created.contentSponsors.push(nonHeroLinkId);
+
+  const homepageAfterPlayerLink = await call("/api/homepage?surface=home&platform=web&audience=logged_out");
+  const heroCardAAfterPlayerLink = (homepageAfterPlayerLink.body.hero ?? []).find((c: { id: number }) => c.id === trendA.id);
+  check(
+    "a player-placement link on the same content/sponsor pair doesn't leak into the hero card's own sponsors",
+    heroCardAAfterPlayerLink?.sponsors?.length === 1,
+    heroCardAAfterPlayerLink?.sponsors,
+  );
+
+  const deleteHeroLink = await call(`/api/content-sponsors/${heroLinkId}`, { method: "DELETE", token: adminToken });
+  check("removing the hero-placement link succeeds", deleteHeroLink.status === 200, deleteHeroLink.body);
+  created.contentSponsors = created.contentSponsors.filter((id) => id !== heroLinkId);
+
+  const homepageAfterRemoval = await call("/api/homepage?surface=home&platform=web&audience=logged_out");
+  const heroCardAAfterRemoval = (homepageAfterRemoval.body.hero ?? []).find((c: { id: number }) => c.id === trendA.id);
+  check(
+    "removing the hero link takes effect on the very next request — no stale-cache wait",
+    !(heroCardAAfterRemoval?.sponsors ?? []).some((s: { id: number }) => s.id === heroSponsorId),
+    heroCardAAfterRemoval?.sponsors,
+  );
 
   section("Trending — suggestions (recently popular, not yet trending)");
 

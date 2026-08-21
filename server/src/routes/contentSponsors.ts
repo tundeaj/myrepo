@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { ApiError } from "../lib/errors.js";
+import { rebuildAllCaches } from "../lib/homepageCache.js";
 import type { Request, Response, NextFunction } from "express";
 
 /**
@@ -20,12 +21,26 @@ import type { Request, Response, NextFunction } from "express";
  * only ever touches content_sponsors — it never flips show_in_hero or any
  * other ContentItem field, so it shares no invariant with lib/trending.ts.
  *
- * Deliberately NOT exposed on any public endpoint yet — content.ts's public
- * detail payload doesn't surface sponsorship at all. Rendering a "Sponsored
- * by" badge on the public site is a real, separate follow-up, not silently
- * assumed here.
+ * Publicly visible via routes/content.ts (session_page + player placements)
+ * and homepageCache.ts's buildHero() (hero placement), both through the
+ * shared lib/sponsors.ts resolver. The hero placement specifically is read
+ * from the homepage CACHE, not live per-request (GET /api/homepage only
+ * rebuilds on its own when the cached row has actually expired) — so every
+ * mutation here AWAITS a rebuild before responding, same as
+ * lib/trending.ts's syncHeroTrending() does for the same "must be visible
+ * on the very next request, not after some TTL" reason. Wrapped in
+ * try/catch: a rebuild failure is logged, never the reason the edit itself
+ * fails or rolls back — the link is already committed by the time this runs.
  */
 export const contentSponsorsRouter = Router();
+
+async function refreshHomepageCache() {
+  try {
+    await rebuildAllCaches();
+  } catch (err) {
+    console.error("[contentSponsors] homepage cache rebuild failed:", err);
+  }
+}
 
 const SELECT = {
   id: true,
@@ -137,6 +152,7 @@ contentSponsorsRouter.post("/", async (req: Request, res: Response, next: NextFu
       },
       select: SELECT,
     });
+    await refreshHomepageCache();
     res.status(201).json({ link });
   } catch (err) {
     if (err instanceof z.ZodError) return next(new ApiError(422, err.errors[0]?.message ?? "Validation error"));
@@ -179,6 +195,7 @@ contentSponsorsRouter.put("/:id", async (req: Request, res: Response, next: Next
       },
       select: SELECT,
     });
+    await refreshHomepageCache();
     res.json({ link });
   } catch (err) {
     if (err instanceof z.ZodError) return next(new ApiError(422, err.errors[0]?.message ?? "Validation error"));
@@ -199,6 +216,7 @@ contentSponsorsRouter.delete("/:id", async (req: Request, res: Response, next: N
     const existing = await prisma.contentSponsor.findUnique({ where: { id } });
     if (!existing) throw new ApiError(404, "That sponsorship link doesn't exist.");
     await prisma.contentSponsor.delete({ where: { id } });
+    await refreshHomepageCache();
     res.json({ ok: true });
   } catch (err) {
     next(err);

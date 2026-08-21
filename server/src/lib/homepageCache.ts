@@ -1,6 +1,7 @@
 import { prisma } from "./prisma.js";
 import { getRowType, isPersonalRow } from "./rowTypes.js";
 import { endOfWeek, daysAgo } from "./dates.js";
+import { resolveActiveSponsors, type PublicSponsor } from "./sponsors.js";
 
 // ─── Card payload ─────────────────────────────────────────────────────────────
 //
@@ -64,6 +65,11 @@ export interface ContentCard {
    *  this payload is public, so a protected asset's URL must never appear in it.
    *  null means the card falls back to its info overlay on hover. */
   trailer_url: string | null;
+  /** Present only on hero cards (buildHero() attaches it; every other row's
+   *  decorateCards() call leaves it undefined) — a content_sponsors link at
+   *  the "hero" placement, resolved the same way session_page/player are on
+   *  the detail page. See lib/sponsors.ts. */
+  sponsors?: PublicSponsor[];
 }
 
 export interface SpeakerCard {
@@ -330,6 +336,16 @@ async function cacheTtlMinutes(): Promise<number> {
 
 const HERO_LIMIT = 5;
 
+// Attaches each card's "hero"-placement sponsor(s), if any — the one step
+// that's specific to the hero row and not shared with decorateCards() (which
+// every other row also calls, and which has no business fetching sponsor
+// data for rows that aren't the hero).
+async function attachHeroSponsors(cards: ContentCard[]): Promise<ContentCard[]> {
+  if (!cards.length) return cards;
+  const sponsorsByContent = await resolveActiveSponsors(cards.map((c) => c.id), ["hero"]);
+  return cards.map((c) => ({ ...c, sponsors: sponsorsByContent.get(c.id) ?? [] }));
+}
+
 async function buildHero(): Promise<ContentCard[]> {
   // Explicitly flagged hero items first, in the admin's own trending order —
   // see routes/trending.ts, the only writer of hero_display_order. Ties (or a
@@ -343,7 +359,7 @@ async function buildHero(): Promise<ContentCard[]> {
     take: HERO_LIMIT,
     select: CARD_SELECT,
   });
-  if (flagged.length) return decorateCards(flagged as RawCard[]);
+  if (flagged.length) return attachHeroSponsors(await decorateCards(flagged as RawCard[]));
 
   const fallback = await prisma.contentItem.findMany({
     where: visibleWhere({ OR: [{ status: "live" }, { is_featured: true }] }),
@@ -351,7 +367,7 @@ async function buildHero(): Promise<ContentCard[]> {
     take: HERO_LIMIT,
     select: CARD_SELECT,
   });
-  return decorateCards(fallback as RawCard[]);
+  return attachHeroSponsors(await decorateCards(fallback as RawCard[]));
 }
 
 /** Settings the public page needs at paint time. Nothing is_secret is reachable —

@@ -2,6 +2,15 @@
 // allowlist assembled in server/src/lib/homepageCache.ts — if a field isn't
 // here, it isn't in the payload, by design.
 
+export interface PublicSponsorCard {
+  id: number;
+  name: string | null;
+  logo_url: string | null;
+  website_url: string | null;
+  message: string | null;
+  placement: string;
+}
+
 export interface ContentCard {
   id: number;
   slug: string;
@@ -25,6 +34,9 @@ export interface ContentCard {
   trailer_url: string | null;
   /** Present only on personal rows, where the viewer has partial progress. */
   progress_pct?: number;
+  /** Present only on hero cards — a content_sponsors link at the "hero"
+   *  placement. See server/src/lib/sponsors.ts. */
+  sponsors?: PublicSponsorCard[];
 }
 
 export interface SpeakerCard {

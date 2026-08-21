@@ -38,6 +38,7 @@ const FALLBACKS: Record<string, string> = {
   "hero.more_details": "More details",
   "hero.watching_now": "{count} watching now",
   "hero.starts_in": "Starts in {time}",
+  "hero.presented_by": "Presented by",
   "card.live": "LIVE",
   "card.free": "Free",
   "card.audio_available": "Audio version available",

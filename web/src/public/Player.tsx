@@ -43,6 +43,11 @@ interface PlaybackSessionResponse {
 interface ContentSummary {
   content: { id: number; title: string; slug: string; content_type: string };
   access: AccessResult;
+  /** "session_page" and "player" placement content_sponsors links — see
+   *  lib/sponsors.ts. This component only ever renders the "player" ones;
+   *  Detail.tsx (the page this player's own back-link returns to) owns
+   *  "session_page". */
+  sponsors?: { id: number; name: string | null; logo_url: string | null; website_url: string | null; message: string | null; placement: string }[];
 }
 
 const HEARTBEAT_MS = 15_000;
@@ -278,6 +283,30 @@ export function Player() {
                 style={{ opacity: session.settings.watermark_opacity / 100 }}
               >
                 {getToken() ? "Registered viewer" : "Preview"}
+              </div>
+            )}
+
+            {/* "player"-placement sponsor overlay — resolved by the same
+                content.ts payload Detail.tsx's own "Sponsored by" section
+                reads, filtered to the one placement this component owns.
+                Absent entirely, not shown empty, when nothing's currently
+                active for this content. */}
+            {summary.sponsors?.some((s) => s.placement === "player") && (
+              <div className="pointer-events-none absolute left-4 top-4 flex items-center gap-1.5 rounded bg-black/50 px-2 py-1 text-xs text-slate-200 backdrop-blur">
+                <span className="text-slate-400">Presented by</span>
+                {summary.sponsors
+                  .filter((s) => s.placement === "player")
+                  .map((s) => (
+                    <span key={s.id} className="pointer-events-auto font-medium text-white">
+                      {s.website_url ? (
+                        <a href={s.website_url} target="_blank" rel="noopener noreferrer sponsored" className="hover:underline">
+                          {s.name ?? "Sponsor"}
+                        </a>
+                      ) : (
+                        s.name ?? "Sponsor"
+                      )}
+                    </span>
+                  ))}
               </div>
             )}
 

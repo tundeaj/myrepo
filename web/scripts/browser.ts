@@ -1045,6 +1045,104 @@ async function run(browser: Browser) {
     if (psSponsorId) await fetch(`${API_BASE}/api/sponsors/${psSponsorId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
   }
 
+  // ─── Hero sponsor display ──────────────────────────────────────────────────
+  //
+  // The "player"-placement counterpart (a badge inside Player.tsx's video
+  // overlay) is deliberately NOT exercised here — this script only ever
+  // creates fixtures through the real HTTP API, and there's no admin
+  // endpoint to attach a genuinely playable media asset to a session that
+  // way (e2e.ts's makePlayableContent does it with a direct Prisma insert,
+  // which this script has no access to). e2e's own assertions already cover
+  // the "player" placement thoroughly at the data layer — GET /api/content/:slug's
+  // `sponsors` array, tagged and filtered correctly. This section covers the
+  // one placement that's actually reachable through fixtures alone: "hero".
+  section("Hero sponsor display");
+
+  if (adminToken) {
+    const stamp = Date.now();
+    const hbSponsor = await fetch(`${API_BASE}/api/sponsors`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ name: `Browser Check Hero Sponsor ${stamp}` }),
+    }).then((r) => r.json());
+    const hbSponsorId = hbSponsor?.sponsor?.id;
+    check("a fixture sponsor is created for this check", typeof hbSponsorId === "number", hbSponsor);
+
+    const hbSessionTitle = `Browser Check Hero Session ${stamp}`;
+    const hbSession = await fetch(`${API_BASE}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({
+        title: hbSessionTitle,
+        access_level: "public",
+        status: "registration_open",
+        scheduled_start_at: new Date(Date.now() + 86_400_000).toISOString(),
+        scheduled_duration_minutes: 60,
+      }),
+    }).then((r) => r.json());
+    const hbSessionId = hbSession?.session?.id;
+    check("a fixture public session is created for this check", typeof hbSessionId === "number", hbSession);
+
+    if (hbSponsorId && hbSessionId) {
+      // Onto the real hero list — same POST /api/trending the admin Trending
+      // page's own "Add" search box uses.
+      await fetch(`${API_BASE}/api/trending`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ content_id: hbSessionId }),
+      });
+
+      const hbLink = await fetch(`${API_BASE}/api/content-sponsors`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ content_id: hbSessionId, sponsor_id: hbSponsorId, placement: "hero" }),
+      }).then((r) => r.json());
+      const hbLinkId = hbLink?.link?.id;
+      check("the fixture sponsor is linked at hero placement", typeof hbLinkId === "number", hbLink);
+
+      const beforeHbErrors = pageErrors.length;
+      // GET /api/homepage sends Cache-Control: public, max-age=60 — a
+      // deliberate perf choice for the anonymous homepage, and independent
+      // of the server-side homepage-cache table this round's awaited
+      // rebuild already keeps fresh. Without this header, the browser's own
+      // disk cache would happily replay the very first "/" load from the
+      // top of this file for up to 60s, hiding the fixture just linked
+      // above regardless of how fresh the server's data actually is. This
+      // is the test forcing revalidation, not a workaround for stale data.
+      await page.setExtraHTTPHeaders({ "Cache-Control": "no-cache" });
+      await page.goto(BASE, { waitUntil: "networkidle" });
+      await page.waitForTimeout(800);
+
+      // Added last, so it's very unlikely to already be the active slide —
+      // jump straight to it via its own rotation-indicator pill rather than
+      // waiting out the real 8s auto-advance.
+      const pill = page.locator(`button[aria-label="${hbSessionTitle}"]`);
+      const hasPill = await pill.count();
+      check("the fixture appears as a real hero slide (its rotation pill exists)", hasPill > 0, { hasPill });
+
+      if (hasPill > 0) {
+        await pill.first().click();
+        await page.waitForTimeout(500);
+
+        const hasPresentedBy = await page.locator("text=Presented by").count();
+        check("the hero slide renders a 'Presented by' badge for the real hero-placement link", hasPresentedBy > 0, { hasPresentedBy });
+
+        const hasSponsorName = await page.locator(`text=Browser Check Hero Sponsor ${stamp}`).count();
+        check("the sponsor's own name renders in the hero badge", hasSponsorName > 0, { hasSponsorName });
+      }
+
+      check("/ (hero sponsor badge) throws no uncaught render error", pageErrors.length === beforeHbErrors, pageErrors.slice(beforeHbErrors));
+
+      if (hbLinkId) await fetch(`${API_BASE}/api/content-sponsors/${hbLinkId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    }
+
+    if (hbSessionId) {
+      await fetch(`${API_BASE}/api/trending/${hbSessionId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+      await fetch(`${API_BASE}/api/sessions/${hbSessionId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    }
+    if (hbSponsorId) await fetch(`${API_BASE}/api/sponsors/${hbSponsorId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+  }
+
   check("no uncaught page errors across the run", pageErrors.length === 0, pageErrors);
 
   await page.close();
