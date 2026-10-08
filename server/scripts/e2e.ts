@@ -2282,6 +2282,129 @@ async function main() {
   const pagedOrders = await call("/api/orders?per_page=1", { token: adminToken });
   check("per_page is honoured and meta.pages reflects it", pagedOrders.body.orders?.length === 1 && pagedOrders.body.meta?.per_page === 1 && pagedOrders.body.meta?.total >= 3, pagedOrders.body.meta);
 
+  // ─── Player Analytics — real PlaybackSession telemetry, aggregated ─────────
+  //
+  // `/admin/analytics/player` was a PlaceholderPage with no schema reference
+  // at all. Investigating found PlaybackSession already carries real,
+  // currently-written telemetry (device_type, watch_seconds, completion_pct,
+  // buffering, quality_changes) from every real heartbeat — but several
+  // other columns (os/browser/country/network_type/avg_bitrate_kbps/
+  // load_time_ms) are schema-provisioned and never actually populated.
+  // Checked with the user: aggregate only the real fields, state the
+  // unpopulated ones as a boundary rather than fake a breakdown for them.
+  section("Player Analytics — real PlaybackSession telemetry");
+
+  const viewerPlayerAnalytics = await call("/api/analytics/player", { token: sessionToken });
+  check("a signed-in VIEWER cannot see Player Analytics", viewerPlayerAnalytics.status === 403, viewerPlayerAnalytics.body);
+
+  const badPlayerRange = await call("/api/analytics/player?range=365", { token: adminToken });
+  check("an invalid range is rejected", badPlayerRange.status === 400, badPlayerRange.body);
+
+  const { item: analyticsContent, asset: analyticsAsset } = await makePlayableContent("public", {
+    title: `E2E Player Analytics ${RUN}`,
+    slug: `e2e-player-analytics-${RUN}`,
+  });
+  check("the fixture asset has a real duration to compute completion against", analyticsAsset.duration_seconds === 600, analyticsAsset);
+
+  const analyticsPlaySession = await call("/api/playback/session", {
+    method: "POST",
+    token: sessionToken,
+    body: { content_id: analyticsContent.id, device_type: "mobile" },
+  });
+  const analyticsSessionId = analyticsPlaySession.body.playback_session_id;
+  if (analyticsSessionId) created.playbackSessions.push(analyticsSessionId);
+  check("starting a fixture playback session succeeds", typeof analyticsSessionId === "number", analyticsPlaySession.body);
+
+  // 300 of 600 seconds — exactly 50% completion, a deterministic number this
+  // section can assert against precisely, not just "greater than zero."
+  const analyticsHeartbeat = await call(`/api/playback/${analyticsSessionId}/heartbeat`, {
+    method: "POST",
+    token: sessionToken,
+    body: { watch_seconds: 300, buffering_events: 2, buffering_seconds: 4, quality_changes: 1 },
+  });
+  check("the fixture heartbeat succeeds", analyticsHeartbeat.status === 200, analyticsHeartbeat.body);
+
+  const playerAnalytics = await call("/api/analytics/player?range=90", { token: adminToken });
+  check("the admin can load Player Analytics", playerAnalytics.status === 200, playerAnalytics.body);
+
+  const analyticsRow = (playerAnalytics.body.top_content ?? []).find((c: { content_id: number }) => c.content_id === analyticsContent.id);
+  check("the fixture content appears in top_content with exactly one session", analyticsRow?.sessions === 1, analyticsRow);
+  check("its avg_completion_pct reflects the real 300/600 heartbeat, not a guess", analyticsRow?.avg_completion_pct === 50, analyticsRow);
+  check("its total_watch_seconds reflects the real heartbeat value", analyticsRow?.total_watch_seconds === 300, analyticsRow);
+
+  const mobileDevice = (playerAnalytics.body.device_breakdown ?? []).find((d: { device_type: string }) => d.device_type === "mobile");
+  check("the device breakdown includes at least the fixture's real mobile session", (mobileDevice?.count ?? 0) >= 1, mobileDevice);
+
+  // ─── PPV & Revenue Analytics — real Order/EarningLine data, aggregated ─────
+  //
+  // `/admin/analytics/ppv-revenue` was also a PlaceholderPage with no schema
+  // reference. ContentUsage.revenue_ngn looked like the obvious source but
+  // is entirely dead schema — nothing anywhere writes to it. Checked with
+  // the user: read from Order (order_type: 'direct', a content purchase)
+  // and EarningLine (the speaker's real accrued/paid share) instead, and
+  // never combine NGN and USD into one sum.
+  section("PPV & Revenue Analytics — real Order/EarningLine data");
+
+  const viewerPpvAnalytics = await call("/api/analytics/ppv-revenue", { token: sessionToken });
+  check("a signed-in VIEWER cannot see PPV & Revenue Analytics", viewerPpvAnalytics.status === 403, viewerPpvAnalytics.body);
+
+  const badPpvRange = await call("/api/analytics/ppv-revenue?range=bogus", { token: adminToken });
+  check("an invalid range is rejected", badPpvRange.status === 400, badPpvRange.body);
+
+  const ppvContentNgn = await makeContent("purchase", { title: `E2E PPV NGN ${RUN}`, slug: `e2e-ppv-ngn-${RUN}` });
+  const ppvContentUsd = await makeContent("purchase", { title: `E2E PPV USD ${RUN}`, slug: `e2e-ppv-usd-${RUN}` });
+  const ppvSpeaker = await makeSpeaker();
+  const ppvBuyerEmail = `e2e-ppv-buyer-${RUN}@example.test`;
+  const ppvBuyerReg = await call("/api/auth/register", {
+    method: "POST",
+    body: { email: ppvBuyerEmail, password: "correct-horse-battery", full_name: "E2E PPV Buyer", country: "NG" },
+  });
+  const ppvBuyer = await prisma.user.findUnique({ where: { email: ppvBuyerEmail } });
+  if (ppvBuyer) created.users.push(ppvBuyer.id);
+  check("the PPV buyer registers", ppvBuyerReg.status === 201 && ppvBuyer != null, ppvBuyerReg.body);
+
+  const ppvOrderNgn = await prisma.order.create({
+    data: { user_id: ppvBuyer!.id, content_id: ppvContentNgn.id, amount_ngn: "7500", currency: "NGN", status: "paid", order_type: "direct", payment_provider: "paystack" },
+  });
+  await prisma.earningLine.create({
+    data: { speaker_id: ppvSpeaker.id, content_id: ppvContentNgn.id, order_id: ppvOrderNgn.id, gross_ngn: "3000", earned_ngn: "3000", status: "paid" },
+  });
+
+  const ppvOrderUsd = await prisma.order.create({
+    data: { user_id: ppvBuyer!.id, content_id: ppvContentUsd.id, amount_ngn: "25", currency: "USD", status: "paid", order_type: "direct", payment_provider: "stripe" },
+  });
+
+  // Outside the 7-day range on purpose, to prove range filtering actually
+  // excludes it — same "assert the boundary actually excludes" discipline
+  // Trending's own suggestion-window test already applies.
+  const ppvContentOld = await makeContent("purchase", { title: `E2E PPV Old ${RUN}`, slug: `e2e-ppv-old-${RUN}` });
+  await prisma.order.create({
+    data: {
+      user_id: ppvBuyer!.id, content_id: ppvContentOld.id, amount_ngn: "5000", currency: "NGN", status: "paid", order_type: "direct", payment_provider: "paystack",
+      created_at: new Date(Date.now() - 30 * 86_400_000),
+    },
+  });
+
+  const ppvAnalytics90 = await call("/api/analytics/ppv-revenue?range=90", { token: adminToken });
+  check("the admin can load PPV & Revenue Analytics", ppvAnalytics90.status === 200, ppvAnalytics90.body);
+
+  const ngnRow = (ppvAnalytics90.body.top_content ?? []).find((c: { content_id: number }) => c.content_id === ppvContentNgn.id);
+  check("the NGN fixture shows the real gross revenue and order count", ngnRow?.orders === 1 && ngnRow?.gross_ngn === 7500 && ngnRow?.gross_usd === 0, ngnRow);
+  check("the NGN fixture's speaker-earned and speaker-paid reflect the real EarningLine row", ngnRow?.speaker_earned_ngn === 3000 && ngnRow?.speaker_paid_ngn === 3000, ngnRow);
+
+  const usdRow = (ppvAnalytics90.body.top_content ?? []).find((c: { content_id: number }) => c.content_id === ppvContentUsd.id);
+  check("a USD order's gross is reported under gross_usd, never mixed into gross_ngn", usdRow?.gross_usd === 25 && usdRow?.gross_ngn === 0, usdRow);
+
+  const oldRowIn90 = (ppvAnalytics90.body.top_content ?? []).find((c: { content_id: number }) => c.content_id === ppvContentOld.id);
+  check("a 30-day-old order is correctly included within a 90-day range", oldRowIn90?.orders === 1 && oldRowIn90?.gross_ngn === 5000, oldRowIn90);
+
+  const ppvAnalytics7 = await call("/api/analytics/ppv-revenue?range=7", { token: adminToken });
+  const oldRowIn7 = (ppvAnalytics7.body.top_content ?? []).find((c: { content_id: number }) => c.content_id === ppvContentOld.id);
+  check("the same 30-day-old order is correctly excluded from a 7-day range", oldRowIn7 === undefined, { top_content: ppvAnalytics7.body.top_content });
+
+  const ngnRowIn7 = (ppvAnalytics7.body.top_content ?? []).find((c: { content_id: number }) => c.content_id === ppvContentNgn.id);
+  check("a fresh order still appears within a 7-day range", ngnRowIn7?.orders === 1, ngnRowIn7);
+
   // ─── Sponsors — admin CRUD ──────────────────────────────────────────────────
   section("Sponsors — admin CRUD");
 

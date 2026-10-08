@@ -834,6 +834,46 @@ async function run(browser: Browser) {
     if (orderSessionId) await fetch(`${API_BASE}/api/sessions/${orderSessionId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } }).catch(() => undefined);
   }
 
+  // ─── Player Analytics & PPV / Revenue Analytics ─────────────────────────────
+  //
+  // scripts/e2e.ts's own sections already cover the data layer precisely
+  // (exact completion_pct/watch_seconds against a known fixture, NGN/USD
+  // never mixed, range filtering). Both pages are read-only aggregate
+  // dashboards, not CRUD forms — by now the shared dev database already
+  // carries real PlaybackSession/Order activity from every section run so
+  // far this session, so this checks what a real browser shows against
+  // that real, already-populated data: real stat tiles (not a stuck
+  // loading state), and a real range-toggle interaction that reloads
+  // without error — the same lighter-weight shape this file already uses
+  // for other read-only dashboards (see "Subscription revenue accrual").
+  section("Player Analytics & PPV / Revenue Analytics");
+
+  if (adminToken) {
+    const beforePlayerErrors = pageErrors.length;
+    await page.goto(`${BASE}/admin/analytics/player`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(500);
+
+    const sessionsTile = await page.locator("text=Sessions").locator("xpath=../following-sibling::p[1]").first().textContent().catch(() => null);
+    check("the Sessions stat tile renders a real number, not a stuck loading state", sessionsTile != null && sessionsTile !== "…", { sessionsTile });
+    check("/admin/analytics/player throws no uncaught render error", pageErrors.length === beforePlayerErrors, pageErrors.slice(beforePlayerErrors));
+
+    await page.locator('button:has-text("7d")').click();
+    await page.waitForTimeout(600);
+    const sessionsTileAfterRangeClick = await page.locator("text=Sessions").locator("xpath=../following-sibling::p[1]").first().textContent().catch(() => null);
+    check("switching the range reloads the real stat, not just the label", sessionsTileAfterRangeClick != null && sessionsTileAfterRangeClick !== "…", { sessionsTileAfterRangeClick });
+    check("/admin/analytics/player (range switch) throws no uncaught render error", pageErrors.length === beforePlayerErrors, pageErrors.slice(beforePlayerErrors));
+
+    const beforePpvErrors = pageErrors.length;
+    await page.goto(`${BASE}/admin/analytics/ppv-revenue`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(500);
+
+    const ordersTile = await page.locator("text=PPV orders").locator("xpath=../following-sibling::p[1]").first().textContent().catch(() => null);
+    check("the PPV orders stat tile renders a real number, not a stuck loading state", ordersTile != null && ordersTile !== "…", { ordersTile });
+    const hasRevenueTable = await page.locator("text=Revenue by content").count();
+    check("the revenue-by-content section renders", hasRevenueTable > 0, { hasRevenueTable });
+    check("/admin/analytics/ppv-revenue throws no uncaught render error", pageErrors.length === beforePpvErrors, pageErrors.slice(beforePpvErrors));
+  }
+
   // ─── Sponsors, Advertisers, Ads ─────────────────────────────────────────────
   section("Sponsors, Advertisers, Ads");
 
