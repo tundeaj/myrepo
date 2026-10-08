@@ -557,6 +557,44 @@ async function run(browser: Browser) {
     if (pageId) await fetch(`${API_BASE}/api/pages/${pageId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
   }
 
+  // ─── Bulk Import / Export ───────────────────────────────────────────────────
+  //
+  // scripts/e2e.ts's own "Bulk Import / Export" section already covers the
+  // endpoints thoroughly at the data layer (per-row isolation, CSV content,
+  // the 500-row cap). This section's job is what only a real browser can
+  // prove: pasting real CSV text into the actual textarea and clicking the
+  // actual Import button renders the real per-row result back. The
+  // file-picker/download half of the UI isn't exercised here — there's no
+  // reliable, HTTP-only way for this script to drive a native file dialog or
+  // a browser download event, the same kind of browser-testability boundary
+  // this file has already stated elsewhere (see "Hero sponsor display").
+  section("Bulk Import / Export");
+
+  if (adminToken) {
+    const importName = `Browser Check Bulk Speaker ${Date.now()}`;
+    const csv = `full_name,email,phone,title,organisation,bio\n${importName},,,,,`;
+
+    const beforeBulkImportErrors = pageErrors.length;
+    await page.goto(`${BASE}/admin/bulk-import`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(500);
+
+    // Two "Speakers"/"Categories" sections, each with their own textarea —
+    // the first one on the page is Speakers.
+    await page.locator("textarea").first().fill(csv);
+    await page.getByRole("button", { name: "Import CSV" }).first().click();
+    await page.waitForTimeout(600);
+
+    const hasCreatedSummary = await page.locator("text=1 row created").count();
+    check("importing through the real form renders the real per-row result", hasCreatedSummary > 0, { hasCreatedSummary });
+    check("/admin/bulk-import throws no uncaught render error", pageErrors.length === beforeBulkImportErrors, pageErrors.slice(beforeBulkImportErrors));
+
+    const speakerCheck = await fetch(`${API_BASE}/api/speakers?all=1`, { headers: { Authorization: `Bearer ${adminToken}` } }).then((r) => r.json());
+    const importedSpeaker = (speakerCheck?.speakers ?? []).find((s: { full_name: string }) => s.full_name === importName);
+    check("the row created through the real form is really persisted server-side", Boolean(importedSpeaker), importedSpeaker);
+
+    if (importedSpeaker) await fetch(`${API_BASE}/api/speakers/${importedSpeaker.id}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+  }
+
   // ─── Sponsors, Advertisers, Ads ─────────────────────────────────────────────
   section("Sponsors, Advertisers, Ads");
 

@@ -83,11 +83,11 @@ const PageLayout = lazy(() => import("./pages/layout/PageLayout").then((m) => ({
 const Trending = lazy(() => import("./pages/homepage/Trending").then((m) => ({ default: m.Trending })));
 const Promotions = lazy(() => import("./pages/promotions/Promotions").then((m) => ({ default: m.Promotions })));
 const Pages = lazy(() => import("./pages/pages/Pages").then((m) => ({ default: m.Pages })));
+const BulkImport = lazy(() => import("./pages/bulkImport/BulkImport").then((m) => ({ default: m.BulkImport })));
 
 // Routes not yet built — each will be replaced with a real page in future prompts
 const PLACEHOLDER_PATHS = [
   "subscriptions-orders",
-  "bulk-import",
   "community/spaces",
   "community/moderation",
   "analytics/player",
@@ -176,6 +176,7 @@ export function App() {
               uses for /admin/categories and /admin/sessions/categories. */}
           <Route path="pages" element={<Pages />} />
           <Route path="landing-pages" element={<Pages />} />
+          <Route path="bulk-import" element={<BulkImport />} />
 
           {/* ── Placeholder routes (future prompts) ── */}
           {PLACEHOLDER_PATHS.map((path) => (

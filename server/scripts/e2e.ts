@@ -1979,6 +1979,69 @@ async function main() {
   const deletePageAgain = await call(`/api/pages/${pageId}`, { method: "DELETE", token: adminToken });
   check("deleting an already-deleted page is refused", deletePageAgain.status === 404, deletePageAgain.body);
 
+  // ─── Bulk Import / Export — Speakers + Categories ───────────────────────────
+  //
+  // `/admin/bulk-import` was a PlaceholderPage with no schema behind it —
+  // "a future data-tools prompt" covering an unspecified entity. Scoped
+  // narrowly, confirmed with the user: CSV export + import for the two
+  // simplest flat entities already in the schema, not a generic import
+  // framework. Import is per-row, never all-or-nothing — one bad row in a
+  // batch never blocks the good ones, same principle the ratings bulk-
+  // moderation endpoint already applies.
+  section("Bulk Import / Export — Speakers + Categories");
+
+  const viewerSpeakerImport = await call("/api/bulk-import/speakers/import", { method: "POST", token: sessionToken, body: { csv: "full_name\nx" } });
+  check("a signed-in VIEWER cannot import speakers", viewerSpeakerImport.status === 403, viewerSpeakerImport.body);
+
+  const viewerSpeakerExport = await fetch(`${API}/api/bulk-import/speakers/export`, { headers: { Authorization: `Bearer ${sessionToken}` } });
+  check("a signed-in VIEWER cannot export speakers", viewerSpeakerExport.status === 403, { status: viewerSpeakerExport.status });
+
+  // Speakers: one good row, one missing full_name, one duplicate-name (still
+  // succeeds — only the slug gets de-duplicated, same rule the single-item
+  // POST /speakers already follows).
+  const speakerImportCsv = [
+    "full_name,email,phone,title,organisation,bio",
+    `E2E Bulk Speaker ${RUN},bulk-${RUN}@example.test,,CEO,Acme,"Says ""hi"" to everyone"`,
+    ",missing@example.test,,,,",
+  ].join("\n");
+  const speakerImportRes = await call("/api/bulk-import/speakers/import", { method: "POST", token: adminToken, body: { csv: speakerImportCsv } });
+  check("importing speakers succeeds overall (one good row, one bad)", speakerImportRes.status === 201, speakerImportRes.body);
+  check("exactly one speaker row is created", speakerImportRes.body.created?.length === 1 && speakerImportRes.body.created[0].full_name === `E2E Bulk Speaker ${RUN}`, speakerImportRes.body.created);
+  check("exactly one speaker row fails, for the real reason (missing full_name)", speakerImportRes.body.failed?.length === 1 && /full_name/.test(speakerImportRes.body.failed[0].error), speakerImportRes.body.failed);
+
+  const importedSpeaker = await prisma.speaker.findFirst({ where: { full_name: `E2E Bulk Speaker ${RUN}` } });
+  check("the imported speaker is really in the database, with the real CSV fields", importedSpeaker?.email === `bulk-${RUN}@example.test` && importedSpeaker?.bio === 'Says "hi" to everyone', importedSpeaker);
+  if (importedSpeaker) created.speakers.push(importedSpeaker.id);
+
+  const exportSpeakersRes = await fetch(`${API}/api/bulk-import/speakers/export`, { headers: { Authorization: `Bearer ${adminToken}` } });
+  const exportSpeakersText = await exportSpeakersRes.text();
+  check("exporting speakers succeeds and is a real CSV, not JSON", exportSpeakersRes.status === 200 && exportSpeakersText.startsWith("full_name,email,phone,title,organisation,bio"), exportSpeakersText.slice(0, 120));
+  check("the just-imported speaker round-trips back out in the export", exportSpeakersText.includes(`E2E Bulk Speaker ${RUN}`), exportSpeakersText.includes(`E2E Bulk Speaker ${RUN}`));
+
+  // Categories: one good row (booleans as "true"/"false" strings), one
+  // missing name.
+  const categoryImportCsv = [
+    "name,description,display_order,show_as_tile,is_active",
+    `E2E Bulk Category ${RUN},A bulk-imported category,9,true,false`,
+    ",no name,0,false,true",
+  ].join("\n");
+  const categoryImportRes = await call("/api/bulk-import/categories/import", { method: "POST", token: adminToken, body: { csv: categoryImportCsv } });
+  check("importing categories succeeds overall (one good row, one bad)", categoryImportRes.status === 201, categoryImportRes.body);
+  check("exactly one category row is created", categoryImportRes.body.created?.length === 1 && categoryImportRes.body.created[0].name === `E2E Bulk Category ${RUN}`, categoryImportRes.body.created);
+  check("exactly one category row fails, for the real reason (missing name)", categoryImportRes.body.failed?.length === 1 && /name/.test(categoryImportRes.body.failed[0].error), categoryImportRes.body.failed);
+
+  const importedCategory = await prisma.category.findFirst({ where: { name: `E2E Bulk Category ${RUN}` } });
+  check("the imported category has the real CSV fields, booleans parsed correctly", importedCategory?.display_order === 9 && importedCategory?.show_as_tile === true && importedCategory?.is_active === false, importedCategory);
+  if (importedCategory) created.categories.push(importedCategory.id);
+
+  const exportCategoriesRes = await fetch(`${API}/api/bulk-import/categories/export`, { headers: { Authorization: `Bearer ${adminToken}` } });
+  const exportCategoriesText = await exportCategoriesRes.text();
+  check("exporting categories succeeds and round-trips the just-imported row", exportCategoriesRes.status === 200 && exportCategoriesText.includes(`E2E Bulk Category ${RUN}`), exportCategoriesText.slice(0, 200));
+
+  const tooManyRowsCsv = "name\n" + Array.from({ length: 501 }, (_, i) => `Row ${i}`).join("\n");
+  const tooManyRowsRes = await call("/api/bulk-import/categories/import", { method: "POST", token: adminToken, body: { csv: tooManyRowsCsv } });
+  check("more than 500 rows in one import is rejected outright", tooManyRowsRes.status === 422, tooManyRowsRes.body);
+
   // ─── Sponsors — admin CRUD ──────────────────────────────────────────────────
   section("Sponsors — admin CRUD");
 
