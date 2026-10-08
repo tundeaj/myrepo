@@ -14,7 +14,6 @@ const ROUTE_NOTES: Record<string, { title: string; icon: string; builtIn: string
   "/admin/speakers": { title: "Speakers", icon: "mic", builtIn: "Prompt 03 — Add / Edit Session" },
   "/admin/users": { title: "Users", icon: "users", builtIn: "a future audience-management prompt" },
   "/admin/registrations": { title: "Registrations", icon: "ticket", builtIn: "a future audience-management prompt" },
-  "/admin/subscriptions-orders": { title: "Subscriptions & Orders", icon: "credit", builtIn: "Prompt 07 — Settings & Modules" },
   "/admin/plans": { title: "Plans", icon: "wallet", builtIn: "Prompt 07 — Settings & Modules" },
   "/admin/invoices": { title: "Corporate Invoices", icon: "file", builtIn: "Prompt 07 — Settings & Modules" },
   "/admin/analytics/player": { title: "Player Analytics", icon: "chart", builtIn: "a future analytics prompt" },

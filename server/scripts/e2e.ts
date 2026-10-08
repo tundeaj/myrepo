@@ -2193,6 +2193,95 @@ async function main() {
   const deleteSpaceInUse = await call(`/api/community-spaces/${spaceId}`, { method: "DELETE", token: adminToken });
   check("deleting a space that still has posts is refused", deleteSpaceInUse.status === 409, deleteSpaceInUse.body);
 
+  // ─── Orders — admin-wide list across every order_type ───────────────────────
+  //
+  // `/admin/subscriptions-orders` claimed "Prompt 07 — Settings & Modules" as
+  // its builtIn, unlike Promotions/Pages/Bulk Import/Community's "a future
+  // prompt" — and unlike those, half of it really was already built:
+  // subscriberAnalyticsRouter already covers Subscriptions (list/filter/
+  // cancel/CSV export) at /admin/analytics/subscribers. The real gap is
+  // Orders — every checkout transaction, any order_type — which had no
+  // admin list anywhere; routes/invoices.ts only ever queries the narrow
+  // corporate_invoice slice. Checked with the user: build the missing piece
+  // only, link to the existing Subscriptions page rather than duplicating it.
+  section("Orders — admin-wide list across every order_type");
+
+  const viewerOrdersList = await call("/api/orders", { token: sessionToken });
+  check("a signed-in VIEWER cannot list orders", viewerOrdersList.status === 403, viewerOrdersList.body);
+
+  const orderBuyerAEmail = `e2e-order-buyer-a-${RUN}@example.test`;
+  const orderBuyerAReg = await call("/api/auth/register", {
+    method: "POST",
+    body: { email: orderBuyerAEmail, password: "correct-horse-battery", full_name: "E2E Order Buyer A", country: "NG", job_role: "Tester" },
+  });
+  const orderBuyerA = await prisma.user.findUnique({ where: { email: orderBuyerAEmail } });
+  if (orderBuyerA) created.users.push(orderBuyerA.id);
+  check("order buyer A registers", orderBuyerAReg.status === 201 && orderBuyerA != null, orderBuyerAReg.body);
+
+  const orderBuyerBEmail = `e2e-order-buyer-b-${RUN}@example.test`;
+  const orderBuyerBReg = await call("/api/auth/register", {
+    method: "POST",
+    body: { email: orderBuyerBEmail, password: "correct-horse-battery", full_name: "E2E Order Buyer B", country: "NG", job_role: "Tester" },
+  });
+  const orderBuyerB = await prisma.user.findUnique({ where: { email: orderBuyerBEmail } });
+  if (orderBuyerB) created.users.push(orderBuyerB.id);
+  check("order buyer B registers", orderBuyerBReg.status === 201 && orderBuyerB != null, orderBuyerBReg.body);
+
+  const orderPlan = await prisma.plan.create({ data: { name: `E2E Order Plan ${RUN}`, price_ngn: "4000", billing_interval: "monthly", is_active: true } });
+  created.plans.push(orderPlan.id);
+  const orderContent = await makeContent("purchase", { title: `E2E Order Content ${RUN}`, slug: `e2e-order-content-${RUN}` });
+
+  const orderA = await prisma.order.create({
+    data: { user_id: orderBuyerA!.id, plan_id: orderPlan.id, amount_ngn: "4000", currency: "NGN", status: "paid", order_type: "direct", payment_provider: "paystack" },
+  });
+  const orderB = await prisma.order.create({
+    data: { user_id: orderBuyerA!.id, content_id: orderContent.id, amount_ngn: "5000", currency: "NGN", status: "pending", order_type: "corporate_invoice", payment_provider: "paystack" },
+  });
+  const orderC = await prisma.order.create({
+    data: { user_id: orderBuyerB!.id, content_id: orderContent.id, amount_ngn: "10", currency: "USD", status: "paid", order_type: "direct", payment_provider: "stripe" },
+  });
+
+  const badOrderType = await call("/api/orders?order_type=bogus", { token: adminToken });
+  check("an invalid order_type filter is rejected", badOrderType.status === 400, badOrderType.body);
+  const badOrderStatus = await call("/api/orders?status=bogus", { token: adminToken });
+  check("an invalid status filter is rejected", badOrderStatus.status === 400, badOrderStatus.body);
+  const badProvider = await call("/api/orders?payment_provider=bogus", { token: adminToken });
+  check("an invalid payment_provider filter is rejected", badProvider.status === 400, badProvider.body);
+
+  const allOrders = await call("/api/orders?per_page=50", { token: adminToken });
+  const allOrderIds = (allOrders.body.orders ?? []).map((o: { id: number }) => o.id);
+  check("the unfiltered list includes all three fixtures", [orderA.id, orderB.id, orderC.id].every((id) => allOrderIds.includes(id)), allOrderIds);
+
+  const orderAEnriched = (allOrders.body.orders ?? []).find((o: { id: number }) => o.id === orderA.id);
+  check("a plan-linked order resolves its item as the real plan name", orderAEnriched?.item?.type === "plan" && orderAEnriched?.item?.title === orderPlan.name, orderAEnriched?.item);
+  check("the buyer resolves to the real registered account, not just an id", orderAEnriched?.buyer?.email === orderBuyerAEmail, orderAEnriched?.buyer);
+
+  const orderCEnriched = (allOrders.body.orders ?? []).find((o: { id: number }) => o.id === orderC.id);
+  check("a content-linked order resolves its item as the real content title", orderCEnriched?.item?.type === "content" && orderCEnriched?.item?.title === orderContent.title, orderCEnriched?.item);
+  check("a USD order's amount is reported in its own currency, never reinterpreted as NGN", orderCEnriched?.currency === "USD" && orderCEnriched?.amount === 10, orderCEnriched);
+
+  const corporateOnly = await call("/api/orders?order_type=corporate_invoice", { token: adminToken });
+  const corporateIds = (corporateOnly.body.orders ?? []).map((o: { id: number }) => o.id);
+  check("filtering by order_type=corporate_invoice includes only B", corporateIds.includes(orderB.id) && !corporateIds.includes(orderA.id) && !corporateIds.includes(orderC.id), corporateIds);
+
+  const paidOnly = await call("/api/orders?status=paid", { token: adminToken });
+  const paidIds = (paidOnly.body.orders ?? []).map((o: { id: number }) => o.id);
+  check("filtering by status=paid includes A and C, excludes pending B", paidIds.includes(orderA.id) && paidIds.includes(orderC.id) && !paidIds.includes(orderB.id), paidIds);
+
+  const stripeOnly = await call("/api/orders?payment_provider=stripe", { token: adminToken });
+  const stripeIds = (stripeOnly.body.orders ?? []).map((o: { id: number }) => o.id);
+  check("filtering by payment_provider=stripe includes only C", stripeIds.includes(orderC.id) && !stripeIds.includes(orderA.id) && !stripeIds.includes(orderB.id), stripeIds);
+
+  const searchBuyerA = await call(`/api/orders?search=${encodeURIComponent(orderBuyerAEmail)}`, { token: adminToken });
+  const searchBuyerAIds = (searchBuyerA.body.orders ?? []).map((o: { id: number }) => o.id);
+  check("searching by buyer A's email finds A and B, but not C (a different buyer)", searchBuyerAIds.includes(orderA.id) && searchBuyerAIds.includes(orderB.id) && !searchBuyerAIds.includes(orderC.id), searchBuyerAIds);
+
+  const searchNoMatch = await call(`/api/orders?search=${encodeURIComponent(`nobody-${RUN}@example.test`)}`, { token: adminToken });
+  check("a search with no matching buyer returns an empty, not-erroring list", searchNoMatch.status === 200 && (searchNoMatch.body.orders ?? []).length === 0, searchNoMatch.body);
+
+  const pagedOrders = await call("/api/orders?per_page=1", { token: adminToken });
+  check("per_page is honoured and meta.pages reflects it", pagedOrders.body.orders?.length === 1 && pagedOrders.body.meta?.per_page === 1 && pagedOrders.body.meta?.total >= 3, pagedOrders.body.meta);
+
   // ─── Sponsors — admin CRUD ──────────────────────────────────────────────────
   section("Sponsors — admin CRUD");
 

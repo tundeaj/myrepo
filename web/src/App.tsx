@@ -88,10 +88,10 @@ const Pages = lazy(() => import("./pages/pages/Pages").then((m) => ({ default: m
 const BulkImport = lazy(() => import("./pages/bulkImport/BulkImport").then((m) => ({ default: m.BulkImport })));
 const CommunitySpaces = lazy(() => import("./pages/community/CommunitySpaces").then((m) => ({ default: m.CommunitySpaces })));
 const CommunityModeration = lazy(() => import("./pages/community/CommunityModeration").then((m) => ({ default: m.CommunityModeration })));
+const Orders = lazy(() => import("./pages/orders/Orders").then((m) => ({ default: m.Orders })));
 
 // Routes not yet built — each will be replaced with a real page in future prompts
 const PLACEHOLDER_PATHS = [
-  "subscriptions-orders",
   "analytics/player",
   "analytics/ppv-revenue",
 ];
@@ -181,6 +181,7 @@ export function App() {
           <Route path="bulk-import" element={<BulkImport />} />
           <Route path="community/spaces" element={<CommunitySpaces />} />
           <Route path="community/moderation" element={<CommunityModeration />} />
+          <Route path="subscriptions-orders" element={<Orders />} />
 
           {/* ── Placeholder routes (future prompts) ── */}
           {PLACEHOLDER_PATHS.map((path) => (

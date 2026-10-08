@@ -756,6 +756,84 @@ async function run(browser: Browser) {
     await page.evaluate((token) => localStorage.setItem("webinarflix_token", token), adminToken);
   }
 
+  // ─── Orders ──────────────────────────────────────────────────────────────────
+  //
+  // scripts/e2e.ts's own "Orders" section covers the data layer thoroughly
+  // (every filter, enrichment, pagination). This section proves what only a
+  // real browser can: a real checkout (via a real 100%-off coupon, the same
+  // settle-without-Paystack path e2e.ts already exercises) produces a real
+  // paid Order row, and the admin page actually renders it — plus that the
+  // "View Subscriptions" link really navigates to the existing Subscriber
+  // Analytics page rather than a dead link.
+  section("Orders");
+
+  if (adminToken) {
+    const startAt = new Date(Date.now() + 86_400_000).toISOString();
+    const orderSession = await fetch(`${API_BASE}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({
+        title: `Browser Check Order Item ${Date.now()}`,
+        scheduled_start_at: startAt,
+        scheduled_duration_minutes: 60,
+        access_level: "purchase",
+        price_ngn: 3000,
+      }),
+    }).then((r) => r.json());
+    const orderSessionId = orderSession?.session?.id;
+    check("a fixture purchasable session is created for this check", typeof orderSessionId === "number", orderSession);
+
+    const couponCode = `BROWSERORDER${Date.now()}`;
+    const coupon = await fetch(`${API_BASE}/api/coupons`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ code: couponCode, discount_type: "percent", discount_value: 100, applies_to: "all", max_redemptions: 5, is_active: true }),
+    }).then((r) => r.json());
+    const couponId = coupon?.coupon?.id;
+    check("a 100%-off fixture coupon is created for this check", typeof couponId === "number", coupon);
+
+    const buyerEmail = `browser-order-${Date.now()}@example.test`;
+    const buyerReg = await fetch(`${API_BASE}/api/auth/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: buyerEmail, password: "correct-horse-battery-staple", full_name: "Browser Order Buyer", country: "NG" }),
+    }).then((r) => r.json());
+    const buyerToken = buyerReg?.token as string | undefined;
+    check("a fresh buyer account registers for this check", typeof buyerToken === "string", buyerReg);
+
+    if (orderSessionId && couponId && buyerToken) {
+      const checkout = await fetch(`${API_BASE}/api/checkout/session`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${buyerToken}` },
+        body: JSON.stringify({ content_id: orderSessionId, coupon_code: couponCode }),
+      }).then((r) => r.json());
+      check("the real checkout settles immediately via the 100%-off coupon", checkout?.free === true && checkout?.order?.status === "paid", checkout);
+
+      await page.evaluate((token) => localStorage.setItem("webinarflix_token", token), adminToken);
+      const beforeOrdersErrors = pageErrors.length;
+      await page.goto(`${BASE}/admin/subscriptions-orders`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(500);
+
+      const hasOrderRow = await page.locator("text=Browser Order Buyer").count();
+      check("the real order renders in the admin Orders table", hasOrderRow > 0, { hasOrderRow });
+      check("/admin/subscriptions-orders throws no uncaught render error", pageErrors.length === beforeOrdersErrors, pageErrors.slice(beforeOrdersErrors));
+
+      const beforeSubsLinkErrors = pageErrors.length;
+      await page.getByRole("link", { name: "View Subscriptions" }).click();
+      await page.waitForTimeout(500);
+      check("the 'View Subscriptions' link navigates to the real Subscriber Analytics page", page.url().includes("/admin/analytics/subscribers"), page.url());
+      check("/admin/analytics/subscribers (via the link) throws no uncaught render error", pageErrors.length === beforeSubsLinkErrors, pageErrors.slice(beforeSubsLinkErrors));
+    }
+
+    // Clean up the fixtures that would otherwise clutter the Sessions and
+    // Coupons admin lists. The Order row itself has no delete endpoint by
+    // design (read-only, same as Invoices/Subscriber Analytics) — it stays,
+    // same accepted minor debris this file's own registered-viewer fixtures
+    // already leave behind (see "Registration through the UI").
+    if (couponId) await fetch(`${API_BASE}/api/coupons/${couponId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } }).catch(() => undefined);
+    if (orderSessionId) await fetch(`${API_BASE}/api/sessions/${orderSessionId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } }).catch(() => undefined);
+  }
+
   // ─── Sponsors, Advertisers, Ads ─────────────────────────────────────────────
   section("Sponsors, Advertisers, Ads");
 
