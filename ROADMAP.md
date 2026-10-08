@@ -1,6 +1,6 @@
 # Webinarflix — Roadmap & TODO
 
-Status snapshot as of this document: **681 assertions across 8 suites, all green** (515 e2e + 23 mail + 6 checkout-webhook + 12 payouts-webhook + 8 stripe-webhook + 117 browser), CI passing on every push to PR #1. This file tracks what's built, what's left, and the order the remaining work is planned in. It's updated at the end of each round that closes or adds a gap — treat it as the living source of truth over any single PR description.
+Status snapshot as of this document: **693 assertions across 8 suites, all green** (515 e2e + 35 mail + 6 checkout-webhook + 12 payouts-webhook + 8 stripe-webhook + 117 browser), CI passing on every push to PR #1. This file tracks what's built, what's left, and the order the remaining work is planned in. It's updated at the end of each round that closes or adds a gap — treat it as the living source of truth over any single PR description.
 
 ---
 
@@ -43,9 +43,9 @@ Phases are ordered by what unblocks fastest with the least new infrastructure. E
 - [x] **No teammate picker for contact-request assignment** — `assigned_to` now validates against a real, active, non-viewer account (instructor/admin/super_admin) server-side, and the admin UI's raw numeric-id input is a real picker sourced from `GET /users`.
 - [x] **`player` and `hero` sponsorship placements have no public display** — `lib/sponsors.ts`'s shared `resolveActiveSponsors()` now backs all three placements. `Player.tsx` gets a video-overlay badge, `Hero.tsx` gets a carousel badge alongside its LIVE/countdown badges. Found and fixed a real, pre-existing bug along the way: the hero's rotation-indicator pills had no `z-index`, so the content row overlapping the hero's bottom edge (`-mt-8`/`-mt-16`, `z-10`) sat on top of them and made them unclickable for any real visitor at sm+ widths, not just the new browser test.
 
-### Phase B — Medium (admin UI + backend work, no new infrastructure) — *up next*
-- [ ] **No reviewer notification on approve/reject** — hook into the existing mail sender (see `lib/mail.ts` and its `test:mail` suite) from `routes/ratings.ts`'s moderation actions. *Up next.*
-- [ ] **No bulk moderation actions** — `pages/moderation/RatingComments.tsx` + a batch endpoint alongside the existing single-item approve/reject.
+### Phase B — Medium (admin UI + backend work, no new infrastructure)
+- [x] **No reviewer notification on approve/reject** — `routes/ratings.ts`'s moderation `PUT` now emails the comment's own author on a real status transition (approved → "is now live" with a link to the content page; rejected → explains why, reassures them the star rating is unaffected), via the same `sendMail()`/`publicUrl()` pattern every other transactional email already uses. Re-approving an already-approved comment still succeeds but doesn't re-send.
+- [ ] **No bulk moderation actions** — `pages/moderation/RatingComments.tsx` + a batch endpoint alongside the existing single-item approve/reject. *Up next.*
 - [ ] **No French-language review display** — `title_fr`/`answer_html_fr`-style columns already exist elsewhere as a pattern; ratings' `comment` has no `_fr` column yet, so this starts with a schema decision, not just UI.
 
 ### Phase C — `PlaceholderPage` routes still unbuilt (9 remaining)
