@@ -5,11 +5,12 @@ name: CI
 # invisible to a type-checker; this workflow is what runs the checks that
 # actually caught them (see server/scripts/e2e.ts, web/scripts/browser.ts).
 #
-# DATABASE_URL is the only env var the server strictly requires (see
-# server/src/lib/env.ts) — everything else (Paystack, ImageKit, SMTP,
-# Anthropic) has a safe empty-string default, so those integrations run in
-# their documented "not configured" paths here, same as this repo's own dev
-# environment when no real keys are set.
+# DATABASE_URL and REDIS_URL are the only env vars the server strictly
+# needs a real backing service for (see server/src/lib/env.ts) — everything
+# else (Paystack, ImageKit, SMTP, Anthropic) has a safe empty-string
+# default, so those integrations run in their documented "not configured"
+# paths here, same as this repo's own dev environment when no real keys
+# are set.
 
 on:
   push:
@@ -34,8 +35,21 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      # Backs lib/rateLimit.ts and lib/scheduler.ts (see env.ts's REDIS_URL
+      # comment) — the API now fails to even serve a request without it,
+      # same as Postgres above.
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
       DATABASE_URL: postgresql://webinarflix:webinarflix_ci@localhost:5432/webinarflix
+      REDIS_URL: redis://127.0.0.1:6379
       JWT_SECRET: ci-test-secret-do-not-use-in-production
       CORS_ORIGIN: http://127.0.0.1:5173
       PORT: 4000
