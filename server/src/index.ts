@@ -10,6 +10,7 @@ import { coursesRouter } from "./routes/courses.js";
 import { speakersRouter } from "./routes/speakers.js";
 import { categoriesRouter } from "./routes/categories.js";
 import { promotionsRouter } from "./routes/promotions.js";
+import { pagesRouter, publicPagesRouter } from "./routes/pages.js";
 import { mediaRouter } from "./routes/media.js";
 import { instructorsRouter } from "./routes/instructors.js";
 import { teachRouter } from "./routes/teach.js";
@@ -81,6 +82,7 @@ app.use("/api/courses", requireAuth, requireAdmin, coursesRouter);
 app.use("/api/speakers", requireAuth, requireAdmin, speakersRouter);
 app.use("/api/categories", requireAuth, requireAdmin, categoriesRouter);
 app.use("/api/promotions", requireAuth, requireAdmin, promotionsRouter);
+app.use("/api/pages", requireAuth, requireAdmin, pagesRouter);
 app.use("/api/media", requireAuth, requireAdmin, mediaRouter);
 app.use("/api/instructors", requireAuth, requireAdmin, instructorsRouter);
 app.use("/api/teach", teachRouter);
@@ -118,6 +120,7 @@ app.use("/api/content", contentRouter);
 app.use("/api/public-categories", publicCategoriesRouter);
 app.use("/api/public-speakers", publicSpeakersRouter);
 app.use("/api/public-faqs", publicFaqsRouter);
+app.use("/api/public-pages", publicPagesRouter);
 app.use("/api/public-contact", publicContactRouter);
 // Viewer accounts (Prompt 12). /signup is public — it describes the form.
 // Registrations and account are the viewer's own data, scoped by token.

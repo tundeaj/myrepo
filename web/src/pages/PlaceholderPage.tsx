@@ -24,8 +24,6 @@ const ROUTE_NOTES: Record<string, { title: string; icon: string; builtIn: string
   "/admin/analytics/subscribers": { title: "Subscriber Analytics", icon: "chart", builtIn: "Prompt 07 — Settings & Modules" },
   "/admin/analytics/ppv-revenue": { title: "PPV & Revenue Analytics", icon: "chart", builtIn: "a future analytics prompt" },
   "/admin/layout": { title: "Page Layout", icon: "layout", builtIn: "Prompt 08 — Homepage Row Builder" },
-  "/admin/pages": { title: "Pages", icon: "file", builtIn: "a future CMS prompt" },
-  "/admin/landing-pages": { title: "Landing Pages", icon: "layout", builtIn: "a future CMS prompt" },
   "/admin/settings": { title: "Settings", icon: "settings", builtIn: "Prompt 07 — Settings & Modules" },
   "/admin/settings/modules": { title: "Modules", icon: "toggle", builtIn: "Prompt 07 — Settings & Modules" },
   "/admin/instructors/applications": { title: "Instructor Applications", icon: "clipboard", builtIn: "Prompt 06 — Instructor Portal" },

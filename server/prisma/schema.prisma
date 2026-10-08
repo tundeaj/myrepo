@@ -732,6 +732,29 @@ model Promotion {
   @@map("promotions")
 }
 
+/// Simple static pages — About, Terms, Privacy, and one-off marketing
+/// landing pages. One model backs both /admin/pages and
+/// /admin/landing-pages (same editor, same data, two nav entries — the
+/// same "one admin page, two routes" convention Category already uses for
+/// /admin/categories and /admin/sessions/categories), not a visual block
+/// builder. Reached publicly at /p/:slug.
+model Page {
+  id                   Int       @id @default(autoincrement())
+  title                String    @db.VarChar(200)
+  title_fr             String?   @db.VarChar(200)
+  slug                 String    @unique @db.VarChar(160)
+  body_html            String    @db.Text
+  body_html_fr         String?   @db.Text
+  seo_title            String?   @db.VarChar(200)
+  seo_meta_description String?   @db.VarChar(300)
+  is_published         Boolean   @default(false)
+  created_at           DateTime  @default(now())
+  updated_at           DateTime  @updatedAt
+
+  @@index([is_published])
+  @@map("pages")
+}
+
 model SpeakerType {
   id            Int     @id @default(autoincrement())
   name          String  @db.VarChar(100)

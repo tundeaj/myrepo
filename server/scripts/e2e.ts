@@ -101,6 +101,7 @@ const created = {
   sponsors: [] as number[],
   contentSponsors: [] as number[],
   promotions: [] as number[],
+  pages: [] as number[],
   advertisers: [] as number[],
   ads: [] as number[],
 };
@@ -1904,6 +1905,80 @@ async function main() {
     created.promotions = created.promotions.filter((id) => id !== promoBId);
   }
 
+  // ─── Pages — admin CRUD + public read path ──────────────────────────────────
+  //
+  // /admin/pages and /admin/landing-pages were both PlaceholderPages with no
+  // schema behind either. Scoped narrowly, confirmed with the user before
+  // building: a flat title + rich HTML body + SEO fields + published toggle,
+  // not a visual block builder — one model backs both nav entries.
+  section("Pages — admin CRUD + public read path");
+
+  const viewerPageCreate = await call("/api/pages", { method: "POST", token: sessionToken, body: { title: `E2E Page Viewer ${RUN}`, body_html: "<p>x</p>" } });
+  check("a signed-in VIEWER cannot create a page", viewerPageCreate.status === 403, viewerPageCreate.body);
+
+  const pageNoTitle = await call("/api/pages", { method: "POST", token: adminToken, body: { title: "", body_html: "<p>x</p>" } });
+  check("an empty title is rejected", pageNoTitle.status === 422, pageNoTitle.body);
+
+  const pageNoBody = await call("/api/pages", { method: "POST", token: adminToken, body: { title: `E2E Page No Body ${RUN}`, body_html: "" } });
+  check("an empty body is rejected", pageNoBody.status === 422, pageNoBody.body);
+
+  // Created as a draft by default (is_published omitted).
+  const pageDraft = await call("/api/pages", { method: "POST", token: adminToken, body: { title: `E2E Page ${RUN}`, body_html: `<p>Body ${RUN}</p>` } });
+  check("creating a page succeeds and defaults to unpublished", pageDraft.status === 201 && pageDraft.body.page?.is_published === false, pageDraft.body);
+  const pageId = pageDraft.body.page?.id;
+  const pageSlug = pageDraft.body.page?.slug;
+  if (pageId) created.pages.push(pageId);
+  check("a slug is derived from the title", typeof pageSlug === "string" && pageSlug.length > 0, pageSlug);
+
+  const publicBeforePublish = await call(`/api/public-pages/${pageSlug}`);
+  check("an unpublished page 404s on the public read path", publicBeforePublish.status === 404, publicBeforePublish.body);
+
+  const viewerPageList = await call("/api/pages", { token: sessionToken });
+  check("a signed-in VIEWER cannot see the admin page list", viewerPageList.status === 403, viewerPageList.body);
+
+  const adminPageList = await call("/api/pages", { token: adminToken });
+  const adminPageIds = (adminPageList.body.pages ?? []).map((p: { id: number }) => p.id);
+  check("the admin list includes the draft page (visible regardless of publish state)", adminPageIds.includes(pageId), adminPageIds.slice(0, 5));
+
+  const publishPage = await call(`/api/pages/${pageId}`, {
+    method: "PUT",
+    token: adminToken,
+    body: { title: `E2E Page ${RUN}`, body_html: `<p>Body ${RUN}</p>`, is_published: true },
+  });
+  check("publishing a page succeeds", publishPage.status === 200 && publishPage.body.page?.is_published === true, publishPage.body);
+
+  const publicAfterPublish = await call(`/api/public-pages/${pageSlug}`);
+  check("the published page is now readable at /api/public-pages/:slug", publicAfterPublish.status === 200 && publicAfterPublish.body.page?.title === `E2E Page ${RUN}`, publicAfterPublish.body);
+  check("the public read path's own PublicBootstrap contract is honoured (settings + strings alongside the page)", "settings" in publicAfterPublish.body && "strings" in publicAfterPublish.body, Object.keys(publicAfterPublish.body));
+
+  const renamePage = await call(`/api/pages/${pageId}`, {
+    method: "PUT",
+    token: adminToken,
+    body: { title: `E2E Page Renamed ${RUN}`, body_html: `<p>Body ${RUN}</p>`, is_published: true },
+  });
+  check("renaming a published page succeeds", renamePage.status === 200 && renamePage.body.page?.title === `E2E Page Renamed ${RUN}`, renamePage.body);
+  check("the slug does NOT change on rename — same rule Category's own slug already follows", renamePage.body.page?.slug === pageSlug, { before: pageSlug, after: renamePage.body.page?.slug });
+
+  const publicAfterRename = await call(`/api/public-pages/${pageSlug}`);
+  check("the old slug still resolves after a rename, now showing the new title", publicAfterRename.body.page?.title === `E2E Page Renamed ${RUN}`, publicAfterRename.body.page);
+
+  const unpublishPage = await call(`/api/pages/${pageId}`, {
+    method: "PUT",
+    token: adminToken,
+    body: { title: `E2E Page Renamed ${RUN}`, body_html: `<p>Body ${RUN}</p>`, is_published: false },
+  });
+  check("unpublishing succeeds", unpublishPage.status === 200 && unpublishPage.body.page?.is_published === false, unpublishPage.body);
+
+  const publicAfterUnpublish = await call(`/api/public-pages/${pageSlug}`);
+  check("an unpublished page 404s again on the public read path, even though the row still exists", publicAfterUnpublish.status === 404, publicAfterUnpublish.body);
+
+  const deletePage = await call(`/api/pages/${pageId}`, { method: "DELETE", token: adminToken });
+  check("deleting a page succeeds", deletePage.status === 200, deletePage.body);
+  created.pages = created.pages.filter((id) => id !== pageId);
+
+  const deletePageAgain = await call(`/api/pages/${pageId}`, { method: "DELETE", token: adminToken });
+  check("deleting an already-deleted page is refused", deletePageAgain.status === 404, deletePageAgain.body);
+
   // ─── Sponsors — admin CRUD ──────────────────────────────────────────────────
   section("Sponsors — admin CRUD");
 
@@ -3361,6 +3436,7 @@ async function main() {
   await prisma.advertiser.deleteMany({ where: { id: { in: created.advertisers } } });
   await prisma.contentItem.deleteMany({ where: { id: { in: created.content } } });
   await prisma.promotion.deleteMany({ where: { id: { in: created.promotions } } });
+  await prisma.page.deleteMany({ where: { id: { in: created.pages } } });
   await prisma.plan.deleteMany({ where: { id: { in: created.plans } } });
   await prisma.coupon.deleteMany({ where: { id: { in: created.coupons } } });
   await prisma.user.deleteMany({ where: { id: { in: created.users } } });

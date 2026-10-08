@@ -494,6 +494,69 @@ async function run(browser: Browser) {
     }
   }
 
+  // ─── Pages ───────────────────────────────────────────────────────────────────
+  //
+  // /admin/pages and /admin/landing-pages were both PlaceholderPages. Two
+  // things worth proving: the admin editor actually creates and publishes a
+  // real page through its own form, and — the new public-facing surface —
+  // a published page actually renders its body at /p/:slug.
+  section("Pages");
+
+  if (adminToken) {
+    const pageTitle = `Browser Check Page ${Date.now()}`;
+    const pageBody = "This is the real page body, typed into the actual textarea.";
+
+    const beforePageErrors = pageErrors.length;
+    await page.goto(`${BASE}/admin/pages`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(500);
+
+    await page.getByRole("button", { name: "Add Page" }).first().click();
+    await page.waitForTimeout(300);
+    await page.locator('input[placeholder*="Terms of Service"]').fill(pageTitle);
+    await page.locator("textarea.font-mono").fill(`<p>${pageBody}</p>`);
+    // Published, not left as a draft — the point of this check is the
+    // public render, not just the admin list. Toggle.tsx renders a plain
+    // <label> wrapping a visually-hidden checkbox, not a button.
+    await page.getByText("Published", { exact: true }).click();
+    await page.getByRole("button", { name: "Create page" }).click();
+    await page.waitForTimeout(600);
+
+    const hasPageRow = await page.locator(`text=${pageTitle}`).count();
+    check("creating a page through the real admin form succeeds and renders", hasPageRow > 0, { hasPageRow });
+    check("/admin/pages throws no uncaught render error", pageErrors.length === beforePageErrors, pageErrors.slice(beforePageErrors));
+
+    const adminPageList = await fetch(`${API_BASE}/api/pages`, { headers: { Authorization: `Bearer ${adminToken}` } }).then((r) => r.json());
+    const fixturePage = (adminPageList?.pages ?? []).find((p: { title: string }) => p.title === pageTitle);
+    const pageId = fixturePage?.id;
+    const pageSlug = fixturePage?.slug;
+    check("the UI-created page is really persisted and published server-side", typeof pageId === "number" && fixturePage?.is_published === true, fixturePage);
+
+    // /admin/landing-pages is the same editor over the same data (not a
+    // second feature) — confirm the nav alias actually renders, same
+    // "Session Categories" check this file already does for Categories.
+    const beforeAliasErrors = pageErrors.length;
+    await page.goto(`${BASE}/admin/landing-pages`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(500);
+    const hasPageRowOnAlias = await page.locator(`text=${pageTitle}`).count();
+    check("/admin/landing-pages renders the real Pages list, not a placeholder", hasPageRowOnAlias > 0, { hasPageRowOnAlias });
+    check("/admin/landing-pages throws no uncaught render error", pageErrors.length === beforeAliasErrors, pageErrors.slice(beforeAliasErrors));
+
+    if (pageSlug) {
+      const beforePublicPageErrors = pageErrors.length;
+      await page.setExtraHTTPHeaders({ "Cache-Control": "no-cache" });
+      await page.goto(`${BASE}/p/${pageSlug}`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(500);
+
+      const hasTitle = await page.locator(`h1:has-text("${pageTitle}")`).count();
+      check("the public page renders the real title", hasTitle > 0, { hasTitle });
+      const hasBody = await page.locator(`text=${pageBody}`).count();
+      check("the public page renders the real body_html content", hasBody > 0, { hasBody });
+      check("/p/:slug throws no uncaught render error", pageErrors.length === beforePublicPageErrors, pageErrors.slice(beforePublicPageErrors));
+    }
+
+    if (pageId) await fetch(`${API_BASE}/api/pages/${pageId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+  }
+
   // ─── Sponsors, Advertisers, Ads ─────────────────────────────────────────────
   section("Sponsors, Advertisers, Ads");
 

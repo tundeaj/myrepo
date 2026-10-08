@@ -17,6 +17,7 @@ const BrowseCategory = lazy(() => import("./public/Browse").then((m) => ({ defau
 const SpeakerProfile = lazy(() => import("./public/SpeakerProfile").then((m) => ({ default: m.SpeakerProfile })));
 const PublicFaqs = lazy(() => import("./public/Faqs").then((m) => ({ default: m.Faqs })));
 const Contact = lazy(() => import("./public/Contact").then((m) => ({ default: m.Contact })));
+const StaticPage = lazy(() => import("./public/StaticPage").then((m) => ({ default: m.StaticPage })));
 
 // Viewer accounts (Prompt 12). The three password/verification flows share one
 // chunk — a visitor who hits any of them is likely to touch another.
@@ -81,6 +82,7 @@ const Invoices = lazy(() => import("./pages/revenue/Invoices").then((m) => ({ de
 const PageLayout = lazy(() => import("./pages/layout/PageLayout").then((m) => ({ default: m.PageLayout })));
 const Trending = lazy(() => import("./pages/homepage/Trending").then((m) => ({ default: m.Trending })));
 const Promotions = lazy(() => import("./pages/promotions/Promotions").then((m) => ({ default: m.Promotions })));
+const Pages = lazy(() => import("./pages/pages/Pages").then((m) => ({ default: m.Pages })));
 
 // Routes not yet built — each will be replaced with a real page in future prompts
 const PLACEHOLDER_PATHS = [
@@ -90,8 +92,6 @@ const PLACEHOLDER_PATHS = [
   "community/moderation",
   "analytics/player",
   "analytics/ppv-revenue",
-  "pages",
-  "landing-pages",
 ];
 
 function RouteFallback() {
@@ -169,6 +169,13 @@ export function App() {
           <Route path="layout" element={<PageLayout />} />
           <Route path="trending" element={<Trending />} />
           <Route path="promotions" element={<Promotions />} />
+          {/* Pages and Landing Pages are the same editor over the same
+              data — a flat title + rich HTML body + SEO fields, not two
+              separate feature sets — reached from two nav entries, same
+              "one admin page, two routes" convention Category already
+              uses for /admin/categories and /admin/sessions/categories. */}
+          <Route path="pages" element={<Pages />} />
+          <Route path="landing-pages" element={<Pages />} />
 
           {/* ── Placeholder routes (future prompts) ── */}
           {PLACEHOLDER_PATHS.map((path) => (
@@ -202,6 +209,7 @@ export function App() {
         <Route path="/speakers/:slug" element={<SpeakerProfile />} />
         <Route path="/faqs" element={<PublicFaqs />} />
         <Route path="/contact" element={<Contact />} />
+        <Route path="/p/:slug" element={<StaticPage />} />
 
         {/* ── Viewer accounts (Prompt 12) ── */}
         {/* /signin is the viewer entry; /login stays the back-office one, which
