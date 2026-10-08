@@ -38,18 +38,38 @@ ppvRevenueRouter.get("/", async (req: Request, res: Response, next: NextFunction
       created_at: { gte: since },
     };
 
-    const [ngnAgg, usdAgg, byContent] = await Promise.all([
+    // Top-content is taken PER CURRENCY, not from one combined ranking — a
+    // real bug found while verifying an unrelated round, not a hypothetical:
+    // amount_ngn is the raw numeric column for whichever currency a row is
+    // in, so a single groupBy+orderBy+take(20) across both currencies ranks
+    // a $25 USD order against a ₦50,000 NGN one on the same numeric scale.
+    // Every USD-priced content item systematically loses that comparison
+    // regardless of its real economic significance in its own currency,
+    // silently falling out of a shared cutoff — the same "a USD price is
+    // always independent of its NGN counterpart, never combined" invariant
+    // this file's own module doc already states, just not actually honoured
+    // by the old single-query cutoff.
+    const [ngnAgg, usdAgg, byContentNgn, byContentUsd] = await Promise.all([
       prisma.order.aggregate({ where: { ...ppvWhere, currency: "NGN" }, _count: { _all: true }, _sum: { amount_ngn: true } }),
       prisma.order.aggregate({ where: { ...ppvWhere, currency: "USD" }, _count: { _all: true }, _sum: { amount_ngn: true } }),
       prisma.order.groupBy({
         by: ["content_id", "currency"],
-        where: ppvWhere,
+        where: { ...ppvWhere, currency: "NGN" },
+        _count: { _all: true },
+        _sum: { amount_ngn: true },
+        orderBy: { _sum: { amount_ngn: "desc" } },
+        take: 20,
+      }),
+      prisma.order.groupBy({
+        by: ["content_id", "currency"],
+        where: { ...ppvWhere, currency: "USD" },
         _count: { _all: true },
         _sum: { amount_ngn: true },
         orderBy: { _sum: { amount_ngn: "desc" } },
         take: 20,
       }),
     ]);
+    const byContent = [...byContentNgn, ...byContentUsd];
 
     const contentIds = [...new Set(byContent.map((r) => r.content_id).filter((id): id is number => id != null))];
     const [contents, earningRows] = await Promise.all([

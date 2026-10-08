@@ -37,6 +37,12 @@ interface Device {
   is_active: boolean;
 }
 
+interface NotificationPref {
+  event_key: string;
+  channel: "email" | "in_app" | "whatsapp";
+  is_enabled: boolean;
+}
+
 interface AccountPayload {
   user: AuthUser & {
     country: string;
@@ -47,9 +53,29 @@ interface AccountPayload {
     email_verified: boolean;
   };
   preferences: Preferences | null;
+  notification_preferences: NotificationPref[];
   consent: ConsentRow[];
   consent_history: ConsentRow[];
 }
+
+// A label + one-line description per NOTIFICATION_EVENT_KEYS entry
+// (server/src/constants/notificationEvents.ts) — the canonical list this
+// mirrors. 'email' is the only channel rendered here: it's the only one
+// anything in this app actually sends through (in_app/whatsapp exist on the
+// schema's enum but nothing sends via either yet), so a toggle for them
+// would control a feature that doesn't exist.
+const NOTIFICATION_LABELS: Record<string, { label: string; description: string }> = {
+  session_reminder: { label: "Session reminders", description: "Before a webinar you're registered for starts" },
+  session_starting: { label: "Session starting now", description: "The moment a session you're registered for goes live" },
+  replay_ready: { label: "Replay ready", description: "When a recording of a session you attended is available" },
+  new_in_category: { label: "New in your categories", description: "New content published in a category you follow" },
+  course_updated: { label: "Course updates", description: "When a course you're enrolled in adds or changes content" },
+  community_reply: { label: "Community replies", description: "When someone replies to your post in a Community space" },
+  assignment_feedback: { label: "Assignment feedback", description: "When an instructor leaves feedback on your work" },
+  payment_receipt: { label: "Payment receipts", description: "A confirmation every time you're charged" },
+  payment_failed: { label: "Payment failures", description: "When a charge or renewal doesn't go through" },
+  certificate_issued: { label: "Certificates", description: "When you earn a completion certificate" },
+};
 
 interface RegistrationRow {
   id: number;
@@ -127,6 +153,26 @@ export function Account() {
       await api("/account/preferences", { method: "PUT", body: JSON.stringify(patch) });
     } catch {
       setError("That preference didn't save.");
+      load();
+    }
+  }
+
+  async function setNotificationPref(eventKey: string, enabled: boolean) {
+    if (!data) return;
+    const existing = data.notification_preferences.find((p) => p.event_key === eventKey && p.channel === "email");
+    // Optimistic, same reasoning as setPreference() above — a toggle should
+    // feel instant. A failure reloads the true state.
+    const nextPrefs = existing
+      ? data.notification_preferences.map((p) => (p === existing ? { ...p, is_enabled: enabled } : p))
+      : [...data.notification_preferences, { event_key: eventKey, channel: "email" as const, is_enabled: enabled }];
+    setData({ ...data, notification_preferences: nextPrefs });
+    try {
+      await api("/account/notifications", {
+        method: "PUT",
+        body: JSON.stringify({ preferences: [{ event_key: eventKey, channel: "email", is_enabled: enabled }] }),
+      });
+    } catch {
+      setError("That notification setting didn't save.");
       load();
     }
   }
@@ -242,6 +288,36 @@ export function Account() {
             </div>
           </Section>
         )}
+
+        <Section title="Notifications">
+          <div className="space-y-1">
+            {Object.entries(NOTIFICATION_LABELS).map(([eventKey, { label, description }]) => {
+              const row = data.notification_preferences.find((p) => p.event_key === eventKey && p.channel === "email");
+              // Absent row = default enabled — the same fallback
+              // routes/community.ts's own notifyReplyApproved() uses, for an
+              // account that signed up before preferences were seeded here.
+              const enabled = row?.is_enabled ?? true;
+              return (
+                <label
+                  key={eventKey}
+                  className="flex cursor-pointer items-center justify-between gap-4 rounded-lg px-1 py-2.5 text-sm text-slate-300 hover:bg-slate-900/60"
+                >
+                  <span>
+                    <span className="block">{label}</span>
+                    <span className="block text-xs text-slate-600">{description}</span>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={enabled}
+                    onChange={(e) => setNotificationPref(eventKey, e.target.checked)}
+                    className="h-4 w-4 flex-shrink-0 accent-white"
+                  />
+                </label>
+              );
+            })}
+          </div>
+          <p className="text-xs text-slate-600">Email only, for now — this is where that will expand if other channels are added.</p>
+        </Section>
 
         <Section title="Consent">
           {!data.consent.length ? (

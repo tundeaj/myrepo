@@ -249,6 +249,41 @@ async function run(browser: Browser) {
   check("registering signs the viewer in", signedIn || new URL(page.url()).pathname === "/",
     { url: page.url(), signedIn });
 
+  // ─── Notification preferences — Account page ───────────────────────────────
+  //
+  // notification_preferences + PUT /account/notifications have existed since
+  // early in this build; the real gap was no UI anywhere for a viewer to see
+  // or change them. Reuses the account just registered above — a fresh
+  // signup gets all ten NOTIFICATION_EVENT_KEYS seeded (email channel),
+  // which is itself part of what's under test here.
+  section("Notification preferences");
+
+  const beforeAccountErrors = pageErrors.length;
+  await page.goto(`${BASE}/account`, { waitUntil: "networkidle" });
+  await page.waitForTimeout(800);
+
+  const hasNotificationsHeading = await page.locator("text=Notifications").count();
+  check("the Account page renders a real Notifications section", hasNotificationsHeading > 0, { hasNotificationsHeading });
+  const hasCommunityReplyRow = await page.locator("text=Community replies").count();
+  check("a real NOTIFICATION_EVENT_KEYS label renders, not a placeholder", hasCommunityReplyRow > 0, { hasCommunityReplyRow });
+
+  const communityReplyToggle = page.locator('label:has-text("Community replies") input[type="checkbox"]');
+  const checkedBeforeToggle = await communityReplyToggle.isChecked().catch(() => null);
+  check("a freshly-seeded preference starts checked (enabled)", checkedBeforeToggle === true, { checkedBeforeToggle });
+
+  await communityReplyToggle.click();
+  await page.waitForTimeout(600);
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForTimeout(800);
+  const checkedAfterReload = await page.locator('label:has-text("Community replies") input[type="checkbox"]').isChecked().catch(() => null);
+  check("unchecking it actually persists server-side, surviving a reload", checkedAfterReload === false, { checkedAfterReload });
+
+  // Toggle back on — reversible, and leaves the account in its default state
+  // for anything that runs after this section.
+  await page.locator('label:has-text("Community replies") input[type="checkbox"]').click();
+  await page.waitForTimeout(600);
+  check("/account (notifications) throws no uncaught render error", pageErrors.length === beforeAccountErrors, pageErrors.slice(beforeAccountErrors));
+
   // ─── Registering for a session through the gate ────────────────────────────
   section("Access gate");
 

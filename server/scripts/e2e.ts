@@ -43,6 +43,7 @@ import { getSetting, getBoolSetting } from "../src/lib/settingValue.js";
 // only ever gets a handful of real calls per run, not enough to prove the
 // counter itself works right.
 import { checkRateLimit } from "../src/lib/rateLimit.js";
+import { NOTIFICATION_EVENT_KEYS } from "../src/constants/notificationEvents.js";
 
 const API = process.env.API ?? "http://127.0.0.1:4000";
 const prisma = new PrismaClient();
@@ -194,6 +195,11 @@ async function main() {
   check("profile fields written from signup_fields", user?.job_role === "Tester", user?.job_role);
   check("preferences row created at registration",
     (await prisma.userPreference.count({ where: { user_id: user!.id } })) === 1);
+  const seededNotificationPrefs = await prisma.notificationPreference.findMany({ where: { user_id: user!.id } });
+  check("a NotificationPreference row is seeded for every NOTIFICATION_EVENT_KEYS entry",
+    seededNotificationPrefs.length === NOTIFICATION_EVENT_KEYS.length
+      && NOTIFICATION_EVENT_KEYS.every((k) => seededNotificationPrefs.some((p) => p.event_key === k && p.channel === "email" && p.is_enabled === true)),
+    seededNotificationPrefs);
   check("consent recorded at signup",
     (await prisma.consentRecord.count({ where: { user_id: user!.id, granted: true } })) === 1);
 
@@ -500,6 +506,36 @@ async function main() {
     body: { data_saver: true, subtitles_on: false },
   });
   check("preferences update", prefs.status === 200 && prefs.body.preferences?.data_saver === true, prefs.body);
+
+  const acctBeforeNotif = await call("/api/account", { token: sessionToken });
+  const communityReplyPref = (acctBeforeNotif.body.notification_preferences ?? []).find(
+    (p: { event_key: string; channel: string }) => p.event_key === "community_reply" && p.channel === "email",
+  );
+  check("the seeded community_reply preference starts enabled", communityReplyPref?.is_enabled === true, communityReplyPref);
+
+  const noAuthNotif = await call("/api/account/notifications", { method: "PUT", body: { preferences: [] } });
+  check("no token at all cannot update notification preferences", noAuthNotif.status === 401, noAuthNotif.body);
+
+  const badNotif = await call("/api/account/notifications", {
+    method: "PUT", token: sessionToken, body: { preferences: [{ event_key: "community_reply", channel: "sms", is_enabled: false }] },
+  });
+  check("an unrecognised channel is rejected", badNotif.status === 400, badNotif.body);
+
+  const notifOff = await call("/api/account/notifications", {
+    method: "PUT", token: sessionToken, body: { preferences: [{ event_key: "community_reply", channel: "email", is_enabled: false }] },
+  });
+  check("turning a notification off succeeds", notifOff.status === 200, notifOff.body);
+  const offRow = (notifOff.body.notification_preferences ?? []).find((p: { event_key: string }) => p.event_key === "community_reply");
+  check("the response reflects the real new state", offRow?.is_enabled === false, offRow);
+  check("every other seeded preference is untouched by a single-event update",
+    (notifOff.body.notification_preferences ?? []).filter((p: { is_enabled: boolean }) => p.is_enabled === true).length === NOTIFICATION_EVENT_KEYS.length - 1,
+    notifOff.body.notification_preferences);
+
+  const notifOn = await call("/api/account/notifications", {
+    method: "PUT", token: sessionToken, body: { preferences: [{ event_key: "community_reply", channel: "email", is_enabled: true }] },
+  });
+  const onRow = (notifOn.body.notification_preferences ?? []).find((p: { event_key: string }) => p.event_key === "community_reply");
+  check("turning it back on is fully reversible", onRow?.is_enabled === true, onRow);
 
   const consentBefore = await prisma.consentRecord.count({ where: { user_id: user!.id } });
   const withdraw = await call("/api/account/consent", {
@@ -3977,6 +4013,7 @@ async function main() {
   });
   await prisma.consentRecord.deleteMany({ where: { user_id: { in: created.users } } });
   await prisma.userPreference.deleteMany({ where: { user_id: { in: created.users } } });
+  await prisma.notificationPreference.deleteMany({ where: { user_id: { in: created.users } } });
   await prisma.authToken.deleteMany({ where: { user_id: { in: created.users } } });
   await prisma.payoutLine.deleteMany({ where: { payout_run_id: { in: created.payoutRuns } } });
   await prisma.payoutRun.deleteMany({ where: { id: { in: created.payoutRuns } } });

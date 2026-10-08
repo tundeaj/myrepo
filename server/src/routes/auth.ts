@@ -12,6 +12,7 @@ import { sendMail, publicUrl } from "../lib/mail.js";
 import { getNumberSetting, getBoolSetting } from "../lib/settingValue.js";
 import { listSignupFields, validateSignup } from "../lib/signupFields.js";
 import { checkRateLimit } from "../lib/rateLimit.js";
+import { NOTIFICATION_EVENT_KEYS } from "../constants/notificationEvents.js";
 
 export const authRouter = Router();
 
@@ -115,6 +116,21 @@ authRouter.post("/register", async (req: Request, res: Response, next: NextFunct
 
     // Preferences row up front so every later read can assume it exists.
     await prisma.userPreference.create({ data: { user_id: user.id } }).catch(() => undefined);
+
+    // One NotificationPreference row per event key, 'email' channel only —
+    // the only channel anything in this app actually sends through
+    // (in_app/whatsapp exist on the schema's NotificationChannel enum but no
+    // code anywhere sends via either yet, so seeding rows for them would be
+    // a toggle for a feature that doesn't exist). Seeded explicitly rather
+    // than relying solely on "absent row = default enabled" at read time
+    // (routes/community.ts's own notifyReplyApproved() does that too, as a
+    // fallback for a user who signed up before this existed) — matches
+    // constants/notificationEvents.ts's own original intent: "apply it
+    // per-user at signup... rather than seeding it once."
+    await prisma.notificationPreference.createMany({
+      data: NOTIFICATION_EVENT_KEYS.map((event_key) => ({ user_id: user.id, event_key, channel: "email" as const, is_enabled: true })),
+      skipDuplicates: true,
+    });
 
     await recordConsent(req, user.id, "signup");
 
