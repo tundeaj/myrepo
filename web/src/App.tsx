@@ -80,6 +80,7 @@ const SubscriberAnalytics = lazy(() => import("./pages/analytics/SubscriberAnaly
 const Invoices = lazy(() => import("./pages/revenue/Invoices").then((m) => ({ default: m.Invoices })));
 const PageLayout = lazy(() => import("./pages/layout/PageLayout").then((m) => ({ default: m.PageLayout })));
 const Trending = lazy(() => import("./pages/homepage/Trending").then((m) => ({ default: m.Trending })));
+const Promotions = lazy(() => import("./pages/promotions/Promotions").then((m) => ({ default: m.Promotions })));
 
 // Routes not yet built — each will be replaced with a real page in future prompts
 const PLACEHOLDER_PATHS = [
@@ -91,7 +92,6 @@ const PLACEHOLDER_PATHS = [
   "analytics/ppv-revenue",
   "pages",
   "landing-pages",
-  "promotions",
 ];
 
 function RouteFallback() {
@@ -168,6 +168,7 @@ export function App() {
           {/* ── Homepage Row Builder (Prompt 08) ── */}
           <Route path="layout" element={<PageLayout />} />
           <Route path="trending" element={<Trending />} />
+          <Route path="promotions" element={<Promotions />} />
 
           {/* ── Placeholder routes (future prompts) ── */}
           {PLACEHOLDER_PATHS.map((path) => (

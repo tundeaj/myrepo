@@ -443,6 +443,57 @@ async function run(browser: Browser) {
     }
   }
 
+  // ─── Promotions ──────────────────────────────────────────────────────────────
+  //
+  // `/admin/promotions` was a PlaceholderPage with no schema behind it. Two
+  // things worth proving in a real browser: the admin CRUD page renders a
+  // real fixture and can create one through its own form, and — the genuinely
+  // new public-facing surface — an active promotion actually shows as a
+  // banner on the real homepage.
+  section("Promotions");
+
+  if (adminToken) {
+    const promoHeadline = `Browser Check Promo ${Date.now()}`;
+
+    const beforePromoErrors = pageErrors.length;
+    await page.goto(`${BASE}/admin/promotions`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(500);
+
+    await page.getByRole("button", { name: "Add Promotion" }).first().click();
+    await page.waitForTimeout(300);
+    const headlineInput = page.locator('input[placeholder*="20% off"]');
+    await headlineInput.fill(promoHeadline);
+    await page.getByRole("button", { name: "Create promotion" }).click();
+    await page.waitForTimeout(600);
+
+    const hasPromoRow = await page.locator(`text=${promoHeadline}`).count();
+    check("creating a promotion through the real admin form succeeds and renders", hasPromoRow > 0, { hasPromoRow });
+    check("/admin/promotions throws no uncaught render error", pageErrors.length === beforePromoErrors, pageErrors.slice(beforePromoErrors));
+
+    const adminPromoList = await fetch(`${API_BASE}/api/promotions`, { headers: { Authorization: `Bearer ${adminToken}` } }).then((r) => r.json());
+    const fixturePromo = (adminPromoList?.promotions ?? []).find((p: { headline: string }) => p.headline === promoHeadline);
+    const promoId = fixturePromo?.id;
+    check("the UI-created promotion is really persisted server-side", typeof promoId === "number", fixturePromo);
+
+    if (promoId) {
+      const beforeBannerErrors = pageErrors.length;
+      await page.setExtraHTTPHeaders({ "Cache-Control": "no-cache" });
+      await page.goto(BASE, { waitUntil: "networkidle" });
+      await page.waitForTimeout(500);
+
+      const hasBanner = await page.locator(`text=${promoHeadline}`).count();
+      check("the active promotion renders as a real banner on the public homepage", hasBanner > 0, { hasBanner });
+      check("/ (promo banner) throws no uncaught render error", pageErrors.length === beforeBannerErrors, pageErrors.slice(beforeBannerErrors));
+
+      await fetch(`${API_BASE}/api/promotions/${promoId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+
+      await page.goto(BASE, { waitUntil: "networkidle" });
+      await page.waitForTimeout(500);
+      const bannerGoneAfterDelete = await page.locator(`text=${promoHeadline}`).count();
+      check("deleting the promotion removes the banner on the very next load", bannerGoneAfterDelete === 0, { bannerGoneAfterDelete });
+    }
+  }
+
   // ─── Sponsors, Advertisers, Ads ─────────────────────────────────────────────
   section("Sponsors, Advertisers, Ads");
 

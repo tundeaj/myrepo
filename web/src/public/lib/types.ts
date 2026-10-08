@@ -73,11 +73,21 @@ export interface HomepageRow {
   items: (ContentCard | SpeakerCard | CategoryCard)[];
 }
 
+export interface PublicPromotion {
+  id: number;
+  headline: string;
+  body: string | null;
+  link_url: string | null;
+  link_label: string | null;
+}
+
 export interface HomepagePayload {
   surface: string;
   platform: string;
   audience: string;
   hero: ContentCard[];
+  /** Null when no promotion is currently active, or on a non-"home" surface. */
+  promotion: PublicPromotion | null;
   rows: HomepageRow[];
   settings: Record<string, string>;
   strings: Record<string, { en: string | null; fr: string | null }>;

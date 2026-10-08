@@ -705,6 +705,33 @@ model ContentCategory {
   @@map("content_categories")
 }
 
+/// Site-wide promo banners — the platform's own first-party marketing
+/// voice, distinct from Coupons (discount codes a viewer redeems) and
+/// content-sponsor linking (a paid third party's placement on a specific
+/// piece of content). Scoped narrowly: shown on the public homepage only
+/// (same "home" surface buildHero() already scopes to), not wired into
+/// every public route — see homepageCache.ts's buildActivePromotion().
+model Promotion {
+  id            Int       @id @default(autoincrement())
+  headline      String    @db.VarChar(200)
+  body          String?   @db.VarChar(400)
+  link_url      String?   @db.VarChar(500)
+  link_label    String?   @db.VarChar(60)
+  /// Lower shows first when more than one is active at once — same
+  /// convention as Category.display_order and ContentRow.display_order.
+  display_order Int       @default(0)
+  is_active     Boolean   @default(true)
+  /// Unset on either side means open-ended, same rule content_sponsors'
+  /// active-window check already uses.
+  starts_at     DateTime?
+  ends_at       DateTime?
+  created_at    DateTime  @default(now())
+  updated_at    DateTime  @updatedAt
+
+  @@index([is_active])
+  @@map("promotions")
+}
+
 model SpeakerType {
   id            Int     @id @default(autoincrement())
   name          String  @db.VarChar(100)

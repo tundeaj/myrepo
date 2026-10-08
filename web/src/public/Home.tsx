@@ -3,6 +3,7 @@ import { getToken } from "../lib/api";
 import { configureImages } from "./lib/images";
 import { PublicI18nProvider, usePublicT } from "./lib/publicI18n";
 import { PublicNav } from "./components/PublicNav";
+import { PromoBanner } from "./components/PromoBanner";
 import { Hero, HeroSkeleton } from "./components/Hero";
 import { LazyRow } from "./components/Row";
 import type { HomepagePayload, PersonalRowsPayload, LiveRowsPayload, HomepageRow, ContentCard } from "./lib/types";
@@ -122,6 +123,7 @@ function HomeInner({ payload, onRetry }: { payload: HomepagePayload; onRetry: ()
   return (
     <div className="min-h-screen bg-slate-950 pb-16">
       <PublicNav platformName={platformName} logoUrl={logoUrl} />
+      <PromoBanner promotion={payload.promotion} />
 
       {hero.length > 0 ? <Hero items={hero} /> : <div className="h-16" />}
 

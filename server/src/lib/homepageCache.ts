@@ -370,6 +370,34 @@ async function buildHero(): Promise<ContentCard[]> {
   return attachHeroSponsors(await decorateCards(fallback as RawCard[]));
 }
 
+export interface PublicPromotion {
+  id: number;
+  headline: string;
+  body: string | null;
+  link_url: string | null;
+  link_label: string | null;
+}
+
+/** The single highest-priority currently-active promo banner, if any —
+ *  deliberately scoped to the "home" surface only, same as buildHero().
+ *  Unset starts_at/ends_at on either side means open-ended, same rule
+ *  content_sponsors' own active-window check already uses. */
+async function buildActivePromotion(): Promise<PublicPromotion | null> {
+  const now = new Date();
+  const promo = await prisma.promotion.findFirst({
+    where: {
+      is_active: true,
+      AND: [
+        { OR: [{ starts_at: null }, { starts_at: { lte: now } }] },
+        { OR: [{ ends_at: null }, { ends_at: { gte: now } }] },
+      ],
+    },
+    orderBy: [{ display_order: "asc" }, { id: "desc" }],
+    select: { id: true, headline: true, body: true, link_url: true, link_label: true },
+  });
+  return promo;
+}
+
 /** Settings the public page needs at paint time. Nothing is_secret is reachable —
  *  these keys are read individually rather than by loading the settings table. */
 const PUBLIC_SETTING_KEYS = [
@@ -487,9 +515,10 @@ export async function buildCacheForKey(surface: string, platform: string, audien
     });
   }
 
-  const [ttl, hero, settings, strings] = await Promise.all([
+  const [ttl, hero, promotion, settings, strings] = await Promise.all([
     cacheTtlMinutes(),
     surface === "home" ? buildHero() : Promise.resolve([] as ContentCard[]),
+    surface === "home" ? buildActivePromotion() : Promise.resolve(null as PublicPromotion | null),
     publicSettings(),
     publicStrings(),
   ]);
@@ -499,6 +528,7 @@ export async function buildCacheForKey(surface: string, platform: string, audien
     platform,
     audience,
     hero,
+    promotion,
     rows: built,
     settings,
     strings,

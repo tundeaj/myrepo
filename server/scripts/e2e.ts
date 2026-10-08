@@ -100,6 +100,7 @@ const created = {
   categories: [] as number[],
   sponsors: [] as number[],
   contentSponsors: [] as number[],
+  promotions: [] as number[],
   advertisers: [] as number[],
   ads: [] as number[],
 };
@@ -1811,6 +1812,98 @@ async function main() {
   const deleteCatAgain = await call(`/api/categories/${catId}`, { method: "DELETE", token: adminToken });
   check("deleting an already-deleted category is refused", deleteCatAgain.status === 404, deleteCatAgain.body);
 
+  // ─── Promotions — admin CRUD + public homepage display ─────────────────────
+  //
+  // `/admin/promotions` was a PlaceholderPage with literally no schema behind
+  // it — "a future CMS prompt." Scoped as site-wide promo banners, the
+  // platform's own first-party marketing voice, distinct from Coupons (codes)
+  // and content-sponsor linking (paid third-party placements). Public display
+  // is deliberately narrow: the homepage only, via homepageCache.ts's
+  // buildActivePromotion() — not wired into every public route.
+  section("Promotions — admin CRUD + public homepage display");
+
+  const viewerPromoCreate = await call("/api/promotions", { method: "POST", token: sessionToken, body: { headline: `E2E Promo Viewer ${RUN}` } });
+  check("a signed-in VIEWER cannot create a promotion", viewerPromoCreate.status === 403, viewerPromoCreate.body);
+
+  const promoNoHeadline = await call("/api/promotions", { method: "POST", token: adminToken, body: { headline: "" } });
+  check("an empty headline is rejected", promoNoHeadline.status === 422, promoNoHeadline.body);
+
+  const promoBadWindow = await call("/api/promotions", {
+    method: "POST",
+    token: adminToken,
+    body: { headline: `E2E Promo Bad Window ${RUN}`, starts_at: "2027-01-01T00:00:00Z", ends_at: "2026-01-01T00:00:00Z" },
+  });
+  check("an end date before the start date is rejected", promoBadWindow.status === 422, promoBadWindow.body);
+
+  // A, open-ended and active now — should show on the homepage.
+  const promoA = await call("/api/promotions", {
+    method: "POST",
+    token: adminToken,
+    body: { headline: `E2E Promo A ${RUN}`, body: `Body A ${RUN}`, link_url: "https://example.test/a", link_label: "See A", display_order: 1 },
+  });
+  check("creating an open-ended active promotion succeeds", promoA.status === 201 && promoA.body.promotion?.headline === `E2E Promo A ${RUN}`, promoA.body);
+  const promoAId = promoA.body.promotion?.id;
+  if (promoAId) created.promotions.push(promoAId);
+
+  // B, same creation but with a lower display_order (0 < 1) and future dates —
+  // outside its own window, so it should NOT win even though its order beats A's.
+  const promoB = await call("/api/promotions", {
+    method: "POST",
+    token: adminToken,
+    body: { headline: `E2E Promo B ${RUN}`, display_order: 0, starts_at: new Date(Date.now() + 86_400_000).toISOString() },
+  });
+  const promoBId = promoB.body.promotion?.id;
+  if (promoBId) created.promotions.push(promoBId);
+
+  const homepageWithA = await call("/api/homepage");
+  check("A (active, in-window) is the homepage's active promotion", homepageWithA.body.promotion?.id === promoAId, homepageWithA.body.promotion);
+  check("B (not yet started, despite a lower display_order) is correctly excluded", homepageWithA.body.promotion?.id !== promoBId, homepageWithA.body.promotion);
+
+  // Give B a display_order that would beat A, but leave its future starts_at —
+  // still shouldn't win, proving the window gate is checked independently of order.
+  const promoBReorder = await call(`/api/promotions/${promoBId}`, {
+    method: "PUT",
+    token: adminToken,
+    body: { headline: `E2E Promo B ${RUN}`, display_order: -5, starts_at: new Date(Date.now() + 86_400_000).toISOString() },
+  });
+  check("updating B's display_order succeeds", promoBReorder.status === 200, promoBReorder.body);
+  const homepageStillA = await call("/api/homepage");
+  check("A still wins — B's own date window excludes it regardless of display_order", homepageStillA.body.promotion?.id === promoAId, homepageStillA.body.promotion);
+
+  // Now open B's window and give it real priority — it should take over.
+  await call(`/api/promotions/${promoBId}`, {
+    method: "PUT",
+    token: adminToken,
+    body: { headline: `E2E Promo B ${RUN}`, display_order: -5, starts_at: null },
+  });
+  const homepageNowB = await call("/api/homepage");
+  check("once B is in-window and has priority, it becomes the active promotion", homepageNowB.body.promotion?.id === promoBId, homepageNowB.body.promotion);
+
+  // Deactivating the winning promotion should fall back to A.
+  await call(`/api/promotions/${promoBId}`, { method: "PUT", token: adminToken, body: { headline: `E2E Promo B ${RUN}`, display_order: -5, is_active: false } });
+  const homepageBackToA = await call("/api/homepage");
+  check("deactivating B falls back to A on the very next request — no stale cache wait", homepageBackToA.body.promotion?.id === promoAId, homepageBackToA.body.promotion);
+
+  const promoList = await call("/api/promotions", { token: adminToken });
+  const promoIds = (promoList.body.promotions ?? []).map((p: { id: number }) => p.id);
+  check("GET /promotions (admin list) includes both fixtures", promoIds.includes(promoAId) && promoIds.includes(promoBId), promoIds);
+
+  const deletePromoA = await call(`/api/promotions/${promoAId}`, { method: "DELETE", token: adminToken });
+  check("deleting a promotion succeeds", deletePromoA.status === 200, deletePromoA.body);
+  created.promotions = created.promotions.filter((id) => id !== promoAId);
+
+  const homepageAfterDeleteA = await call("/api/homepage");
+  check("deleting the active promotion removes it from the homepage on the very next request too", homepageAfterDeleteA.body.promotion === null, homepageAfterDeleteA.body.promotion);
+
+  const deletePromoAAgain = await call(`/api/promotions/${promoAId}`, { method: "DELETE", token: adminToken });
+  check("deleting an already-deleted promotion is refused", deletePromoAAgain.status === 404, deletePromoAAgain.body);
+
+  // Clean up B directly so no further homepage rebuild races the next section.
+  if (promoBId) {
+    await call(`/api/promotions/${promoBId}`, { method: "DELETE", token: adminToken });
+    created.promotions = created.promotions.filter((id) => id !== promoBId);
+  }
+
   // ─── Sponsors — admin CRUD ──────────────────────────────────────────────────
   section("Sponsors — admin CRUD");
 
@@ -3267,6 +3360,7 @@ async function main() {
   await prisma.ad.deleteMany({ where: { id: { in: created.ads } } });
   await prisma.advertiser.deleteMany({ where: { id: { in: created.advertisers } } });
   await prisma.contentItem.deleteMany({ where: { id: { in: created.content } } });
+  await prisma.promotion.deleteMany({ where: { id: { in: created.promotions } } });
   await prisma.plan.deleteMany({ where: { id: { in: created.plans } } });
   await prisma.coupon.deleteMany({ where: { id: { in: created.coupons } } });
   await prisma.user.deleteMany({ where: { id: { in: created.users } } });
