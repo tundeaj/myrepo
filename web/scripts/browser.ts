@@ -571,6 +571,24 @@ async function run(browser: Browser) {
       await page.waitForTimeout(500);
       const hasCommentRow = await page.locator(`text=${commentText}`).count();
       check("the moderation queue renders the real pending comment", hasCommentRow > 0, { hasCommentRow });
+
+      // comment_fr — a real French translation, typed into the row's own
+      // textarea and saved via the real "Save FR" button, then confirmed
+      // server-side. Scoped to that fixture's own row (div.rounded-xl
+      // containing its comment text), not the first textarea on the page.
+      const commentRow = page.locator("div.rounded-xl", { hasText: commentText });
+      const frText = `Un commentaire de test ${Date.now()}`;
+      await commentRow.locator("textarea").fill(frText);
+      await commentRow.getByRole("button", { name: "Save FR" }).click();
+      await page.waitForTimeout(600);
+
+      const frQueue = await fetch(`${API_BASE}/api/ratings-moderation?status=pending`, {
+        headers: { Authorization: `Bearer ${adminToken}` },
+      }).then((r) => r.json());
+      const frSaved = (frQueue?.ratings ?? []).find((r: { comment: string }) => r.comment === commentText);
+      check("the French translation typed into the real textarea is saved server-side", frSaved?.comment_fr === frText, frSaved);
+      check("translating through the UI never silently approves or rejects the comment", frSaved?.comment_status === "pending", frSaved?.comment_status);
+
       check("/admin/ratings/moderation throws no uncaught render error", pageErrors.length === beforeQueueErrors, pageErrors.slice(beforeQueueErrors));
 
       // Clean up: withdraw the rating first (DELETE /api/sessions/:id

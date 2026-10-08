@@ -2267,6 +2267,45 @@ async function main() {
     await setCommentMode(null);
   }
 
+  // ─── Ratings — comment_fr (admin-authored French translation) ──────────────
+  //
+  // Same shape as every other _fr field in this schema (title_fr,
+  // answer_html_fr, ...) — stored and returned, nothing on the public site
+  // switches language yet (publicI18n.tsx's `language` is hardcoded to
+  // "en"), so this is a narrow, precedent-matching addition, not a claim
+  // that French display actually ships this round.
+  section("Ratings — comment_fr");
+
+  try {
+    await setCommentMode("review_required");
+
+    const frReviewItem = await makeContent("public", { slug: `e2e-rating-fr-${RUN}` });
+    await call("/api/ratings", { method: "POST", token: sessionToken, body: { content_id: frReviewItem.id, score: 4, comment: `A comment to translate ${RUN}` } });
+    const frRatingId = (await prisma.rating.findFirst({ where: { content_id: frReviewItem.id } }))!.id;
+
+    const frNeither = await call(`/api/ratings-moderation/${frRatingId}`, { method: "PUT", token: adminToken, body: {} });
+    check("sending neither status nor comment_fr is rejected", frNeither.status === 422, frNeither.body);
+
+    const frOnlyTranslate = await call(`/api/ratings-moderation/${frRatingId}`, { method: "PUT", token: adminToken, body: { comment_fr: `Un commentaire traduit ${RUN}` } });
+    check("saving only comment_fr (no status) succeeds", frOnlyTranslate.status === 200 && frOnlyTranslate.body.rating?.comment_fr === `Un commentaire traduit ${RUN}`, frOnlyTranslate.body);
+
+    const stillPending = await prisma.rating.findUnique({ where: { id: frRatingId } });
+    check("translating alone never moves the comment off 'pending'", stillPending?.comment_status === "pending", stillPending?.comment_status);
+
+    const frWithApprove = await call(`/api/ratings-moderation/${frRatingId}`, { method: "PUT", token: adminToken, body: { status: "approved", comment_fr: `Révisé ${RUN}` } });
+    check("status and comment_fr can be set together in one call", frWithApprove.status === 200 && frWithApprove.body.rating?.comment_status === "approved" && frWithApprove.body.rating?.comment_fr === `Révisé ${RUN}`, frWithApprove.body);
+
+    const frClear = await call(`/api/ratings-moderation/${frRatingId}`, { method: "PUT", token: adminToken, body: { comment_fr: "" } });
+    check("an empty string clears the translation back to null, not an empty string", frClear.status === 200 && frClear.body.rating?.comment_fr === null, frClear.body);
+
+    const frDetail = await call(`/api/content/${frReviewItem.slug}`);
+    const frReview = (frDetail.body.reviews ?? []).find((r: { comment: string }) => r.comment === `A comment to translate ${RUN}`);
+    check("the public detail endpoint's review carries comment_fr alongside comment", frReview && "comment_fr" in frReview, frReview);
+    check("after clearing it above, the public payload's comment_fr is null, not stale", frReview?.comment_fr === null, frReview);
+  } finally {
+    await setCommentMode(null);
+  }
+
   // ─── Subscription revenue accrual — another policy decision exposed as a
   // real admin setting (monetisation.subscription_accrual_enabled /
   // subscription_min_watch_seconds), not hardcoded — and, unlike direct-sale

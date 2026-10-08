@@ -1384,6 +1384,15 @@ model Rating {
   content_id     Int
   score          Int
   comment        String?             @db.Text
+  /// An admin-authored French translation of `comment`, set from the
+  /// moderation queue — same shape as every other `_fr` field in this
+  /// schema (title_fr, answer_html_fr, ...). `comment` itself is the
+  /// viewer's own words and is never translated automatically or
+  /// overwritten by this. NOTE: as of this field's introduction, nothing on
+  /// the public site actually switches language yet — publicI18n.tsx's
+  /// `language` is hardcoded to "en" — so this is stored and returned, same
+  /// as every other `_fr` column, ready for whenever a real switcher ships.
+  comment_fr     String?             @db.Text
   /// Governed by the content_policy.rating_comments_mode setting — see
   /// routes/ratings.ts. 'auto_publish' mode sets this to 'approved' the
   /// moment a comment is written; 'review_required' leaves it 'pending'

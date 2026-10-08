@@ -13,6 +13,7 @@ interface ModeratedRating {
   id: number;
   score: number;
   comment: string | null;
+  comment_fr: string | null;
   created_at: string;
   reviewer: string;
   content_title: string;
@@ -38,6 +39,8 @@ export function RatingComments() {
   const [actingId, setActingId] = useState<number | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkActing, setBulkActing] = useState(false);
+  const [frDrafts, setFrDrafts] = useState<Record<number, string>>({});
+  const [frSavingId, setFrSavingId] = useState<number | null>(null);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -105,6 +108,27 @@ export function RatingComments() {
       toast(e.message ?? "Bulk update failed.", "error");
     } finally {
       setBulkActing(false);
+    }
+  }
+
+  // comment_fr is orthogonal to the approve/reject decision — this never
+  // sends a status, so it never touches comment_status or sends a
+  // moderation-notification email (see PUT /ratings-moderation/:id).
+  async function saveFr(rating: ModeratedRating) {
+    const draft = frDrafts[rating.id] ?? rating.comment_fr ?? "";
+    setFrSavingId(rating.id);
+    try {
+      const res = await api<{ rating: ModeratedRating }>(`/ratings-moderation/${rating.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ comment_fr: draft.trim() || null }),
+      });
+      setRatings((prev) => prev?.map((r) => (r.id === rating.id ? { ...r, comment_fr: res.rating.comment_fr } : r)) ?? null);
+      setFrDrafts((prev) => { const next = { ...prev }; delete next[rating.id]; return next; });
+      toast(draft.trim() ? "French translation saved." : "French translation cleared.");
+    } catch (e: any) {
+      toast(e.message ?? "Failed to save translation.", "error");
+    } finally {
+      setFrSavingId(null);
     }
   }
 
@@ -185,6 +209,23 @@ export function RatingComments() {
                     </div>
                     <p className="mt-2 text-sm text-slate-300">{r.comment}</p>
                     <p className="mt-2 text-xs text-slate-600">{formatDateTimeLagos(r.created_at)}</p>
+
+                    <div className="mt-3 flex items-start gap-2">
+                      <textarea
+                        value={frDrafts[r.id] ?? r.comment_fr ?? ""}
+                        onChange={(e) => setFrDrafts((prev) => ({ ...prev, [r.id]: e.target.value }))}
+                        placeholder="French translation (optional) — not yet shown publicly, there's no language switcher on the site"
+                        rows={2}
+                        className="w-full min-w-0 rounded-lg border border-slate-800 bg-slate-950 px-2.5 py-1.5 text-xs text-slate-300 placeholder:text-slate-600"
+                      />
+                      <button
+                        onClick={() => saveFr(r)}
+                        disabled={frSavingId === r.id || (frDrafts[r.id] ?? r.comment_fr ?? "") === (r.comment_fr ?? "")}
+                        className="shrink-0 rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200 disabled:opacity-40"
+                      >
+                        Save FR
+                      </button>
+                    </div>
                   </div>
                 </div>
                 {status === "pending" && (

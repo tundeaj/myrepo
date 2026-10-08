@@ -250,7 +250,7 @@ contentRouter.get("/:slug", async (req: Request, res: Response, next: NextFuncti
               where: { content_id: content.id, comment_status: "approved", comment: { not: null } },
               orderBy: { created_at: "desc" },
               take: 20,
-              select: { id: true, score: true, comment: true, created_at: true, user_id: true },
+              select: { id: true, score: true, comment: true, comment_fr: true, created_at: true, user_id: true },
             });
             if (!rows.length) return [];
             const users = await prisma.user.findMany({
@@ -262,6 +262,12 @@ contentRouter.get("/:slug", async (req: Request, res: Response, next: NextFuncti
               id: r.id,
               score: r.score,
               comment: r.comment,
+              // Returned raw, same as every other _fr field this endpoint's
+              // siblings already expose — nothing on the public site picks
+              // a language yet (publicI18n.tsx's `language` is hardcoded to
+              // "en"), so this rides along unused until a real switcher
+              // ships, rather than silently being dropped.
+              comment_fr: r.comment_fr,
               created_at: r.created_at,
               // First name only — a reviewer's full identity isn't this
               // page's business to publish.

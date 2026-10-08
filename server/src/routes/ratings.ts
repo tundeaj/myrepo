@@ -176,7 +176,20 @@ ratingsModerationRouter.get("/", async (req: Request, res: Response, next: NextF
   }
 });
 
-const ModerateSchema = z.object({ status: z.enum(["approved", "rejected"]) });
+const ModerateSchema = z
+  .object({
+    // Optional — translating a comment_fr is a separate concern from
+    // approving/rejecting it (see below), so a caller that only wants to
+    // save a translation on a still-pending comment can omit status
+    // entirely rather than being forced to pick approved/rejected for it.
+    status: z.enum(["approved", "rejected"]).optional(),
+    // Single-item only — a bulk batch has nowhere to collect per-row
+    // translated text, so comment_fr is never part of the /bulk schema below.
+    comment_fr: z.string().trim().max(2000).nullable().optional(),
+  })
+  .refine((b) => b.status !== undefined || b.comment_fr !== undefined, {
+    message: "Provide a status, a comment_fr, or both.",
+  });
 
 /**
  * The actual moderation write, shared by the single-item PUT /:id below and
@@ -185,10 +198,15 @@ const ModerateSchema = z.object({ status: z.enum(["approved", "rejected"]) });
  * Throws ApiError for the single-item route to surface directly; /bulk
  * instead catches it per id so one bad id in a batch can't sink the rest.
  */
-async function moderateOne(id: number, status: "approved" | "rejected") {
+async function findCommentedRating(id: number) {
   const existing = await prisma.rating.findFirst({ where: { id } });
   if (!existing) throw new ApiError(404, "Rating not found");
   if (!existing.comment) throw new ApiError(422, "This rating has no comment to moderate.");
+  return existing;
+}
+
+async function moderateOne(id: number, status: "approved" | "rejected") {
+  const existing = await findCommentedRating(id);
 
   const rating = await prisma.rating.update({ where: { id }, data: { comment_status: status } });
 
@@ -272,7 +290,24 @@ ratingsModerationRouter.put("/:id", async (req: Request, res: Response, next: Ne
     const id = Number(req.params.id);
     if (!id) throw new ApiError(400, "Invalid rating id");
     const body = ModerateSchema.parse(req.body);
-    const rating = await moderateOne(id, body.status);
+
+    // status is optional — a caller saving only a translation on a still-
+    // pending comment has nothing to transition, so it just confirms the
+    // row is real and commented, the same guard moderateOne itself applies.
+    let rating = body.status !== undefined ? await moderateOne(id, body.status) : await findCommentedRating(id);
+
+    // comment_fr: an admin-authored French translation, same shape as every
+    // other _fr field in this schema (title_fr, answer_html_fr, ...) — the
+    // viewer's own comment is never touched. Written separately from the
+    // status transition above: translating is optional and orthogonal to
+    // the approve/reject decision, so this never blocks or complicates it.
+    if (body.comment_fr !== undefined) {
+      rating = await prisma.rating.update({
+        where: { id },
+        data: { comment_fr: body.comment_fr?.trim() || null },
+      });
+    }
+
     res.json({ rating });
   } catch (err) {
     if (err instanceof z.ZodError) return next(new ApiError(422, err.errors[0]?.message ?? "Validation error"));
