@@ -104,6 +104,7 @@ const created = {
   pages: [] as number[],
   advertisers: [] as number[],
   ads: [] as number[],
+  communitySpaces: [] as number[],
 };
 
 async function makeContent(accessLevel: string, extra: Record<string, unknown> = {}) {
@@ -2042,6 +2043,156 @@ async function main() {
   const tooManyRowsRes = await call("/api/bulk-import/categories/import", { method: "POST", token: adminToken, body: { csv: tooManyRowsCsv } });
   check("more than 500 rows in one import is rejected outright", tooManyRowsRes.status === 422, tooManyRowsRes.body);
 
+  // ─── Community — Spaces, Posts & Moderation ─────────────────────────────────
+  //
+  // Unlike Promotions/Pages/Bulk Import, `/admin/community/spaces` and
+  // `/admin/community/moderation` had REAL schema waiting — community_spaces,
+  // space_members, space_posts, post_comments have existed since the
+  // original seed, untouched by any route. This builds on those directly.
+  // Checked scope with the user: lightweight discussion threads — a
+  // SpacePost is a top-level post, a PostComment is its one level of reply
+  // (no further self-nesting in the schema), every post/reply starts
+  // 'pending' and is invisible publicly until an admin approves it.
+  section("Community — Spaces, Posts & Moderation");
+
+  const viewerSpaceCreate = await call("/api/community-spaces", { method: "POST", token: sessionToken, body: { name: `E2E Space Viewer ${RUN}` } });
+  check("a signed-in VIEWER cannot create a space", viewerSpaceCreate.status === 403, viewerSpaceCreate.body);
+
+  const spaceNoName = await call("/api/community-spaces", { method: "POST", token: adminToken, body: { name: "" } });
+  check("an empty space name is rejected", spaceNoName.status === 422, spaceNoName.body);
+
+  const courseSpaceNoLink = await call("/api/community-spaces", { method: "POST", token: adminToken, body: { name: `E2E Course Space ${RUN}`, space_type: "course" } });
+  check("a course space with no linked_content_id is rejected", courseSpaceNoLink.status === 422, courseSpaceNoLink.body);
+
+  const spaceCreate = await call("/api/community-spaces", { method: "POST", token: adminToken, body: { name: `E2E Space ${RUN}`, description: "An e2e test space" } });
+  check("creating an open space succeeds", spaceCreate.status === 201 && spaceCreate.body.space?.name === `E2E Space ${RUN}`, spaceCreate.body);
+  const spaceId = spaceCreate.body.space?.id;
+  const spaceSlug = spaceCreate.body.space?.slug;
+  created.communitySpaces.push(spaceId);
+
+  const inactiveSpaceCreate = await call("/api/community-spaces", { method: "POST", token: adminToken, body: { name: `E2E Inactive Space ${RUN}`, is_active: false } });
+  const inactiveSpaceId = inactiveSpaceCreate.body.space?.id;
+  const inactiveSpaceSlug = inactiveSpaceCreate.body.space?.slug;
+  created.communitySpaces.push(inactiveSpaceId);
+
+  const viewerSpaceList = await call("/api/community-spaces", { token: sessionToken });
+  check("a signed-in VIEWER cannot see the admin space list", viewerSpaceList.status === 403, viewerSpaceList.body);
+
+  const publicSpaces = await call("/api/public-community/spaces");
+  const publicSpaceIds = (publicSpaces.body.spaces ?? []).map((s: { id: number }) => s.id);
+  check("the public spaces list includes the active space", publicSpaceIds.includes(spaceId), publicSpaceIds);
+  check("the public spaces list excludes the inactive space", !publicSpaceIds.includes(inactiveSpaceId), publicSpaceIds);
+  check("the public spaces list doubles as a PublicBootstrap (settings + strings)", "settings" in publicSpaces.body && "strings" in publicSpaces.body, Object.keys(publicSpaces.body));
+
+  const publicInactiveSpace = await call(`/api/public-community/spaces/${inactiveSpaceSlug}`);
+  check("an inactive space 404s on the public read path", publicInactiveSpace.status === 404, publicInactiveSpace.body);
+
+  const unauthedPostAttempt = await call(`/api/public-community/spaces/${spaceSlug}/posts`, { method: "POST", body: { body: "no token" } });
+  check("an unauthenticated post attempt is refused", unauthedPostAttempt.status === 401, unauthedPostAttempt.body);
+
+  const emptyPostAttempt = await call(`/api/public-community/spaces/${spaceSlug}/posts`, { method: "POST", token: sessionToken, body: { body: "  " } });
+  check("an empty post body is rejected", emptyPostAttempt.status === 422, emptyPostAttempt.body);
+
+  const postCreate = await call(`/api/public-community/spaces/${spaceSlug}/posts`, { method: "POST", token: sessionToken, body: { body: `E2E first post ${RUN}` } });
+  check("creating a post succeeds and starts pending", postCreate.status === 201 && postCreate.body.post?.status === "pending", postCreate.body);
+  const postId = postCreate.body.post?.id;
+
+  const spaceBeforeApproval = await call(`/api/public-community/spaces/${spaceSlug}`);
+  check("a pending post is invisible on the public read path", (spaceBeforeApproval.body.posts ?? []).every((p: { id: number }) => p.id !== postId), spaceBeforeApproval.body.posts);
+
+  const viewerModQueue = await call("/api/community-moderation?status=pending", { token: sessionToken });
+  check("a signed-in VIEWER cannot see the moderation queue", viewerModQueue.status === 403, viewerModQueue.body);
+
+  const modQueue = await call("/api/community-moderation?status=pending", { token: adminToken });
+  const modQueuePostIds = (modQueue.body.items ?? []).filter((i: { kind: string }) => i.kind === "post").map((i: { id: number }) => i.id);
+  check("the pending post appears in the moderation queue, tagged as a post", modQueuePostIds.includes(postId), modQueuePostIds);
+
+  const approvePostRes = await call(`/api/community-moderation/posts/${postId}`, { method: "PUT", token: adminToken, body: { status: "approved" } });
+  check("approving the post succeeds", approvePostRes.status === 200 && approvePostRes.body.post?.status === "approved", approvePostRes.body);
+
+  const spaceAfterApproval = await call(`/api/public-community/spaces/${spaceSlug}`);
+  const approvedPost = (spaceAfterApproval.body.posts ?? []).find((p: { id: number }) => p.id === postId);
+  check("the approved post is now visible on the public read path", approvedPost != null, spaceAfterApproval.body.posts);
+
+  const mineForOwner = await call(`/api/public-community/spaces/${spaceSlug}`, { token: sessionToken });
+  const mineForOwnerPost = (mineForOwner.body.posts ?? []).find((p: { id: number }) => p.id === postId);
+  check("the post's own author sees is_mine: true", mineForOwnerPost?.is_mine === true, mineForOwnerPost);
+  check("an anonymous viewer sees is_mine: false for the same post", approvedPost?.is_mine === false, approvedPost);
+
+  const replyToPendingAttempt = await call(`/api/public-community/posts/999999999/comments`, { method: "POST", token: sessionToken, body: { body: "no such post" } });
+  check("replying to a nonexistent post 404s", replyToPendingAttempt.status === 404, replyToPendingAttempt.body);
+
+  const unauthedReplyAttempt = await call(`/api/public-community/posts/${postId}/comments`, { method: "POST", body: { body: "no token" } });
+  check("an unauthenticated reply attempt is refused", unauthedReplyAttempt.status === 401, unauthedReplyAttempt.body);
+
+  const replyCreate = await call(`/api/public-community/posts/${postId}/comments`, { method: "POST", token: adminToken, body: { body: `E2E reply ${RUN}` } });
+  check("replying to an approved post succeeds and starts pending", replyCreate.status === 201 && replyCreate.body.comment?.status === "pending", replyCreate.body);
+  const commentId = replyCreate.body.comment?.id;
+
+  const spaceBeforeReplyApproval = await call(`/api/public-community/spaces/${spaceSlug}`);
+  const postBeforeReplyApproval = (spaceBeforeReplyApproval.body.posts ?? []).find((p: { id: number }) => p.id === postId);
+  check("a pending reply is invisible under its post on the public read path", (postBeforeReplyApproval?.replies ?? []).every((r: { id: number }) => r.id !== commentId), postBeforeReplyApproval?.replies);
+
+  const modQueueComments = await call("/api/community-moderation?status=pending", { token: adminToken });
+  const modQueueCommentIds = (modQueueComments.body.items ?? []).filter((i: { kind: string }) => i.kind === "comment").map((i: { id: number }) => i.id);
+  check("the pending reply appears in the moderation queue, tagged as a comment", modQueueCommentIds.includes(commentId), modQueueCommentIds);
+
+  const approveReplyRes = await call(`/api/community-moderation/comments/${commentId}`, { method: "PUT", token: adminToken, body: { status: "approved" } });
+  check("approving the reply succeeds", approveReplyRes.status === 200 && approveReplyRes.body.comment?.status === "approved", approveReplyRes.body);
+
+  const spaceAfterReplyApproval = await call(`/api/public-community/spaces/${spaceSlug}`);
+  const postAfterReplyApproval = (spaceAfterReplyApproval.body.posts ?? []).find((p: { id: number }) => p.id === postId);
+  check("the approved reply is now nested under its post on the public read path", (postAfterReplyApproval?.replies ?? []).some((r: { id: number }) => r.id === commentId), postAfterReplyApproval?.replies);
+
+  // Pin ordering — a second, OLDER post that's pinned should still sort
+  // ahead of the first, newer, unpinned one.
+  const secondPostCreate = await call(`/api/public-community/spaces/${spaceSlug}/posts`, { method: "POST", token: sessionToken, body: { body: `E2E second post ${RUN}` } });
+  const secondPostId = secondPostCreate.body.post?.id;
+  await call(`/api/community-moderation/posts/${secondPostId}`, { method: "PUT", token: adminToken, body: { status: "approved" } });
+  const pinRes = await call(`/api/community-moderation/posts/${secondPostId}/pin`, { method: "PUT", token: adminToken, body: { is_pinned: true } });
+  check("pinning a post succeeds", pinRes.status === 200 && pinRes.body.post?.is_pinned === true, pinRes.body);
+
+  const spaceAfterPin = await call(`/api/public-community/spaces/${spaceSlug}`);
+  const pinnedIndex = (spaceAfterPin.body.posts ?? []).findIndex((p: { id: number }) => p.id === secondPostId);
+  const unpinnedIndex = (spaceAfterPin.body.posts ?? []).findIndex((p: { id: number }) => p.id === postId);
+  check("a pinned post sorts ahead of a newer, unpinned one", pinnedIndex !== -1 && unpinnedIndex !== -1 && pinnedIndex < unpinnedIndex, { pinnedIndex, unpinnedIndex });
+
+  // Reject flow — the row still exists, just never shown publicly, same
+  // "fails still exist, just hidden" shape Pages' own unpublish uses.
+  const thirdPostCreate = await call(`/api/public-community/spaces/${spaceSlug}/posts`, { method: "POST", token: sessionToken, body: { body: `E2E rejected post ${RUN}` } });
+  const thirdPostId = thirdPostCreate.body.post?.id;
+  const rejectRes = await call(`/api/community-moderation/posts/${thirdPostId}`, { method: "PUT", token: adminToken, body: { status: "rejected" } });
+  check("rejecting a post succeeds", rejectRes.status === 200 && rejectRes.body.post?.status === "rejected", rejectRes.body);
+  const spaceAfterReject = await call(`/api/public-community/spaces/${spaceSlug}`);
+  check("a rejected post never appears on the public read path", (spaceAfterReject.body.posts ?? []).every((p: { id: number }) => p.id !== thirdPostId), spaceAfterReject.body.posts);
+  const rejectedPostRow = await prisma.spacePost.findFirst({ where: { id: thirdPostId } });
+  check("the rejected post's row still exists — rejected, not deleted", rejectedPostRow?.status === "rejected", rejectedPostRow);
+
+  // Bulk moderation — one bad id degrades only itself, same principle
+  // ratings-moderation's own /bulk and bulk-import already apply.
+  const bulkPostA = await call(`/api/public-community/spaces/${spaceSlug}/posts`, { method: "POST", token: sessionToken, body: { body: `E2E bulk A ${RUN}` } });
+  const bulkPostB = await call(`/api/public-community/spaces/${spaceSlug}/posts`, { method: "POST", token: sessionToken, body: { body: `E2E bulk B ${RUN}` } });
+  const bulkRes = await call("/api/community-moderation/bulk", {
+    method: "POST",
+    token: adminToken,
+    body: { items: [{ kind: "post", id: bulkPostA.body.post?.id }, { kind: "post", id: bulkPostB.body.post?.id }, { kind: "post", id: 999999999 }], status: "approved" },
+  });
+  check("bulk-approving succeeds for the two real posts and fails only for the bad id", bulkRes.body.results?.filter((r: { ok: boolean }) => r.ok).length === 2 && bulkRes.body.results?.find((r: { id: number }) => r.id === 999999999)?.ok === false, bulkRes.body.results);
+
+  // Delete cascade — deleting a post must take its replies with it, since
+  // these tables carry no DB-level FK/cascade (plain Int columns).
+  const deletePostReplyCreate = await call(`/api/public-community/posts/${bulkPostA.body.post?.id}/comments`, { method: "POST", token: adminToken, body: { body: `E2E reply to be cascaded ${RUN}` } });
+  const deletePostReplyId = deletePostReplyCreate.body.comment?.id;
+  const deletePostRes = await call(`/api/community-moderation/posts/${bulkPostA.body.post?.id}`, { method: "DELETE", token: adminToken });
+  check("deleting a post succeeds", deletePostRes.status === 200, deletePostRes.body);
+  const orphanedComment = await prisma.postComment.findFirst({ where: { id: deletePostReplyId } });
+  check("deleting a post also deletes its replies — no orphaned comment rows", orphanedComment === null, orphanedComment);
+
+  // Space delete-guard — a space with posts still in it can't be deleted
+  // outright, same "block, don't silently orphan" call Categories makes.
+  const deleteSpaceInUse = await call(`/api/community-spaces/${spaceId}`, { method: "DELETE", token: adminToken });
+  check("deleting a space that still has posts is refused", deleteSpaceInUse.status === 409, deleteSpaceInUse.body);
+
   // ─── Sponsors — admin CRUD ──────────────────────────────────────────────────
   section("Sponsors — admin CRUD");
 
@@ -3500,6 +3651,11 @@ async function main() {
   await prisma.contentItem.deleteMany({ where: { id: { in: created.content } } });
   await prisma.promotion.deleteMany({ where: { id: { in: created.promotions } } });
   await prisma.page.deleteMany({ where: { id: { in: created.pages } } });
+  await prisma.postComment.deleteMany({
+    where: { post_id: { in: (await prisma.spacePost.findMany({ where: { space_id: { in: created.communitySpaces } }, select: { id: true } })).map((r) => r.id) } },
+  });
+  await prisma.spacePost.deleteMany({ where: { space_id: { in: created.communitySpaces } } });
+  await prisma.communitySpace.deleteMany({ where: { id: { in: created.communitySpaces } } });
   await prisma.plan.deleteMany({ where: { id: { in: created.plans } } });
   await prisma.coupon.deleteMany({ where: { id: { in: created.coupons } } });
   await prisma.user.deleteMany({ where: { id: { in: created.users } } });

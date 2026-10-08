@@ -323,6 +323,12 @@ enum SpaceMemberRole {
   moderator
 }
 
+enum CommunityPostStatus {
+  pending
+  approved
+  rejected
+}
+
 enum SponsorPlacement {
   session_page
   player
@@ -1401,26 +1407,38 @@ model SpaceMember {
 }
 
 model SpacePost {
-  id             Int      @id @default(autoincrement())
+  id             Int                 @id @default(autoincrement())
   space_id       Int
   user_id        Int
-  body           String?  @db.Text
-  attachment_url String?  @db.VarChar(500)
-  is_pinned      Boolean  @default(false)
-  created_at     DateTime @default(now())
+  body           String?             @db.Text
+  attachment_url String?             @db.VarChar(500)
+  is_pinned      Boolean             @default(false)
+  /// Every post starts 'pending' and is never shown on the public read path
+  /// until an admin approves it via /admin/community/moderation — same
+  /// review_required shape ratings' own comment_status already uses, just
+  /// without a settings toggle since this feature has no "auto_publish" mode.
+  status         CommunityPostStatus @default(pending)
+  created_at     DateTime            @default(now())
 
   @@index([space_id, created_at])
+  @@index([status])
   @@map("space_posts")
 }
 
 model PostComment {
-  id         Int      @id @default(autoincrement())
+  id         Int                 @id @default(autoincrement())
   post_id    Int
   user_id    Int
-  body       String?  @db.Text
-  created_at DateTime @default(now())
+  body       String?             @db.Text
+  /// The one level of "reply" this feature supports — a PostComment has no
+  /// further self-nesting, so this table IS the depth limit, not something
+  /// enforced by extra validation code. Same pending-until-approved rule as
+  /// SpacePost.status.
+  status     CommunityPostStatus @default(pending)
+  created_at DateTime            @default(now())
 
   @@index([post_id])
+  @@index([status])
   @@map("post_comments")
 }
 

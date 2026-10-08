@@ -146,6 +146,7 @@ async function restoreSmtp() {
 
 const createdUsers: number[] = [];
 const createdContent: number[] = [];
+const createdCommunitySpaces: number[] = [];
 
 async function main() {
   console.log(`Email e2e against ${API}, SMTP capture on :${SMTP_PORT}  (run ${RUN})\n`);
@@ -410,8 +411,86 @@ async function main() {
         if (created2) await prisma.setting.delete({ where: { id: created2.id } });
       }
     }
+
+    // ─── Community reply notification ────────────────────────────────────────
+    //
+    // `community_reply` has sat in NOTIFICATION_EVENT_KEYS since that file was
+    // introduced, with nothing ever checking it — routes/community.ts's
+    // notifyReplyApproved() is its first real consumer. The main e2e suite
+    // covers the moderation decision itself (post/reply visibility, the
+    // pending-until-approved gate); this suite's job is only whether a real
+    // message goes out, to the post's own author, on a real approval — and
+    // NOT when a viewer replies to their own post.
+    section("Community reply notification");
+
+    const authorEmail = `mail-community-author-${RUN}@example.test`;
+    const authorPassword = "another-correct-horse-battery";
+    await call("/api/auth/register", { method: "POST", body: { email: authorEmail, password: authorPassword, full_name: "Community Author", country: "NG" } });
+    const authorUser = await prisma.user.findUnique({ where: { email: authorEmail } });
+    if (authorUser) createdUsers.push(authorUser.id);
+    const authorLogin = await call("/api/auth/login", { method: "POST", body: { email: authorEmail, password: authorPassword } });
+    const authorToken = authorLogin.body.token as string;
+    check("the community post author can sign in", authorLogin.status === 200 && typeof authorToken === "string", authorLogin.body);
+
+    const replierEmail = `mail-community-replier-${RUN}@example.test`;
+    const replierPassword = "yet-another-correct-horse";
+    await call("/api/auth/register", { method: "POST", body: { email: replierEmail, password: replierPassword, full_name: "Community Replier", country: "NG" } });
+    const replierUser = await prisma.user.findUnique({ where: { email: replierEmail } });
+    if (replierUser) createdUsers.push(replierUser.id);
+    const replierLogin = await call("/api/auth/login", { method: "POST", body: { email: replierEmail, password: replierPassword } });
+    const replierToken = replierLogin.body.token as string;
+    check("the community replier can sign in", replierLogin.status === 200 && typeof replierToken === "string", replierLogin.body);
+
+    const communityAdminLogin = await call("/api/auth/login", { method: "POST", body: { email: "admin@webinarflix.dev", password: "ChangeMe123!" } });
+    const communityAdminToken = communityAdminLogin.body.token as string;
+    check("the seeded admin can log in for community moderation", communityAdminLogin.status === 200 && typeof communityAdminToken === "string", communityAdminLogin.body);
+
+    const space = await prisma.communitySpace.create({
+      data: { name: `Mail Test Space ${RUN}`, slug: `mail-community-space-${RUN}`, is_active: true },
+    });
+    createdCommunitySpaces.push(space.id);
+
+    const authorPost = await call(`/api/public-community/spaces/${space.slug}/posts`, { method: "POST", token: authorToken, body: { body: `A post to reply to ${RUN}` } });
+    check("the author's post is accepted as pending", authorPost.status === 201 && authorPost.body.post?.status === "pending", authorPost.body);
+    const postId = authorPost.body.post?.id;
+
+    const approvePost = await call(`/api/community-moderation/posts/${postId}`, { method: "PUT", token: communityAdminToken, body: { status: "approved" } });
+    check("approving the post succeeds", approvePost.status === 200 && approvePost.body.post?.status === "approved", approvePost.body);
+
+    const reply = await call(`/api/public-community/posts/${postId}/comments`, { method: "POST", token: replierToken, body: { body: `A reply ${RUN}` } });
+    check("the reply is accepted as pending", reply.status === 201 && reply.body.comment?.status === "pending", reply.body);
+    const commentId = reply.body.comment?.id;
+
+    const replyApproveBefore = inbox.length;
+    const approveReply = await call(`/api/community-moderation/comments/${commentId}`, { method: "PUT", token: communityAdminToken, body: { status: "approved" } });
+    check("approving the reply succeeds", approveReply.status === 200 && approveReply.body.comment?.status === "approved", approveReply.body);
+
+    const replyMail = await waitForMail((m) => m.to.includes(authorEmail) && /new reply/i.test(m.subject));
+    check("the post's author is emailed when their reply is approved", replyMail != null, inbox.slice(replyApproveBefore).map((m) => m.subject));
+    check("the reply notification links to the space", replyMail != null && replyMail.text.includes(`/community/${space.slug}`), replyMail?.text?.slice(0, 200));
+
+    // Re-approving an already-approved reply must not send a second notification.
+    const reapproveReplyBefore = inbox.length;
+    const reapproveReply = await call(`/api/community-moderation/comments/${commentId}`, { method: "PUT", token: communityAdminToken, body: { status: "approved" } });
+    check("re-approving an already-approved reply still succeeds", reapproveReply.status === 200, reapproveReply.body);
+    await new Promise((r) => setTimeout(r, 500));
+    check("but re-approving the SAME status does not send a second notification", inbox.length === reapproveReplyBefore, inbox.slice(reapproveReplyBefore).map((m) => m.subject));
+
+    // A viewer replying to their OWN post must never trigger a self-notification.
+    const ownPost = await call(`/api/public-community/spaces/${space.slug}/posts`, { method: "POST", token: authorToken, body: { body: `My own post ${RUN}` } });
+    const ownPostId = ownPost.body.post?.id;
+    await call(`/api/community-moderation/posts/${ownPostId}`, { method: "PUT", token: communityAdminToken, body: { status: "approved" } });
+    const selfReply = await call(`/api/public-community/posts/${ownPostId}/comments`, { method: "POST", token: authorToken, body: { body: `Replying to myself ${RUN}` } });
+    const selfCommentId = selfReply.body.comment?.id;
+    const selfReplyBefore = inbox.length;
+    await call(`/api/community-moderation/comments/${selfCommentId}`, { method: "PUT", token: communityAdminToken, body: { status: "approved" } });
+    await new Promise((r) => setTimeout(r, 500));
+    check("replying to your own post never sends a self-notification", inbox.length === selfReplyBefore, inbox.slice(selfReplyBefore).map((m) => m.subject));
   } finally {
     await restoreSmtp();
+    await prisma.postComment.deleteMany({ where: { post_id: { in: await prisma.spacePost.findMany({ where: { space_id: { in: createdCommunitySpaces } }, select: { id: true } }).then((rows) => rows.map((r) => r.id)) } } });
+    await prisma.spacePost.deleteMany({ where: { space_id: { in: createdCommunitySpaces } } });
+    await prisma.communitySpace.deleteMany({ where: { id: { in: createdCommunitySpaces } } });
     await prisma.rating.deleteMany({ where: { content_id: { in: createdContent } } });
     await prisma.contentItem.deleteMany({ where: { id: { in: createdContent } } });
     await prisma.authToken.deleteMany({ where: { user_id: { in: createdUsers } } });

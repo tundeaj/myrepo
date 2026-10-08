@@ -12,6 +12,7 @@ import { categoriesRouter } from "./routes/categories.js";
 import { promotionsRouter } from "./routes/promotions.js";
 import { pagesRouter, publicPagesRouter } from "./routes/pages.js";
 import { bulkImportRouter } from "./routes/bulkImport.js";
+import { communitySpacesRouter, communityModerationRouter, publicCommunityRouter } from "./routes/community.js";
 import { mediaRouter } from "./routes/media.js";
 import { instructorsRouter } from "./routes/instructors.js";
 import { teachRouter } from "./routes/teach.js";
@@ -85,6 +86,8 @@ app.use("/api/categories", requireAuth, requireAdmin, categoriesRouter);
 app.use("/api/promotions", requireAuth, requireAdmin, promotionsRouter);
 app.use("/api/pages", requireAuth, requireAdmin, pagesRouter);
 app.use("/api/bulk-import", requireAuth, requireAdmin, bulkImportRouter);
+app.use("/api/community-spaces", requireAuth, requireAdmin, communitySpacesRouter);
+app.use("/api/community-moderation", requireAuth, requireAdmin, communityModerationRouter);
 app.use("/api/media", requireAuth, requireAdmin, mediaRouter);
 app.use("/api/instructors", requireAuth, requireAdmin, instructorsRouter);
 app.use("/api/teach", teachRouter);
@@ -123,6 +126,7 @@ app.use("/api/public-categories", publicCategoriesRouter);
 app.use("/api/public-speakers", publicSpeakersRouter);
 app.use("/api/public-faqs", publicFaqsRouter);
 app.use("/api/public-pages", publicPagesRouter);
+app.use("/api/public-community", publicCommunityRouter);
 app.use("/api/public-contact", publicContactRouter);
 // Viewer accounts (Prompt 12). /signup is public — it describes the form.
 // Registrations and account are the viewer's own data, scoped by token.

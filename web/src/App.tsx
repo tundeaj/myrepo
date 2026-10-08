@@ -18,6 +18,8 @@ const SpeakerProfile = lazy(() => import("./public/SpeakerProfile").then((m) => 
 const PublicFaqs = lazy(() => import("./public/Faqs").then((m) => ({ default: m.Faqs })));
 const Contact = lazy(() => import("./public/Contact").then((m) => ({ default: m.Contact })));
 const StaticPage = lazy(() => import("./public/StaticPage").then((m) => ({ default: m.StaticPage })));
+const Community = lazy(() => import("./public/Community").then((m) => ({ default: m.Community })));
+const CommunitySpacePage = lazy(() => import("./public/Community").then((m) => ({ default: m.CommunitySpacePage })));
 
 // Viewer accounts (Prompt 12). The three password/verification flows share one
 // chunk — a visitor who hits any of them is likely to touch another.
@@ -84,12 +86,12 @@ const Trending = lazy(() => import("./pages/homepage/Trending").then((m) => ({ d
 const Promotions = lazy(() => import("./pages/promotions/Promotions").then((m) => ({ default: m.Promotions })));
 const Pages = lazy(() => import("./pages/pages/Pages").then((m) => ({ default: m.Pages })));
 const BulkImport = lazy(() => import("./pages/bulkImport/BulkImport").then((m) => ({ default: m.BulkImport })));
+const CommunitySpaces = lazy(() => import("./pages/community/CommunitySpaces").then((m) => ({ default: m.CommunitySpaces })));
+const CommunityModeration = lazy(() => import("./pages/community/CommunityModeration").then((m) => ({ default: m.CommunityModeration })));
 
 // Routes not yet built — each will be replaced with a real page in future prompts
 const PLACEHOLDER_PATHS = [
   "subscriptions-orders",
-  "community/spaces",
-  "community/moderation",
   "analytics/player",
   "analytics/ppv-revenue",
 ];
@@ -177,6 +179,8 @@ export function App() {
           <Route path="pages" element={<Pages />} />
           <Route path="landing-pages" element={<Pages />} />
           <Route path="bulk-import" element={<BulkImport />} />
+          <Route path="community/spaces" element={<CommunitySpaces />} />
+          <Route path="community/moderation" element={<CommunityModeration />} />
 
           {/* ── Placeholder routes (future prompts) ── */}
           {PLACEHOLDER_PATHS.map((path) => (
@@ -211,6 +215,8 @@ export function App() {
         <Route path="/faqs" element={<PublicFaqs />} />
         <Route path="/contact" element={<Contact />} />
         <Route path="/p/:slug" element={<StaticPage />} />
+        <Route path="/community" element={<Community />} />
+        <Route path="/community/:slug" element={<CommunitySpacePage />} />
 
         {/* ── Viewer accounts (Prompt 12) ── */}
         {/* /signin is the viewer entry; /login stays the back-office one, which

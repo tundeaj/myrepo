@@ -595,6 +595,151 @@ async function run(browser: Browser) {
     if (importedSpeaker) await fetch(`${API_BASE}/api/speakers/${importedSpeaker.id}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
   }
 
+  // ─── Community ───────────────────────────────────────────────────────────────
+  //
+  // Unlike Promotions/Pages/Bulk Import, community_spaces/space_posts/
+  // post_comments already existed in the schema — this is the first time
+  // any route (or UI) touches them. scripts/e2e.ts's own "Community" section
+  // covers the endpoints thoroughly at the data layer (moderation queue,
+  // pin ordering, delete cascade, bulk moderation). This section proves what
+  // only a real browser can: the admin Space form actually creates a space,
+  // a signed-in viewer's real composer posts into it, the Moderation queue's
+  // real Approve button makes it (and a real reply) visible, and the public
+  // page actually renders the nested result — not a mocked round trip.
+  section("Community");
+
+  if (adminToken) {
+    const spaceName = `Browser Check Space ${Date.now()}`;
+
+    const beforeSpaceErrors = pageErrors.length;
+    await page.goto(`${BASE}/admin/community/spaces`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(500);
+
+    await page.getByRole("button", { name: "Add Space" }).first().click();
+    await page.waitForTimeout(300);
+    await page.locator('input[placeholder*="General Discussion"]').fill(spaceName);
+    await page.getByRole("button", { name: "Create space" }).click();
+    await page.waitForTimeout(600);
+
+    const hasSpaceRow = await page.locator(`text=${spaceName}`).count();
+    check("creating a space through the real admin form succeeds and renders", hasSpaceRow > 0, { hasSpaceRow });
+    check("/admin/community/spaces throws no uncaught render error", pageErrors.length === beforeSpaceErrors, pageErrors.slice(beforeSpaceErrors));
+
+    const adminSpaceList = await fetch(`${API_BASE}/api/community-spaces`, { headers: { Authorization: `Bearer ${adminToken}` } }).then((r) => r.json());
+    const fixtureSpace = (adminSpaceList?.spaces ?? []).find((s: { name: string }) => s.name === spaceName);
+    const spaceId = fixtureSpace?.id;
+    const spaceSlug = fixtureSpace?.slug;
+    check("the UI-created space is really persisted server-side", typeof spaceId === "number", fixtureSpace);
+
+    if (spaceSlug) {
+      let postId: number | undefined;
+
+      // A real viewer account, registered fresh for this check — the
+      // composer is gated on being signed in, same as rating submission.
+      const viewerEmail = `browser-community-${Date.now()}@example.test`;
+      const viewerPassword = "correct-horse-battery-staple";
+      const viewerReg = await fetch(`${API_BASE}/api/auth/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: viewerEmail, password: viewerPassword, full_name: "Browser Community Viewer", country: "NG" }),
+      }).then((r) => r.json());
+      const viewerToken = viewerReg?.token as string | undefined;
+      check("a fresh viewer account can register for this check", typeof viewerToken === "string", viewerReg);
+
+      if (viewerToken) {
+        await page.evaluate((token) => localStorage.setItem("webinarflix_token", token), viewerToken);
+
+        const postBody = `Browser check post ${Date.now()}`;
+        const beforePublicPostErrors = pageErrors.length;
+        await page.goto(`${BASE}/community/${spaceSlug}`, { waitUntil: "networkidle" });
+        await page.waitForTimeout(500);
+
+        await page.locator('textarea[placeholder="Start a post…"]').fill(postBody);
+        await page.getByRole("button", { name: "Post" }).click();
+        await page.waitForTimeout(600);
+
+        const hasPendingNotice = await page.locator("text=Your post is awaiting approval").count();
+        check("posting through the real composer renders the pending notice", hasPendingNotice > 0, { hasPendingNotice });
+        check("/community/:slug (posting) throws no uncaught render error", pageErrors.length === beforePublicPostErrors, pageErrors.slice(beforePublicPostErrors));
+
+        const pendingPosts = await fetch(`${API_BASE}/api/community-moderation?status=pending`, { headers: { Authorization: `Bearer ${adminToken}` } }).then((r) => r.json());
+        const fixturePost = (pendingPosts?.items ?? []).find((i: { body: string }) => i.body === postBody);
+        postId = fixturePost?.id;
+        check("the real composer's post is really persisted server-side, pending", Boolean(fixturePost), fixturePost);
+
+        if (postId) {
+          // Switch to the admin and approve through the real Moderation UI.
+          await page.evaluate((token) => localStorage.setItem("webinarflix_token", token), adminToken);
+          const beforeModErrors = pageErrors.length;
+          await page.goto(`${BASE}/admin/community/moderation`, { waitUntil: "networkidle" });
+          await page.waitForTimeout(500);
+
+          const hasQueueRow = await page.locator(`text=${postBody}`).count();
+          check("the real pending post renders in the Moderation queue", hasQueueRow > 0, { hasQueueRow });
+
+          const postRow = page.locator(`text=${postBody}`).locator("xpath=ancestor::div[contains(@class,'rounded-xl')][1]");
+          await postRow.getByRole("button", { name: "Approve" }).click();
+          await page.waitForTimeout(600);
+
+          const rowGoneFromQueue = await page.locator(`text=${postBody}`).count();
+          check("approving through the real button removes it from the pending queue", rowGoneFromQueue === 0, { rowGoneFromQueue });
+          check("/admin/community/moderation throws no uncaught render error", pageErrors.length === beforeModErrors, pageErrors.slice(beforeModErrors));
+
+          // Back to the public page as the viewer — the approved post, and a
+          // real reply through the reply composer.
+          await page.evaluate((token) => localStorage.setItem("webinarflix_token", token), viewerToken);
+          const beforePublicAfterApproveErrors = pageErrors.length;
+          await page.goto(`${BASE}/community/${spaceSlug}`, { waitUntil: "networkidle" });
+          await page.waitForTimeout(500);
+
+          const hasApprovedPost = await page.locator(`text=${postBody}`).count();
+          check("the approved post now renders on the real public page", hasApprovedPost > 0, { hasApprovedPost });
+
+          const replyBody = `Browser check reply ${Date.now()}`;
+          await page.locator('textarea[placeholder="Write a reply…"]').first().fill(replyBody);
+          await page.getByRole("button", { name: "Reply" }).first().click();
+          await page.waitForTimeout(600);
+
+          const hasReplyPendingNotice = await page.locator("text=Your reply is awaiting approval").count();
+          check("replying through the real composer renders the pending notice", hasReplyPendingNotice > 0, { hasReplyPendingNotice });
+          check("/community/:slug (replying) throws no uncaught render error", pageErrors.length === beforePublicAfterApproveErrors, pageErrors.slice(beforePublicAfterApproveErrors));
+
+          const pendingComments = await fetch(`${API_BASE}/api/community-moderation?status=pending`, { headers: { Authorization: `Bearer ${adminToken}` } }).then((r) => r.json());
+          const fixtureComment = (pendingComments?.items ?? []).find((i: { body: string }) => i.body === replyBody);
+          const commentId = fixtureComment?.id;
+          check("the real reply composer's reply is really persisted server-side, pending", Boolean(fixtureComment), fixtureComment);
+
+          if (commentId) {
+            await fetch(`${API_BASE}/api/community-moderation/comments/${commentId}`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+              body: JSON.stringify({ status: "approved" }),
+            });
+
+            await page.goto(`${BASE}/community/${spaceSlug}`, { waitUntil: "networkidle" });
+            await page.waitForTimeout(500);
+            const hasApprovedReply = await page.locator(`text=${replyBody}`).count();
+            check("the approved reply now renders nested under its post on the real public page", hasApprovedReply > 0, { hasApprovedReply });
+          }
+        }
+      }
+
+      // Clean up: delete the post first (cascades to its own replies — see
+      // routes/community.ts's DELETE /posts/:id), THEN the space, since a
+      // space still holding a post is refused, same guard scripts/e2e.ts's
+      // own "Community" section already exercises directly.
+      if (postId) {
+        await fetch(`${API_BASE}/api/community-moderation/posts/${postId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } }).catch(() => undefined);
+      }
+      await fetch(`${API_BASE}/api/community-spaces/${spaceId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } }).catch(() => undefined);
+    }
+
+    // The last page visit above ran as the viewer (to see the approved
+    // reply) — restore the admin session in localStorage before any later
+    // section assumes it's still active.
+    await page.evaluate((token) => localStorage.setItem("webinarflix_token", token), adminToken);
+  }
+
   // ─── Sponsors, Advertisers, Ads ─────────────────────────────────────────────
   section("Sponsors, Advertisers, Ads");
 
