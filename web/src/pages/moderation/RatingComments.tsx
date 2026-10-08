@@ -36,10 +36,13 @@ export function RatingComments() {
   const [error, setError] = useState<string | null>(null);
   const [correlationId, setCorrelationId] = useState<string | undefined>();
   const [actingId, setActingId] = useState<number | null>(null);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [bulkActing, setBulkActing] = useState(false);
 
   const load = useCallback(() => {
     setLoading(true);
     setError(null);
+    setSelected(new Set());
     api<{ ratings: ModeratedRating[] }>(`/ratings-moderation?status=${status}`)
       .then((res) => { setRatings(res.ratings); setLoading(false); })
       .catch((err) => {
@@ -56,11 +59,52 @@ export function RatingComments() {
     try {
       await api(`/ratings-moderation/${rating.id}`, { method: "PUT", body: JSON.stringify({ status: next }) });
       setRatings((prev) => prev?.filter((r) => r.id !== rating.id) ?? null);
+      setSelected((prev) => { const next = new Set(prev); next.delete(rating.id); return next; });
       toast(next === "approved" ? "Comment approved." : "Comment rejected.");
     } catch (e: any) {
       toast(e.message ?? "Failed to update.", "error");
     } finally {
       setActingId(null);
+    }
+  }
+
+  function toggleSelected(id: number) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  const allSelected = ratings != null && ratings.length > 0 && selected.size === ratings.length;
+
+  function toggleSelectAll() {
+    setSelected(allSelected ? new Set() : new Set(ratings?.map((r) => r.id) ?? []));
+  }
+
+  async function bulkAct(next: "approved" | "rejected") {
+    const ids = [...selected];
+    if (!ids.length) return;
+    setBulkActing(true);
+    try {
+      const res = await api<{ ratings: { id: number }[]; failed: { id: number; error: string }[] }>(
+        "/ratings-moderation/bulk",
+        { method: "POST", body: JSON.stringify({ ids, status: next }) },
+      );
+      const succeededIds = new Set(res.ratings.map((r) => r.id));
+      setRatings((prev) => prev?.filter((r) => !succeededIds.has(r.id)) ?? null);
+      setSelected((prev) => { const remaining = new Set(prev); for (const id of succeededIds) remaining.delete(id); return remaining; });
+      const verb = next === "approved" ? "approved" : "rejected";
+      if (res.failed.length) {
+        toast(`${succeededIds.size} ${verb}, ${res.failed.length} failed.`, succeededIds.size ? "info" : "error");
+      } else {
+        toast(`${succeededIds.size} comment${succeededIds.size === 1 ? "" : "s"} ${verb}.`);
+      }
+    } catch (e: any) {
+      toast(e.message ?? "Bulk update failed.", "error");
+    } finally {
+      setBulkActing(false);
     }
   }
 
@@ -94,18 +138,54 @@ export function RatingComments() {
         <EmptyState icon={<Icon name="shield" className="h-6 w-6" />} heading={`No ${status} comments`} explanation={status === "pending" ? "Nothing is waiting for review." : `Nothing has been ${status} yet.`} />
       ) : (
         <div className="space-y-3">
+          {status === "pending" && (
+            <div className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-2.5">
+              <label className="flex items-center gap-2 text-xs text-slate-400">
+                <input type="checkbox" checked={allSelected} onChange={toggleSelectAll} className="h-3.5 w-3.5 rounded border-slate-700 bg-slate-900" />
+                {selected.size > 0 ? `${selected.size} selected` : "Select all"}
+              </label>
+              {selected.size > 0 && (
+                <div className="ml-auto flex gap-2">
+                  <button
+                    onClick={() => bulkAct("approved")}
+                    disabled={bulkActing}
+                    className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-50"
+                  >
+                    Approve {selected.size}
+                  </button>
+                  <button
+                    onClick={() => bulkAct("rejected")}
+                    disabled={bulkActing}
+                    className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs text-red-300 hover:bg-red-500/20 disabled:opacity-50"
+                  >
+                    Reject {selected.size}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
           {ratings.map((r) => (
             <div key={r.id} className="rounded-xl border border-slate-800 p-4">
               <div className="flex items-start justify-between gap-4">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2 text-sm">
-                    <span className="text-amber-400">{"★".repeat(r.score)}{"☆".repeat(5 - r.score)}</span>
-                    <span className="text-slate-500">{r.reviewer}</span>
-                    <span className="text-slate-700">·</span>
-                    <span className="truncate text-slate-500">{r.content_title}</span>
+                <div className="flex min-w-0 gap-3">
+                  {status === "pending" && (
+                    <input
+                      type="checkbox"
+                      checked={selected.has(r.id)}
+                      onChange={() => toggleSelected(r.id)}
+                      className="mt-1 h-3.5 w-3.5 shrink-0 rounded border-slate-700 bg-slate-900"
+                    />
+                  )}
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 text-sm">
+                      <span className="text-amber-400">{"★".repeat(r.score)}{"☆".repeat(5 - r.score)}</span>
+                      <span className="text-slate-500">{r.reviewer}</span>
+                      <span className="text-slate-700">·</span>
+                      <span className="truncate text-slate-500">{r.content_title}</span>
+                    </div>
+                    <p className="mt-2 text-sm text-slate-300">{r.comment}</p>
+                    <p className="mt-2 text-xs text-slate-600">{formatDateTimeLagos(r.created_at)}</p>
                   </div>
-                  <p className="mt-2 text-sm text-slate-300">{r.comment}</p>
-                  <p className="mt-2 text-xs text-slate-600">{formatDateTimeLagos(r.created_at)}</p>
                 </div>
                 {status === "pending" && (
                   <div className="flex shrink-0 gap-2">

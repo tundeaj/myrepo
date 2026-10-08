@@ -178,6 +178,91 @@ ratingsModerationRouter.get("/", async (req: Request, res: Response, next: NextF
 
 const ModerateSchema = z.object({ status: z.enum(["approved", "rejected"]) });
 
+/**
+ * The actual moderation write, shared by the single-item PUT /:id below and
+ * POST /bulk — one place for the comment_status transition, the "only email
+ * on a real transition" rule, and the sendMail call, so the two never drift.
+ * Throws ApiError for the single-item route to surface directly; /bulk
+ * instead catches it per id so one bad id in a batch can't sink the rest.
+ */
+async function moderateOne(id: number, status: "approved" | "rejected") {
+  const existing = await prisma.rating.findFirst({ where: { id } });
+  if (!existing) throw new ApiError(404, "Rating not found");
+  if (!existing.comment) throw new ApiError(422, "This rating has no comment to moderate.");
+
+  const rating = await prisma.rating.update({ where: { id }, data: { comment_status: status } });
+
+  // Notify the reviewer, same sendMail/publicUrl pattern every other
+  // transactional email in this codebase already uses. Only on a real
+  // transition — re-approving an already-approved comment (a double click,
+  // or two admins racing on the same queue row) shouldn't re-send. sendMail
+  // never throws (it logs and returns false on failure), so this never
+  // risks the moderation decision itself, same guarantee every other
+  // sendMail call site in this file relies on.
+  if (existing.comment_status !== status) {
+    const [user, content] = await Promise.all([
+      prisma.user.findUnique({ where: { id: existing.user_id }, select: { email: true } }),
+      prisma.contentItem.findUnique({ where: { id: existing.content_id }, select: { title: true, slug: true } }),
+    ]);
+    if (user?.email && content) {
+      const approved = status === "approved";
+      await sendMail({
+        to: user.email,
+        subject: approved
+          ? `Your review of ${content.title} is now live`
+          : `Your review of ${content.title} wasn't approved`,
+        lines: approved
+          ? [`The comment on your rating of ${content.title} has been approved and is now visible to other viewers.`]
+          : [
+              `The comment on your rating of ${content.title} wasn't approved for public display.`,
+              "Your star rating itself is unaffected and still counts toward the item's average.",
+            ],
+        action: approved ? { label: "View it", url: publicUrl(`/watch/${content.slug}`) } : undefined,
+      });
+    }
+  }
+
+  return rating;
+}
+
+const BulkModerateSchema = z.object({
+  ids: z.array(z.number().int().positive()).min(1, "At least one id is required.").max(100, "At most 100 at a time."),
+  status: z.enum(["approved", "rejected"]),
+});
+
+// POST /ratings-moderation/bulk — approve or reject several comments in one
+// request, the same decision a human would otherwise click through one row
+// at a time from the moderation queue. Registered ahead of PUT /:id so the
+// literal path "bulk" is never swallowed by that route's :id param.
+//
+// Partial failure is expected, not exceptional: by the time a selection an
+// admin made seconds ago reaches the server, another admin (or this same
+// one, in another tab) may have already moderated or deleted one of the
+// rows. One bad id degrades that row, not the batch — every other id in the
+// request still gets its own real decision and, where applicable, its own
+// notification.
+ratingsModerationRouter.post("/bulk", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const body = BulkModerateSchema.parse(req.body);
+    const uniqueIds = [...new Set(body.ids)];
+
+    const ratings: unknown[] = [];
+    const failed: { id: number; error: string }[] = [];
+    for (const id of uniqueIds) {
+      try {
+        ratings.push(await moderateOne(id, body.status));
+      } catch (err) {
+        failed.push({ id, error: err instanceof ApiError ? err.message : "Failed to moderate." });
+      }
+    }
+
+    res.json({ ratings, failed });
+  } catch (err) {
+    if (err instanceof z.ZodError) return next(new ApiError(422, err.errors[0]?.message ?? "Validation error"));
+    next(err);
+  }
+});
+
 // PUT /ratings-moderation/:id — approve or reject one comment. The rating's
 // score and its contribution to the aggregate are completely unaffected —
 // this only ever governs whether the COMMENT text is shown, never whether
@@ -186,43 +271,8 @@ ratingsModerationRouter.put("/:id", async (req: Request, res: Response, next: Ne
   try {
     const id = Number(req.params.id);
     if (!id) throw new ApiError(400, "Invalid rating id");
-    const existing = await prisma.rating.findFirst({ where: { id } });
-    if (!existing) throw new ApiError(404, "Rating not found");
-    if (!existing.comment) throw new ApiError(422, "This rating has no comment to moderate.");
-
     const body = ModerateSchema.parse(req.body);
-    const rating = await prisma.rating.update({ where: { id }, data: { comment_status: body.status } });
-
-    // Notify the reviewer, same sendMail/publicUrl pattern every other
-    // transactional email in this codebase already uses. Only on a real
-    // transition — re-approving an already-approved comment (a double
-    // click, or two admins racing on the same queue row) shouldn't re-send.
-    // sendMail never throws (it logs and returns false on failure), so this
-    // never risks the moderation decision itself, same guarantee every
-    // other sendMail call site in this file relies on.
-    if (existing.comment_status !== body.status) {
-      const [user, content] = await Promise.all([
-        prisma.user.findUnique({ where: { id: existing.user_id }, select: { email: true } }),
-        prisma.contentItem.findUnique({ where: { id: existing.content_id }, select: { title: true, slug: true } }),
-      ]);
-      if (user?.email && content) {
-        const approved = body.status === "approved";
-        await sendMail({
-          to: user.email,
-          subject: approved
-            ? `Your review of ${content.title} is now live`
-            : `Your review of ${content.title} wasn't approved`,
-          lines: approved
-            ? [`The comment on your rating of ${content.title} has been approved and is now visible to other viewers.`]
-            : [
-                `The comment on your rating of ${content.title} wasn't approved for public display.`,
-                "Your star rating itself is unaffected and still counts toward the item's average.",
-              ],
-          action: approved ? { label: "View it", url: publicUrl(`/watch/${content.slug}`) } : undefined,
-        });
-      }
-    }
-
+    const rating = await moderateOne(id, body.status);
     res.json({ rating });
   } catch (err) {
     if (err instanceof z.ZodError) return next(new ApiError(422, err.errors[0]?.message ?? "Validation error"));

@@ -581,6 +581,92 @@ async function run(browser: Browser) {
       await fetch(`${API_BASE}/api/sessions/${targetContentId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
     }
 
+    // ─── Bulk moderation — select-all + a batch Approve, through the real
+    // checkboxes and button, not a direct API call ──────────────────────────
+    // Two fresh fixtures, both pending, so the click path (not just
+    // scripts/e2e.ts's already-thorough coverage of the endpoint itself)
+    // gets exercised: select both, click Approve N, confirm both leave the
+    // pending list in one round trip.
+    const bulkSessionA = await fetch(`${API_BASE}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({
+        title: `Browser check bulk mod A ${Date.now()}`,
+        access_level: "public",
+        status: "registration_open",
+        scheduled_start_at: new Date(Date.now() + 86400000).toISOString(),
+        scheduled_duration_minutes: 60,
+      }),
+    }).then((r) => r.json());
+    const bulkSessionB = await fetch(`${API_BASE}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({
+        title: `Browser check bulk mod B ${Date.now()}`,
+        access_level: "public",
+        status: "registration_open",
+        scheduled_start_at: new Date(Date.now() + 86400000).toISOString(),
+        scheduled_duration_minutes: 60,
+      }),
+    }).then((r) => r.json());
+    const bulkContentIdA = bulkSessionA?.session?.id;
+    const bulkContentIdB = bulkSessionB?.session?.id;
+    check("two fixture sessions are created for the bulk-moderation check", typeof bulkContentIdA === "number" && typeof bulkContentIdB === "number", { bulkSessionA, bulkSessionB });
+
+    if (bulkContentIdA && bulkContentIdB) {
+      const bulkCommentA = `Browser check bulk comment A ${Date.now()}`;
+      const bulkCommentB = `Browser check bulk comment B ${Date.now()}`;
+      await fetch(`${API_BASE}/api/ratings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ content_id: bulkContentIdA, score: 4, comment: bulkCommentA }),
+      });
+      await fetch(`${API_BASE}/api/ratings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ content_id: bulkContentIdB, score: 2, comment: bulkCommentB }),
+      });
+
+      const beforeBulkErrors = pageErrors.length;
+      await page.goto(`${BASE}/admin/ratings/moderation`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(500);
+
+      const hasBothRows = (await page.locator(`text=${bulkCommentA}`).count()) > 0 && (await page.locator(`text=${bulkCommentB}`).count()) > 0;
+      check("both bulk-check fixtures render as real pending rows", hasBothRows, { hasBothRows });
+
+      // "Select all" rather than two individual clicks — exercises the
+      // header checkbox's own toggle-all behaviour, not just per-row ones.
+      const selectAll = page.locator('label:has-text("Select all") input[type="checkbox"]');
+      await selectAll.click();
+      await page.waitForTimeout(200);
+
+      const approveBulkButton = page.getByRole("button", { name: /^Approve \d+$/ });
+      const hasApproveBulkButton = await approveBulkButton.count();
+      check("selecting rows reveals a real 'Approve N' bulk action button", hasApproveBulkButton > 0, { hasApproveBulkButton });
+
+      if (hasApproveBulkButton > 0) {
+        await approveBulkButton.first().click();
+        await page.waitForTimeout(800);
+
+        const rowsGoneFromPending = (await page.locator(`text=${bulkCommentA}`).count()) === 0 && (await page.locator(`text=${bulkCommentB}`).count()) === 0;
+        check("after the bulk approve, both fixtures leave the pending list in one round trip", rowsGoneFromPending, { rowsGoneFromPending });
+
+        const approvedQueue = await fetch(`${API_BASE}/api/ratings-moderation?status=approved`, {
+          headers: { Authorization: `Bearer ${adminToken}` },
+        }).then((r) => r.json());
+        const approvedComments = (approvedQueue?.ratings ?? []).map((r: { comment: string }) => r.comment);
+        check("A is really approved server-side, not just removed from view", approvedComments.includes(bulkCommentA), approvedComments);
+        check("B is really approved server-side too", approvedComments.includes(bulkCommentB), approvedComments);
+      }
+
+      check("/admin/ratings/moderation (bulk approve) throws no uncaught render error", pageErrors.length === beforeBulkErrors, pageErrors.slice(beforeBulkErrors));
+
+      await fetch(`${API_BASE}/api/ratings/${bulkContentIdA}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+      await fetch(`${API_BASE}/api/ratings/${bulkContentIdB}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    }
+    if (bulkContentIdA) await fetch(`${API_BASE}/api/sessions/${bulkContentIdA}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    if (bulkContentIdB) await fetch(`${API_BASE}/api/sessions/${bulkContentIdB}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+
     // Reset the decision gate back to its default — this check shouldn't
     // leave the live dev server's moderation policy switched on.
     await fetch(`${API_BASE}/api/settings/content_policy`, {

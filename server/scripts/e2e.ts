@@ -2211,6 +2211,62 @@ async function main() {
     await setCommentMode(null);
   }
 
+  // ─── Ratings — bulk moderation ──────────────────────────────────────────────
+  //
+  // POST /ratings-moderation/bulk shares its actual write (moderateOne) with
+  // the single-item PUT /:id already proven above — this section's job is
+  // the part that's genuinely different: several ids in one request, one bad
+  // id not sinking the rest, and the admin gate holding the same as the
+  // single-item route.
+  section("Ratings — bulk moderation");
+
+  try {
+    await setCommentMode("review_required");
+
+    const bulkItemA = await makeContent("public", { slug: `e2e-bulk-mod-a-${RUN}` });
+    const bulkItemB = await makeContent("public", { slug: `e2e-bulk-mod-b-${RUN}` });
+    const bulkItemC = await makeContent("public", { slug: `e2e-bulk-mod-c-${RUN}` });
+
+    await call("/api/ratings", { method: "POST", token: sessionToken, body: { content_id: bulkItemA.id, score: 5, comment: `Bulk comment A ${RUN}` } });
+    await call("/api/ratings", { method: "POST", token: sessionToken, body: { content_id: bulkItemB.id, score: 3, comment: `Bulk comment B ${RUN}` } });
+    await call("/api/ratings", { method: "POST", token: sessionToken, body: { content_id: bulkItemC.id, score: 1, comment: `Bulk comment C ${RUN}` } });
+
+    const bulkIdA = (await prisma.rating.findFirst({ where: { content_id: bulkItemA.id } }))!.id;
+    const bulkIdB = (await prisma.rating.findFirst({ where: { content_id: bulkItemB.id } }))!.id;
+    const bulkIdC = (await prisma.rating.findFirst({ where: { content_id: bulkItemC.id } }))!.id;
+
+    const bulkForbidden = await call("/api/ratings-moderation/bulk", { method: "POST", token: sessionToken, body: { ids: [bulkIdA], status: "approved" } });
+    check("a signed-in VIEWER cannot call bulk moderation", bulkForbidden.status === 403, bulkForbidden.body);
+
+    const bulkEmpty = await call("/api/ratings-moderation/bulk", { method: "POST", token: adminToken, body: { ids: [], status: "approved" } });
+    check("an empty ids array is rejected", bulkEmpty.status === 422, bulkEmpty.body);
+
+    const bulkApprove = await call("/api/ratings-moderation/bulk", { method: "POST", token: adminToken, body: { ids: [bulkIdA, bulkIdB], status: "approved" } });
+    check("bulk-approving two real pending comments succeeds", bulkApprove.status === 200 && bulkApprove.body.ratings?.length === 2, bulkApprove.body);
+    check("nothing in the batch failed", (bulkApprove.body.failed ?? []).length === 0, bulkApprove.body.failed);
+
+    const [afterA, afterB] = await Promise.all([
+      prisma.rating.findUnique({ where: { id: bulkIdA } }),
+      prisma.rating.findUnique({ where: { id: bulkIdB } }),
+    ]);
+    check("A really is approved in the database, not just in the response", afterA?.comment_status === "approved", afterA?.comment_status);
+    check("B really is approved in the database too", afterB?.comment_status === "approved", afterB?.comment_status);
+
+    // A deliberately mixed batch: C is a real pending comment, the other id
+    // doesn't exist at all. One bad id degrades only itself.
+    const ghostId = 999999999;
+    const bulkMixed = await call("/api/ratings-moderation/bulk", { method: "POST", token: adminToken, body: { ids: [bulkIdC, ghostId], status: "rejected" } });
+    check("a mixed batch still succeeds overall (200), not an all-or-nothing failure", bulkMixed.status === 200, bulkMixed.body);
+    check("the real id in the mixed batch is moderated", bulkMixed.body.ratings?.some((r: { id: number }) => r.id === bulkIdC), bulkMixed.body.ratings);
+    check("the ghost id is reported as failed, by its own id", bulkMixed.body.failed?.some((f: { id: number }) => f.id === ghostId), bulkMixed.body.failed);
+    check("exactly one failure, not two — the real id did not also fail", (bulkMixed.body.failed ?? []).length === 1, bulkMixed.body.failed);
+
+    const afterC = await prisma.rating.findUnique({ where: { id: bulkIdC } });
+    check("C really is rejected in the database", afterC?.comment_status === "rejected", afterC?.comment_status);
+  } finally {
+    await setCommentMode(null);
+  }
+
   // ─── Subscription revenue accrual — another policy decision exposed as a
   // real admin setting (monetisation.subscription_accrual_enabled /
   // subscription_min_watch_seconds), not hardcoded — and, unlike direct-sale
