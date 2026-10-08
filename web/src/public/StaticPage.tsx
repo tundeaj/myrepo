@@ -6,6 +6,7 @@ import {
   PublicPageSkeleton,
   type PublicBootstrap,
 } from "./lib/publicPage";
+import { usePublicT, localized } from "./lib/publicI18n";
 
 interface Page {
   title: string;
@@ -21,6 +22,27 @@ interface PagePayload extends PublicBootstrap {
   page: Page;
 }
 
+/** A separate component, not inlined into StaticPage's own body — usePublicT()
+ *  only sees the PublicI18nProvider PublicShell creates for its children, not
+ *  for StaticPage itself (StaticPage is the Provider's parent, not its child). */
+function PageBody({ page }: { page: Page }) {
+  const { language } = usePublicT();
+  const title = localized(page.title, page.title_fr, language);
+  const bodyHtml = localized(page.body_html, page.body_html_fr, language);
+
+  return (
+    <div className="mx-auto max-w-3xl px-6 pb-16 pt-24">
+      <h1 className="mb-6 text-2xl font-bold text-white">{title}</h1>
+      {/* body_html is admin-authored, not user-submitted — same trust
+          boundary Faqs.tsx's answer_html already relies on. */}
+      <div
+        className="max-w-none text-sm leading-relaxed text-slate-400 [&_a]:text-brand [&_a]:underline [&_strong]:text-slate-200 [&_h2]:mt-6 [&_h2]:mb-2 [&_h2]:text-lg [&_h2]:font-semibold [&_h2]:text-slate-200 [&_p]:mb-3"
+        dangerouslySetInnerHTML={{ __html: bodyHtml ?? "" }}
+      />
+    </div>
+  );
+}
+
 /** /p/:slug — a static page (About, Terms, Privacy, or a one-off marketing
  *  landing page). An unpublished or nonexistent slug both 404 identically
  *  server-side — see routes/pages.ts. */
@@ -33,15 +55,7 @@ export function StaticPage() {
 
   return (
     <PublicShell boot={data}>
-      <div className="mx-auto max-w-3xl px-6 pb-16 pt-24">
-        <h1 className="mb-6 text-2xl font-bold text-white">{data.page.title}</h1>
-        {/* body_html is admin-authored, not user-submitted — same trust
-            boundary Faqs.tsx's answer_html already relies on. */}
-        <div
-          className="max-w-none text-sm leading-relaxed text-slate-400 [&_a]:text-brand [&_a]:underline [&_strong]:text-slate-200 [&_h2]:mt-6 [&_h2]:mb-2 [&_h2]:text-lg [&_h2]:font-semibold [&_h2]:text-slate-200 [&_p]:mb-3"
-          dangerouslySetInnerHTML={{ __html: data.page.body_html }}
-        />
-      </div>
+      <PageBody page={data.page} />
     </PublicShell>
   );
 }

@@ -1,4 +1,4 @@
-import { createContext, useContext, useMemo, type ReactNode } from "react";
+import { createContext, useContext, useMemo, useState, useCallback, type ReactNode } from "react";
 
 // The public homepage's t() helper. Its dictionary arrives inside the Stage 1
 // payload rather than from /api/i18n, because PROMPT 09 allows exactly two API
@@ -10,6 +10,22 @@ type Dict = Record<string, { en: string | null; fr: string | null }>;
 interface PublicI18nValue {
   t: (key: string, vars?: Record<string, string | number>) => string;
   language: "en" | "fr";
+  setLanguage: (language: "en" | "fr") => void;
+}
+
+const LANGUAGE_KEY = "webinarflix_language";
+
+/** Reads the stored preference once, synchronously, so the very first render
+ *  already reflects it — the public site has no server-rendered HTML to
+ *  flash past anyway (every page already shows a skeleton until Stage 1
+ *  data arrives), but there's no reason to wait an extra render either. */
+function readStoredLanguage(): "en" | "fr" {
+  try {
+    const stored = localStorage.getItem(LANGUAGE_KEY);
+    return stored === "fr" ? "fr" : "en";
+  } catch {
+    return "en";
+  }
 }
 
 const PublicI18nContext = createContext<PublicI18nValue | null>(null);
@@ -51,19 +67,29 @@ const FALLBACKS: Record<string, string> = {
 };
 
 export function PublicI18nProvider({ strings, children }: { strings: Dict; children: ReactNode }) {
-  const value = useMemo<PublicI18nValue>(() => {
-    const language: "en" | "fr" = "en";
-    return {
-      language,
-      t: (key, vars) => {
-        const entry = strings[key];
-        const template = entry?.[language] ?? entry?.en ?? FALLBACKS[key];
-        if (template) return interpolate(template, vars);
-        const last = key.split(".").pop() ?? key;
-        return interpolate(last.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()), vars);
-      },
-    };
-  }, [strings]);
+  const [language, setLanguageState] = useState<"en" | "fr">(readStoredLanguage);
+
+  const setLanguage = useCallback((next: "en" | "fr") => {
+    setLanguageState(next);
+    try {
+      localStorage.setItem(LANGUAGE_KEY, next);
+    } catch {
+      // Private browsing / blocked storage — the toggle still works for the
+      // rest of this session, it just won't be remembered on the next visit.
+    }
+  }, []);
+
+  const value = useMemo<PublicI18nValue>(() => ({
+    language,
+    setLanguage,
+    t: (key, vars) => {
+      const entry = strings[key];
+      const template = entry?.[language] ?? entry?.en ?? FALLBACKS[key];
+      if (template) return interpolate(template, vars);
+      const last = key.split(".").pop() ?? key;
+      return interpolate(last.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()), vars);
+    },
+  }), [strings, language, setLanguage]);
 
   return <PublicI18nContext.Provider value={value}>{children}</PublicI18nContext.Provider>;
 }
@@ -75,6 +101,7 @@ export function usePublicT() {
   if (!ctx) {
     return {
       language: "en" as const,
+      setLanguage: () => {},
       t: (key: string, vars?: Record<string, string | number>) => {
         const template = FALLBACKS[key] ?? (key.split(".").pop() ?? key).replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
         return interpolate(template, vars);
@@ -82,4 +109,14 @@ export function usePublicT() {
     };
   }
   return ctx;
+}
+
+/** Picks the French copy of a field when the visitor is in French mode AND an
+ *  admin has actually authored one — an empty string counts as "not
+ *  authored," same as null, so a page never renders visibly blank content
+ *  just because the French field was saved empty. Falls back to the English
+ *  value in every other case. */
+export function localized(en: string | null, fr: string | null | undefined, language: "en" | "fr"): string | null {
+  if (language === "fr" && fr) return fr;
+  return en;
 }

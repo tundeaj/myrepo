@@ -7,11 +7,14 @@ import {
   PublicPageSkeleton,
   type PublicBootstrap,
 } from "./lib/publicPage";
+import { usePublicT, localized } from "./lib/publicI18n";
 
 interface Faq {
   id: number;
   question: string | null;
+  question_fr: string | null;
   answer_html: string | null;
+  answer_html_fr: string | null;
   category: string | null;
   display_order: number | null;
   views: number;
@@ -27,6 +30,9 @@ interface FaqsPayload extends PublicBootstrap {
  *  actually opened, fires the view-count webhook — a person scrolling past
  *  a collapsed question never counted as having "viewed" it. */
 function FaqRow({ faq }: { faq: Faq }) {
+  const { language } = usePublicT();
+  const question = localized(faq.question, faq.question_fr, language);
+  const answerHtml = localized(faq.answer_html, faq.answer_html_fr, language);
   const [open, setOpen] = useState(false);
   const [viewed, setViewed] = useState(false);
   const [voted, setVoted] = useState<"yes" | "no" | null>(null);
@@ -82,7 +88,7 @@ function FaqRow({ faq }: { faq: Faq }) {
   return (
     <div className="border-b border-slate-800 py-4">
       <button onClick={toggle} className="flex w-full items-center justify-between gap-4 text-left">
-        <span className="text-sm font-medium text-slate-100">{faq.question}</span>
+        <span className="text-sm font-medium text-slate-100">{question}</span>
         <span className={`shrink-0 text-slate-500 transition-transform ${open ? "rotate-45" : ""}`}>+</span>
       </button>
       {open && (
@@ -90,7 +96,7 @@ function FaqRow({ faq }: { faq: Faq }) {
           {/* answer_html is admin-authored, not user-submitted — same trust
               boundary as every other admin-typed rich-text field in this
               app (e.g. Category.description elsewhere on the public site). */}
-          <div className="max-w-none text-sm leading-relaxed text-slate-400 [&_a]:text-brand [&_a]:underline [&_strong]:text-slate-200" dangerouslySetInnerHTML={{ __html: faq.answer_html ?? "" }} />
+          <div className="max-w-none text-sm leading-relaxed text-slate-400 [&_a]:text-brand [&_a]:underline [&_strong]:text-slate-200" dangerouslySetInnerHTML={{ __html: answerHtml ?? "" }} />
           <div className="flex items-center gap-3 text-xs text-slate-600">
             <span>Was this helpful?</span>
             <button

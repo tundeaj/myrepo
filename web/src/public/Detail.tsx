@@ -10,6 +10,7 @@ import {
   type PublicBootstrap,
 } from "./lib/publicPage";
 import { AccessGate, type AccessResult } from "./components/AccessGate";
+import { usePublicT, localized } from "./lib/publicI18n";
 import { api, getToken } from "../lib/api";
 import { Row } from "./components/Row";
 import { formatCountdown, formatRuntime, type ContentCard } from "./lib/types";
@@ -90,7 +91,7 @@ interface DetailPayload extends PublicBootstrap {
     polls_enabled: boolean;
     allow_anonymous_qa: boolean;
   } | null;
-  reviews: { id: number; score: number; comment: string | null; created_at: string; reviewer: string }[];
+  reviews: { id: number; score: number; comment: string | null; comment_fr: string | null; created_at: string; reviewer: string }[];
   access: AccessResult;
 }
 
@@ -392,20 +393,24 @@ function RatingWidget({ contentId, commentMode }: { contentId: number; commentMo
 }
 
 function ReviewsList({ reviews }: { reviews: DetailPayload["reviews"] }) {
+  const { language } = usePublicT();
   if (!reviews.length) return null;
   return (
     <section className="space-y-3">
       <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Reviews</h2>
       <div className="space-y-4">
-        {reviews.map((r) => (
-          <div key={r.id} className="border-b border-slate-800 pb-4 last:border-0">
-            <div className="flex items-center gap-2">
-              <span className="text-amber-400 text-sm">{"★".repeat(r.score)}{"☆".repeat(5 - r.score)}</span>
-              <span className="text-xs text-slate-500">{r.reviewer}</span>
+        {reviews.map((r) => {
+          const comment = localized(r.comment, r.comment_fr, language);
+          return (
+            <div key={r.id} className="border-b border-slate-800 pb-4 last:border-0">
+              <div className="flex items-center gap-2">
+                <span className="text-amber-400 text-sm">{"★".repeat(r.score)}{"☆".repeat(5 - r.score)}</span>
+                <span className="text-xs text-slate-500">{r.reviewer}</span>
+              </div>
+              {comment && <p className="mt-1.5 text-sm text-slate-400">{comment}</p>}
             </div>
-            {r.comment && <p className="mt-1.5 text-sm text-slate-400">{r.comment}</p>}
-          </div>
-        ))}
+          );
+        })}
       </div>
     </section>
   );
@@ -414,7 +419,9 @@ function ReviewsList({ reviews }: { reviews: DetailPayload["reviews"] }) {
 interface ContentFaq {
   id: number;
   question: string | null;
+  question_fr: string | null;
   answer_html: string | null;
+  answer_html_fr: string | null;
 }
 
 /** FAQs an admin scoped to this exact content item (routes/faqs.ts's
@@ -424,6 +431,7 @@ interface ContentFaq {
  *  FAQ answering "does this include X" is often exactly what someone
  *  without access yet needs to decide whether to get it. */
 function ContentFaqs({ contentId }: { contentId: number }) {
+  const { language } = usePublicT();
   const [faqs, setFaqs] = useState<ContentFaq[] | null>(null);
   const [openId, setOpenId] = useState<number | null>(null);
 
@@ -443,6 +451,8 @@ function ContentFaqs({ contentId }: { contentId: number }) {
       <div>
         {faqs.map((faq) => {
           const open = openId === faq.id;
+          const question = localized(faq.question, faq.question_fr, language);
+          const answerHtml = localized(faq.answer_html, faq.answer_html_fr, language);
           return (
             <div key={faq.id} className="border-b border-slate-800 py-3">
               <button
@@ -453,13 +463,13 @@ function ContentFaqs({ contentId }: { contentId: number }) {
                 }}
                 className="flex w-full items-center justify-between gap-4 text-left"
               >
-                <span className="text-sm text-slate-200">{faq.question}</span>
+                <span className="text-sm text-slate-200">{question}</span>
                 <span className={`shrink-0 text-slate-500 transition-transform ${open ? "rotate-45" : ""}`}>+</span>
               </button>
               {open && (
                 <div
                   className="mt-2 max-w-none text-sm leading-relaxed text-slate-400 [&_a]:text-brand [&_a]:underline [&_strong]:text-slate-200"
-                  dangerouslySetInnerHTML={{ __html: faq.answer_html ?? "" }}
+                  dangerouslySetInnerHTML={{ __html: answerHtml ?? "" }}
                 />
               )}
             </div>

@@ -874,6 +874,151 @@ async function run(browser: Browser) {
     check("/admin/analytics/ppv-revenue throws no uncaught render error", pageErrors.length === beforePpvErrors, pageErrors.slice(beforePpvErrors));
   }
 
+  // ─── Language switcher ──────────────────────────────────────────────────────
+  //
+  // publicI18n.tsx's PublicI18nProvider shipped with the language hardcoded to
+  // "en" since the very first public-page round — every _fr field anywhere in
+  // the schema was written and even selected server-side, but nothing ever
+  // let a visitor actually see it. This proves the real toggle in PublicNav
+  // flips real rendered content on a real page, the preference persists
+  // across a reload, it's shared across pages (not re-toggled per page), and
+  // a page with no French translation authored still falls back to English
+  // instead of rendering blank.
+  section("Language switcher");
+
+  if (adminToken) {
+    const pageTitleEn = `Browser Check Lang Page ${Date.now()}`;
+    const pageTitleFr = `Verif Navigateur Page ${Date.now()}`;
+    const pageBodyEn = "English body content for the language switcher check.";
+    const pageBodyFr = "Contenu francais pour la verification du selecteur de langue.";
+
+    const createdPage = await fetch(`${API_BASE}/api/pages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({
+        title: pageTitleEn,
+        title_fr: pageTitleFr,
+        slug: `browser-check-lang-${Date.now()}`,
+        body_html: `<p>${pageBodyEn}</p>`,
+        body_html_fr: `<p>${pageBodyFr}</p>`,
+        is_published: true,
+      }),
+    }).then((r) => r.json());
+    const langPageId = createdPage?.page?.id;
+    const langPageSlug = createdPage?.page?.slug;
+    check("a fixture page with English and French content is created", typeof langPageId === "number", createdPage);
+
+    // A second page fixture, deliberately given NO French translation — the
+    // one most likely to silently regress: localized() must fall back to
+    // the English title/body rather than render blank while FR is active.
+    const noFrTitle = `Browser Check No FR ${Date.now()}`;
+    const noFrBody = "This page has never had a French translation authored.";
+    const createdNoFrPage = await fetch(`${API_BASE}/api/pages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({
+        title: noFrTitle,
+        slug: `browser-check-no-fr-${Date.now()}`,
+        body_html: `<p>${noFrBody}</p>`,
+        is_published: true,
+      }),
+    }).then((r) => r.json());
+    const noFrPageId = createdNoFrPage?.page?.id;
+    const noFrPageSlug = createdNoFrPage?.page?.slug;
+    check("a fixture page with no French translation is created", typeof noFrPageId === "number", createdNoFrPage);
+
+    const faqQuestionEn = `Browser check lang FAQ ${Date.now()}?`;
+    const faqQuestionFr = `Verif navigateur FAQ ${Date.now()}?`;
+    const createdFaq = await fetch(`${API_BASE}/api/faqs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({
+        question: faqQuestionEn,
+        question_fr: faqQuestionFr,
+        answer_html: "<p>English answer.</p>",
+        answer_html_fr: "<p>Reponse francaise.</p>",
+        scope: "global",
+        category: "Browser check",
+        is_published: true,
+      }),
+    }).then((r) => r.json());
+    const langFaqId = createdFaq?.faq?.id;
+    check("a fixture FAQ with English and French content is created", typeof langFaqId === "number", createdFaq);
+
+    if (langPageSlug) {
+      const beforeLangPageErrors = pageErrors.length;
+      await page.goto(`${BASE}/p/${langPageSlug}`, { waitUntil: "networkidle" });
+      // Clear any leftover preference from an earlier run in this same
+      // browser context, then reload so the default-English assertion below
+      // starts clean. A one-time evaluate(), not addInitScript() — the
+      // latter re-runs on every future navigation in this page, which would
+      // also wipe the FR choice this section itself sets further down.
+      await page.evaluate(() => localStorage.removeItem("webinarflix_language"));
+      await page.reload({ waitUntil: "networkidle" });
+      await page.waitForTimeout(500);
+
+      const hasEnTitleByDefault = await page.locator(`h1:has-text("${pageTitleEn}")`).count();
+      check("the toggle defaults to English on first visit", hasEnTitleByDefault > 0, { hasEnTitleByDefault });
+
+      const frButton = page.locator('button[aria-pressed]:has-text("FR")').first();
+      await frButton.click();
+      await page.waitForTimeout(400);
+
+      const hasFrTitleAfterToggle = await page.locator(`h1:has-text("${pageTitleFr}")`).count();
+      check("clicking FR re-renders the real French title, client-side, no reload", hasFrTitleAfterToggle > 0, { hasFrTitleAfterToggle });
+      const hasFrBodyAfterToggle = await page.locator(`text=${pageBodyFr}`).count();
+      check("clicking FR re-renders the real French body", hasFrBodyAfterToggle > 0, { hasFrBodyAfterToggle });
+      const hasEnTitleAfterToggle = await page.locator(`h1:has-text("${pageTitleEn}")`).count();
+      check("the English title is gone once French is active", hasEnTitleAfterToggle === 0, { hasEnTitleAfterToggle });
+
+      const storedLanguage = await page.evaluate(() => localStorage.getItem("webinarflix_language"));
+      check("the FR choice is persisted to localStorage", storedLanguage === "fr", { storedLanguage });
+
+      await page.reload({ waitUntil: "networkidle" });
+      await page.waitForTimeout(500);
+      const hasFrTitleAfterReload = await page.locator(`h1:has-text("${pageTitleFr}")`).count();
+      check("the French preference survives a page reload", hasFrTitleAfterReload > 0, { hasFrTitleAfterReload });
+
+      // Shared preference, not per-page: /faqs should already be in French
+      // without touching the toggle again.
+      const beforeFaqLangErrors = pageErrors.length;
+      await page.goto(`${BASE}/faqs`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(500);
+      const hasFrFaqQuestion = await page.locator(`text=${faqQuestionFr}`).count();
+      check("the stored FR preference carries over to the standalone /faqs page", hasFrFaqQuestion > 0, { hasFrFaqQuestion });
+      check("/faqs (FR) throws no uncaught render error", pageErrors.length === beforeFaqLangErrors, pageErrors.slice(beforeFaqLangErrors));
+
+      if (noFrPageSlug) {
+        const beforeNoFrErrors = pageErrors.length;
+        await page.goto(`${BASE}/p/${noFrPageSlug}`, { waitUntil: "networkidle" });
+        await page.waitForTimeout(500);
+        const hasEnglishFallbackTitle = await page.locator(`h1:has-text("${noFrTitle}")`).count();
+        check("a page with no French translation still shows its English title while FR is active", hasEnglishFallbackTitle > 0, { hasEnglishFallbackTitle });
+        const hasEnglishFallbackBody = await page.locator(`text=${noFrBody}`).count();
+        check("a page with no French translation still shows its English body while FR is active", hasEnglishFallbackBody > 0, { hasEnglishFallbackBody });
+        check("/p/:slug (no FR, FR active) throws no uncaught render error", pageErrors.length === beforeNoFrErrors, pageErrors.slice(beforeNoFrErrors));
+      }
+
+      // Switch back to English and confirm it's fully reversible.
+      await page.goto(`${BASE}/p/${langPageSlug}`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(500);
+      const enButton = page.locator('button[aria-pressed]:has-text("EN")').first();
+      await enButton.click();
+      await page.waitForTimeout(400);
+      const hasEnTitleAfterSwitchBack = await page.locator(`h1:has-text("${pageTitleEn}")`).count();
+      check("switching back to EN is fully reversible", hasEnTitleAfterSwitchBack > 0, { hasEnTitleAfterSwitchBack });
+      check("/p/:slug (switch back) throws no uncaught render error", pageErrors.length === beforeLangPageErrors, pageErrors.slice(beforeLangPageErrors));
+
+      // Leave the browser context in English for every section that runs
+      // after this one — none of them expect French copy.
+      await page.evaluate(() => localStorage.removeItem("webinarflix_language"));
+    }
+
+    if (langPageId) await fetch(`${API_BASE}/api/pages/${langPageId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    if (noFrPageId) await fetch(`${API_BASE}/api/pages/${noFrPageId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+    if (langFaqId) await fetch(`${API_BASE}/api/faqs/${langFaqId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+  }
+
   // ─── Sponsors, Advertisers, Ads ─────────────────────────────────────────────
   section("Sponsors, Advertisers, Ads");
 

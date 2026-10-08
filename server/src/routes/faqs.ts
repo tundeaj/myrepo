@@ -188,7 +188,9 @@ publicFaqsRouter.get("/", async (req: Request, res: Response, next: NextFunction
         select: {
           id: true,
           question: true,
+          question_fr: true,
           answer_html: true,
+          answer_html_fr: true,
           category: true,
           display_order: true,
           views: true,

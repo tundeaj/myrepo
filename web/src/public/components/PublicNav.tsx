@@ -10,8 +10,33 @@ const NAV_LINKS = [
   { key: "nav.public.community", to: "/community" },
 ];
 
+/** EN/FR — the only language switcher on the public site. A stored client
+ *  preference, not a URL scheme: this is a rendering choice over data that's
+ *  always fetched in both languages already, not a route to crawl or share
+ *  separately, so there's no SEO case for a path prefix here. */
+function LanguageToggle({ language, setLanguage }: { language: "en" | "fr"; setLanguage: (l: "en" | "fr") => void }) {
+  return (
+    <div className="flex items-center overflow-hidden rounded border border-slate-700 text-xs font-medium">
+      <button
+        onClick={() => setLanguage("en")}
+        aria-pressed={language === "en"}
+        className={`px-2 py-1 transition-colors ${language === "en" ? "bg-slate-700 text-white" : "text-slate-400 hover:text-slate-200"}`}
+      >
+        EN
+      </button>
+      <button
+        onClick={() => setLanguage("fr")}
+        aria-pressed={language === "fr"}
+        className={`px-2 py-1 transition-colors ${language === "fr" ? "bg-slate-700 text-white" : "text-slate-400 hover:text-slate-200"}`}
+      >
+        FR
+      </button>
+    </div>
+  );
+}
+
 export function PublicNav({ platformName, logoUrl }: { platformName: string; logoUrl?: string }) {
-  const { t } = usePublicT();
+  const { t, language, setLanguage } = usePublicT();
   const { user, status } = useAuth();
   const [scrolled, setScrolled] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -73,6 +98,8 @@ export function PublicNav({ platformName, logoUrl }: { platformName: string; log
 
         {/* Right side */}
         <div className="ml-auto flex items-center gap-3">
+          <LanguageToggle language={language} setLanguage={setLanguage} />
+
           <button aria-label={t("nav.public.search")} className="text-slate-300 hover:text-white">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-5 w-5" strokeLinecap="round">
               <circle cx="11" cy="11" r="7" /><path d="M21 21l-4.3-4.3" />
@@ -107,6 +134,9 @@ export function PublicNav({ platformName, logoUrl }: { platformName: string; log
       {/* Mobile menu */}
       {mobileOpen && (
         <nav className="border-t border-slate-800 px-4 pb-3 pt-2 sm:hidden">
+          <div className="py-2">
+            <LanguageToggle language={language} setLanguage={setLanguage} />
+          </div>
           {NAV_LINKS.map((link) => (
             <NavLink
               key={link.key}

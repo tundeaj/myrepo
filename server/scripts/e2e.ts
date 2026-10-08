@@ -1522,7 +1522,11 @@ async function main() {
   const globalFaq = await call("/api/faqs", {
     method: "POST",
     token: adminToken,
-    body: { question: `What is E2E ${RUN}?`, answer_html: "<p>A global FAQ.</p>", scope: "global", category: "General", is_published: true },
+    body: {
+      question: `What is E2E ${RUN}?`, question_fr: `Qu'est-ce que E2E ${RUN}?`,
+      answer_html: "<p>A global FAQ.</p>", answer_html_fr: "<p>Une FAQ globale.</p>",
+      scope: "global", category: "General", is_published: true,
+    },
   });
   check("a global FAQ is created", globalFaq.status === 201 && globalFaq.body.faq?.scope === "global", globalFaq.body);
   const globalFaqId = globalFaq.body.faq?.id;
@@ -1555,6 +1559,15 @@ async function main() {
   check("the public global FAQ list includes the published one", publicGlobalIds.includes(globalFaqId), publicGlobalIds);
   check("the public global FAQ list excludes the unpublished one", !publicGlobalIds.includes(unpublishedFaqId), publicGlobalIds);
   check("the public global FAQ list excludes content-scoped ones", !publicGlobalIds.includes(contentFaqId), publicGlobalIds);
+
+  // The public read path never selected question_fr/answer_html_fr before
+  // this round — the language-switcher round's whole reason for being, the
+  // same gap ratings' own comment_fr and Pages' title_fr/body_html_fr had
+  // already closed on the write side, with nothing on the public read side
+  // ever surfacing any of them until now.
+  const publicGlobalFaqRow = (publicGlobalFaqs.body.faqs ?? []).find((f: { id: number }) => f.id === globalFaqId);
+  check("the public FAQ payload now carries question_fr", publicGlobalFaqRow?.question_fr === `Qu'est-ce que E2E ${RUN}?`, publicGlobalFaqRow);
+  check("the public FAQ payload now carries answer_html_fr", publicGlobalFaqRow?.answer_html_fr === "<p>Une FAQ globale.</p>", publicGlobalFaqRow);
 
   const publicContentFaqs = await call(`/api/public-faqs?content_id=${faqContentItem.id}`);
   const publicContentIds = (publicContentFaqs.body.faqs ?? []).map((f: { id: number }) => f.id);
