@@ -1,26 +1,12 @@
-// Fixed-window per-user rate limiter, in process memory.
-//
-// This is deliberately simple: a single API instance is the deployment shape
-// here, and the limit exists to stop one admin burning the AI budget in a loop,
-// not to defend against a distributed attacker. On a multi-instance deploy this
-// needs to move to Redis — the interface below won't change.
+import { redis } from "./redis.js";
 
-interface Window {
-  count: number;
-  resetAt: number;
-}
-
-const windows = new Map<string, Window>();
-
-// Sweep expired windows hourly so an idle process doesn't hold every key it has
-// ever seen. unref() so this timer never keeps the process alive on shutdown.
-const sweeper = setInterval(() => {
-  const now = Date.now();
-  for (const [key, w] of windows) {
-    if (w.resetAt <= now) windows.delete(key);
-  }
-}, 3600_000);
-sweeper.unref?.();
+// Fixed-window rate limiter, Redis-backed — moved off in-process memory now
+// that a real job queue (lib/scheduler.ts) needs Redis anyway, which was the
+// one thing this file's own previous comment said would force the move: "On
+// a multi-instance deploy this needs to move to Redis — the interface below
+// won't change." It hasn't: checkRateLimit()'s signature and RateLimitResult
+// shape are exactly as before, just async now, so every call site only
+// needed an `await` added, nothing else.
 
 export interface RateLimitResult {
   allowed: boolean;
@@ -29,25 +15,37 @@ export interface RateLimitResult {
   retryAfter: number;
 }
 
-export function checkRateLimit(key: string, limit: number, windowMs: number): RateLimitResult {
-  const now = Date.now();
-  const existing = windows.get(key);
+// INCR-then-PEXPIRE-if-first, read back via PTTL, all inside one Lua script
+// so the whole thing is atomic under Redis's single-threaded script
+// execution — no separate round trip can race another request's and leave a
+// key with a wrong expiry or a lost increment. A key's counter keeps
+// climbing on repeated requests made after the limit is already hit (it only
+// ever gets INCR'd, never read-then-conditionally-written), but that's
+// invisible here: `allowed`/`remaining` are derived from `limit`, and
+// `retryAfter` from the real PTTL, so the response is identical either way —
+// it just avoids a read-modify-write race for a property this code never
+// actually needs (the exact over-limit count).
+const RATE_LIMIT_SCRIPT = `
+local current = redis.call("INCR", KEYS[1])
+if tonumber(current) == 1 then
+  redis.call("PEXPIRE", KEYS[1], ARGV[1])
+end
+local ttl = redis.call("PTTL", KEYS[1])
+return {current, ttl}
+`;
 
-  if (!existing || existing.resetAt <= now) {
-    windows.set(key, { count: 1, resetAt: now + windowMs });
-    return { allowed: true, remaining: limit - 1, retryAfter: 0 };
-  }
+export async function checkRateLimit(key: string, limit: number, windowMs: number): Promise<RateLimitResult> {
+  const redisKey = `ratelimit:${key}`;
+  const [count, ttlMs] = (await redis.eval(RATE_LIMIT_SCRIPT, 1, redisKey, windowMs)) as [number, number];
 
-  if (existing.count >= limit) {
-    return {
-      allowed: false,
-      remaining: 0,
-      retryAfter: Math.max(1, Math.ceil((existing.resetAt - now) / 1000)),
-    };
-  }
+  const allowed = count <= limit;
+  const remaining = Math.max(0, limit - count);
+  // A negative/missing TTL (PERSIST'd or lost key) shouldn't ever happen
+  // given the script above always PEXPIREs a fresh key, but falls back to
+  // the full window rather than a bogus Retry-After if it somehow does.
+  const retryAfter = allowed ? 0 : Math.max(1, Math.ceil((ttlMs > 0 ? ttlMs : windowMs) / 1000));
 
-  existing.count += 1;
-  return { allowed: true, remaining: limit - existing.count, retryAfter: 0 };
+  return { allowed, remaining, retryAfter };
 }
 
 /** PROMPT 10: 20 AI suggestion calls per user per hour. */

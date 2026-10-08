@@ -1171,6 +1171,13 @@ model EarningLine {
   /// but without SOME marker here, two draft runs created back to back would
   /// both aggregate the same unclaimed earning line and pay it out twice.
   payout_line_id    Int?
+  /// Set only by the transfer webhook, the moment it flips this line to
+  /// 'reversed' — when an admin investigates and reinstates it (routes/
+  /// payouts.ts's /earnings/:id/reinstate), this is cleared back to null,
+  /// same as payout_line_id. Lets the admin UI show how long a reversed
+  /// earning has sat uninvestigated, which the bare status column alone
+  /// can't.
+  reversed_at       DateTime?
 
   @@index([speaker_id])
   @@index([period_month])

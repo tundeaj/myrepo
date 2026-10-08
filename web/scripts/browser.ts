@@ -1302,6 +1302,30 @@ async function run(browser: Browser) {
     check("/admin/payouts (Subscription Accrual panel) throws no uncaught render error", pageErrors.length === beforePayoutsErrors, pageErrors.slice(beforePayoutsErrors));
   }
 
+  // Reversed-earnings panel: structural only, same browser-testability
+  // boundary this file already states elsewhere (see "Hero sponsor
+  // display"). There's no admin endpoint that can create a 'reversed'
+  // EarningLine — it only ever happens via the real Paystack transfer
+  // webhook's HMAC-verified signature, and this shared dev server has no
+  // PAYSTACK_SECRET_KEY configured (same limitation scripts/e2e.ts's own
+  // payouts-webhook assertion states). The full behavioral round trip —
+  // list it, validate the reason, reinstate it, confirm it's genuinely
+  // eligible again — is covered in scripts/e2e.ts via a direct Prisma
+  // fixture instead. This just proves the page renders correctly with
+  // zero reversed earnings (the real state of this dev server right now),
+  // which is itself a real case: the panel must render NOTHING rather than
+  // an empty card or a crash.
+  section("Reversed earnings panel (structural)");
+
+  if (adminToken) {
+    const beforeReversedErrors = pageErrors.length;
+    await page.goto(`${BASE}/admin/payouts`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(500);
+    const hasReversedHeading = await page.locator("text=/Reversed earnings — needs a look/i").count();
+    check("the reversed-earnings panel renders nothing when there's nothing to review", hasReversedHeading === 0, { hasReversedHeading });
+    check("/admin/payouts (reversed-earnings panel, empty state) throws no uncaught render error", pageErrors.length === beforeReversedErrors, pageErrors.slice(beforeReversedErrors));
+  }
+
   section("Users admin");
 
   if (adminToken) {

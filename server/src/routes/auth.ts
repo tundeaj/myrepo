@@ -185,7 +185,7 @@ authRouter.post("/forgot-password", async (req: Request, res: Response, next: Ne
       return res.json(NEUTRAL_EMAIL_RESPONSE);
     }
 
-    const limit = checkRateLimit(`forgot:${email}`, EMAIL_LIMIT, EMAIL_WINDOW_MS);
+    const limit = await checkRateLimit(`forgot:${email}`, EMAIL_LIMIT, EMAIL_WINDOW_MS);
     if (!limit.allowed) {
       res.setHeader("Retry-After", String(limit.retryAfter));
       return res.status(429).json({
@@ -291,7 +291,7 @@ authRouter.post("/resend-verification", async (req: Request, res: Response, next
     const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
     if (!z.string().email().safeParse(email).success) return res.json(NEUTRAL_EMAIL_RESPONSE);
 
-    const limit = checkRateLimit(`verify:${email}`, EMAIL_LIMIT, EMAIL_WINDOW_MS);
+    const limit = await checkRateLimit(`verify:${email}`, EMAIL_LIMIT, EMAIL_WINDOW_MS);
     if (!limit.allowed) {
       res.setHeader("Retry-After", String(limit.retryAfter));
       return res.status(429).json({ error: "Too many requests for this address. Try again later." });

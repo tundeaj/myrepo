@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import { env } from "./lib/env.js";
+import { startScheduler } from "./lib/scheduler.js";
 import { authRouter } from "./routes/auth.js";
 import { dashboardRouter } from "./routes/dashboard.js";
 import { notificationsRouter } from "./routes/notifications.js";
@@ -163,4 +164,8 @@ app.use(errorHandler);
 
 app.listen(env.PORT, () => {
   console.log(`Webinarflix API listening on http://localhost:${env.PORT}`);
+});
+
+startScheduler().catch((err) => {
+  console.error("[scheduler] failed to start:", err);
 });

@@ -85,7 +85,7 @@ aiRouter.post("/suggest", async (req: Request, res: Response, next: NextFunction
     if (!userId) throw new ApiError(401, "You need to sign in to do that.");
 
     // Rate limit before spending a token — 20 per user per hour.
-    const limit = checkRateLimit(`ai:suggest:${userId}`, AI_SUGGEST_LIMIT, AI_SUGGEST_WINDOW_MS);
+    const limit = await checkRateLimit(`ai:suggest:${userId}`, AI_SUGGEST_LIMIT, AI_SUGGEST_WINDOW_MS);
     if (!limit.allowed) {
       res.setHeader("Retry-After", String(limit.retryAfter));
       const minutes = Math.ceil(limit.retryAfter / 60);
@@ -174,7 +174,7 @@ aiRouter.post("/suggest-chapters", async (req: Request, res: Response, next: Nex
     const userId = req.user?.sub;
     if (!userId) throw new ApiError(401, "You need to sign in to do that.");
 
-    const limit = checkRateLimit(`ai:chapters:${userId}`, AI_SUGGEST_LIMIT, AI_SUGGEST_WINDOW_MS);
+    const limit = await checkRateLimit(`ai:chapters:${userId}`, AI_SUGGEST_LIMIT, AI_SUGGEST_WINDOW_MS);
     if (!limit.allowed) {
       res.setHeader("Retry-After", String(limit.retryAfter));
       throw new ApiError(429, `You've used all ${AI_SUGGEST_LIMIT} AI requests for this hour. Try again shortly.`);

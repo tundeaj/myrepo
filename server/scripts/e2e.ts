@@ -30,8 +30,19 @@ import { createHash } from "node:crypto";
 // test. getSetting/getBoolSetting are imported so the test computes its
 // expected WHT numbers from whatever is ACTUALLY configured right now, not a
 // hardcoded assumption that could silently drift from a changed setting.
-import { accrueEarnings } from "../src/lib/earnings.js";
+import { accrueEarnings, sweepHoldback } from "../src/lib/earnings.js";
 import { getSetting, getBoolSetting } from "../src/lib/settingValue.js";
+// Same direct-import reasoning as accrueEarnings above: sweepHoldback() is
+// the real function lib/scheduler.ts's repeatable job calls — calling it
+// directly here proves the job's actual logic is correct without needing to
+// wait on BullMQ's own timer (which a test suite should never depend on for
+// timing) or stand up a second process the way the isolated webhook scripts
+// do. checkRateLimit() is now Redis-backed (lib/rateLimit.ts) rather than
+// in-process; this is the one direct, isolated check of its own correctness
+// — every real HTTP-level rate limit (contact form, auth emails, AI) still
+// only ever gets a handful of real calls per run, not enough to prove the
+// counter itself works right.
+import { checkRateLimit } from "../src/lib/rateLimit.js";
 
 const API = process.env.API ?? "http://127.0.0.1:4000";
 const prisma = new PrismaClient();
@@ -1392,6 +1403,118 @@ async function main() {
     body: { event: "transfer.failed", data: { transfer_code: `e2e-fake-${RUN}` } },
   });
   check("the payouts webhook refuses everything when no secret key is configured", payoutsWebhookRes.status === 400, payoutsWebhookRes.body);
+
+  // ─── Scheduler infrastructure — Redis rate limiting, the holdback sweep as
+  // a real job, and the reversed-earning reinstate admin action ────────────
+  //
+  // This app's first real infrastructure decision pairing: a job scheduler
+  // needs Redis anyway, so the long-in-process rate limiter moved there too
+  // (lib/rateLimit.ts). Three things to prove, none of which the sections
+  // above already cover: the Redis-backed limiter counts and resets
+  // correctly: lib/scheduler.ts's repeatable job calls the real sweep logic,
+  // not a stand-in; and the one admin action this app never had — getting a
+  // reversed earning back to payable — actually works end to end.
+  section("Scheduler infrastructure — Redis rate limit, holdback sweep, reversed-earning reinstate");
+
+  const rlKey = `e2e-rl-${RUN}`;
+  const rl1 = await checkRateLimit(rlKey, 3, 60_000);
+  const rl2 = await checkRateLimit(rlKey, 3, 60_000);
+  const rl3 = await checkRateLimit(rlKey, 3, 60_000);
+  const rl4 = await checkRateLimit(rlKey, 3, 60_000);
+  check("the first 3 calls within the limit are all allowed, counting down", rl1.allowed && rl1.remaining === 2 && rl2.allowed && rl2.remaining === 1 && rl3.allowed && rl3.remaining === 0, { rl1, rl2, rl3 });
+  check("the 4th call over the limit is blocked, with a real retryAfter", rl4.allowed === false && rl4.remaining === 0 && rl4.retryAfter > 0, rl4);
+
+  const rlOtherKey = `e2e-rl-other-${RUN}`;
+  const rlOther = await checkRateLimit(rlOtherKey, 3, 60_000);
+  check("a different key has its own independent counter, not a shared one", rlOther.allowed && rlOther.remaining === 2, rlOther);
+
+  // Two credited speakers, not one — accrueEarnings() creates one EarningLine
+  // per credited speaker, and the due/not-due pair below needs two real rows
+  // to split across, same shape as the "Payouts — accrual math" section above.
+  const sweepSpeakerDue = await makeSpeaker({ commission_pct: "25" });
+  const sweepSpeakerNotDue = await makeSpeaker({ commission_pct: "25" });
+  const sweepContent = await makeContent("purchase", { slug: `e2e-sweep-content-${RUN}`, price_ngn: "4000" });
+  await prisma.contentSpeaker.create({ data: { content_id: sweepContent.id, speaker_id: sweepSpeakerDue.id, revenue_share_pct: "60" } });
+  await prisma.contentSpeaker.create({ data: { content_id: sweepContent.id, speaker_id: sweepSpeakerNotDue.id, revenue_share_pct: "40" } });
+  const sweepOrder = await prisma.order.create({
+    data: { user_id: user!.id, content_id: sweepContent.id, amount_ngn: "4000", status: "paid", order_type: "direct" },
+  });
+  await accrueEarnings(sweepOrder.id);
+
+  // One line with its holdback already elapsed, one still deep within it —
+  // the sweep must flip the first and leave the second untouched, proving
+  // it's a real filter, not "flip everything accruing."
+  const sweepLines = await prisma.earningLine.findMany({ where: { order_id: sweepOrder.id } });
+  const sweepLineDue = sweepLines.find((l) => l.speaker_id === sweepSpeakerDue.id)!;
+  const sweepLineNotDue = sweepLines.find((l) => l.speaker_id === sweepSpeakerNotDue.id)!;
+  await prisma.earningLine.update({ where: { id: sweepLineDue.id }, data: { holdback_until: new Date(Date.now() - 1000) } });
+  await prisma.earningLine.update({ where: { id: sweepLineNotDue.id }, data: { holdback_until: new Date(Date.now() + 30 * 86_400_000) } });
+
+  // Called directly — the same function lib/scheduler.ts's repeatable job
+  // calls — not through any lazy HTTP endpoint, so this proves the job's own
+  // logic is correct independent of the eligible-preview/run-creation
+  // lazy-sweep calls the Payouts admin section above already exercises.
+  await sweepHoldback();
+
+  const afterSweep = await prisma.earningLine.findMany({ where: { order_id: sweepOrder.id } });
+  const dueAfter = afterSweep.find((l) => l.id === sweepLineDue.id);
+  const notDueAfter = afterSweep.find((l) => l.id === sweepLineNotDue.id);
+  check("sweepHoldback() flips a line whose holdback has elapsed to payable", dueAfter?.status === "payable", dueAfter);
+  check("sweepHoldback() leaves a line still within its holdback untouched", notDueAfter?.status === "accruing", notDueAfter);
+
+  section("Reversed earnings — admin list + reinstate");
+
+  const viewerReversedList = await call("/api/payouts/earnings/reversed", { token: sessionToken });
+  check("a signed-in VIEWER cannot list reversed earnings", viewerReversedList.status === 403, viewerReversedList.body);
+  const noTokenReversedList = await call("/api/payouts/earnings/reversed");
+  check("no token at all cannot list reversed earnings either", noTokenReversedList.status === 401, noTokenReversedList.body);
+
+  const reversedSpeaker = await makeSpeaker({ commission_pct: "25" });
+  const reversedContent = await makeContent("purchase", { slug: `e2e-reversed-content-${RUN}`, price_ngn: "6000" });
+  // No @relation anywhere on EarningLine (same convention as the rest of this
+  // schema — see the model's own comment) — payout_line_id can be set to an
+  // arbitrary id with no real PayoutLine behind it and still exercise the
+  // real invariant under test: that reinstating clears it back to null.
+  const reversedLine = await prisma.earningLine.create({
+    data: {
+      speaker_id: reversedSpeaker.id, content_id: reversedContent.id,
+      gross_ngn: "6000", earned_ngn: "6000", status: "reversed",
+      payout_line_id: 9_000_000 + reversedSpeaker.id, reversed_at: new Date(),
+    },
+  });
+
+  const reversedList = await call("/api/payouts/earnings/reversed", { token: adminToken });
+  const listedLine = (reversedList.body.lines ?? []).find((l: { id: number }) => l.id === reversedLine.id);
+  check("the reversed earning appears in the admin list", listedLine != null, reversedList.body);
+  check("the listed line carries the real speaker name, not just an id", listedLine?.speaker_name === reversedSpeaker.full_name, listedLine);
+
+  const reinstateNoReason = await call(`/api/payouts/earnings/${reversedLine.id}/reinstate`, { method: "POST", token: adminToken, body: {} });
+  check("reinstating with no reason is rejected", reinstateNoReason.status === 422, reinstateNoReason.body);
+
+  const reinstateViewer = await call(`/api/payouts/earnings/${reversedLine.id}/reinstate`, { method: "POST", token: sessionToken, body: { reason: "test" } });
+  check("a signed-in VIEWER cannot reinstate an earning", reinstateViewer.status === 403, reinstateViewer.body);
+
+  const reinstateMissing = await call("/api/payouts/earnings/999999999/reinstate", { method: "POST", token: adminToken, body: { reason: "test" } });
+  check("reinstating a nonexistent earning line 404s", reinstateMissing.status === 404, reinstateMissing.body);
+
+  const reinstateRes = await call(`/api/payouts/earnings/${reversedLine.id}/reinstate`, {
+    method: "POST", token: adminToken, body: { reason: "Confirmed with the speaker — bank details corrected." },
+  });
+  check("a valid reinstate succeeds", reinstateRes.status === 200 && reinstateRes.body.line?.status === "payable", reinstateRes.body);
+  check("reinstating clears the stale payout_line_id, not just the status", reinstateRes.body.line?.payout_line_id === null, reinstateRes.body.line);
+
+  const reinstatedRow = await prisma.earningLine.findUnique({ where: { id: reversedLine.id } });
+  check("reversed_at is cleared once reinstated", reinstatedRow?.reversed_at === null, reinstatedRow);
+
+  const reinstateAgain = await call(`/api/payouts/earnings/${reversedLine.id}/reinstate`, { method: "POST", token: adminToken, body: { reason: "test again" } });
+  check("a line that's no longer reversed can't be reinstated again", reinstateAgain.status === 409, reinstateAgain.body);
+
+  // The real proof it's genuinely eligible again, not just relabelled: the
+  // same eligible-preview endpoint the Payouts admin section above already
+  // exercises must now see it.
+  const previewAfterReinstate = await call("/api/payouts/eligible-preview", { token: adminToken });
+  const reinstatedInPreview = (previewAfterReinstate.body.speakers ?? []).find((s: { speaker_id: number }) => s.speaker_id === reversedSpeaker.id);
+  check("a reinstated earning is genuinely eligible for the next payout run", reinstatedInPreview != null, previewAfterReinstate.body);
 
   // ─── Live sessions — go-live / end-live ────────────────────────────────────
   section("Live sessions — go-live / end-live");

@@ -73,6 +73,24 @@ function parsePositiveOrZero(raw: string, fallback: number): number {
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
+/**
+ * Flips every EarningLine whose holdback window has actually elapsed from
+ * 'accruing' to 'payable' — the one timed status transition this app has
+ * always had a real need for, but, until lib/scheduler.ts, no way to run on
+ * an actual timer. routes/payouts.ts's own admin endpoints (eligible-preview,
+ * run creation) still call this too, lazily, before reading — so an admin
+ * acting between two scheduled sweeps never sees a stale "nothing payable"
+ * just because the timer hasn't ticked yet. Idempotent either way: a line
+ * already payable, or still within its holdback, is untouched by either
+ * caller.
+ */
+export async function sweepHoldback(): Promise<void> {
+  await prisma.earningLine.updateMany({
+    where: { status: "accruing", payout_line_id: null, OR: [{ holdback_until: null }, { holdback_until: { lte: new Date() } }] },
+    data: { status: "payable" },
+  });
+}
+
 // ─── Subscription revenue accrual ──────────────────────────────────────────
 //
 // Direct-sale accrual above has an unambiguous source of truth: one Order,
@@ -95,9 +113,14 @@ function parsePositiveOrZero(raw: string, fallback: number): number {
 // real, until an admin has read the caveat above and turned it on.
 //
 // Execution is a manually-triggered admin action (routes/payouts.ts), not
-// an automatic monthly job — this app has no scheduler to run one, and
-// building a fake "looks automatic" cron with no actual infrastructure
-// behind it would be worse than an honest button. computeSubscriptionAccrual
+// an automatic monthly job. lib/scheduler.ts now gives this app real cron
+// infrastructure (see sweepHoldback() above, which runs on one) — but this
+// feature deliberately stays manual regardless: the caveats above (no real
+// per-period renewal record, a stand-in formula, min-watch-seconds as a
+// judgment call) are exactly the kind of thing an admin should read and
+// weigh before each run, not a job that silently re-derives them on a
+// schedule. A product decision, confirmed with the user, not a missing-
+// infrastructure gap. computeSubscriptionAccrual
 // is the read-only preview; runSubscriptionAccrual is the same computation
 // followed by actually writing EarningLine rows. Both use the same function
 // so a preview can never show numbers the real run would compute differently

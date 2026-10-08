@@ -43,6 +43,15 @@ interface PreviewSpeaker {
   net_ngn: number;
 }
 
+interface ReversedEarningLine {
+  id: number;
+  speaker_id: number;
+  speaker_name: string;
+  content_id: number;
+  gross_ngn: number | null;
+  reversed_at: string | null;
+}
+
 const RUN_STATUS_STYLES: Record<PayoutRun["status"], string> = {
   draft: "bg-slate-800 text-slate-400",
   approved: "bg-blue-500/15 text-blue-300 border border-blue-500/30",
@@ -63,8 +72,10 @@ const LINE_STATUS_STYLES: Record<PayoutLine["status"], string> = {
 
 // ─── Subscription revenue accrual ──────────────────────────────────────────
 //
-// A manually-triggered admin tool, not a scheduled job — this app has no
-// scheduler. Every number here comes from real watch-time data
+// A manually-triggered admin tool, deliberately not a scheduled job even
+// now that one exists (see lib/scheduler.ts) — a product decision, not a
+// missing-infrastructure gap. Every number here comes from real watch-time
+// data
 // (PlaybackSession) and the plan's current price standing in for what a
 // subscriber actually paid this period — see lib/earnings.ts's own module
 // doc for the full reasoning. Off by default
@@ -221,6 +232,105 @@ function SubscriptionAccrualModal({ onClose }: { onClose: () => void }) {
             {running ? "Running…" : `Run Accrual (${runnableCount})`}
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Reversed earnings — the manual, investigate-first path back to payable
+//
+// A paid earning only ever lands here when Paystack's transfer webhook
+// reports the payout bounced (routes/payouts.ts's own module doc covers the
+// why: no automatic re-queue, since a bounced transfer usually means
+// something real is wrong). This panel is that stated gap closed: list what
+// needs a look, then move a specific line back to payable once an admin has
+// actually looked into it.
+
+function ReinstateModal({ line, onClose, onDone }: { line: ReversedEarningLine; onClose: () => void; onDone: () => void }) {
+  const { toast } = useToast();
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit() {
+    setBusy(true);
+    try {
+      await api(`/payouts/earnings/${line.id}/reinstate`, { method: "POST", body: JSON.stringify({ reason }) });
+      toast(`Earning line #${line.id} reinstated to payable.`);
+      onDone();
+    } catch (e: any) {
+      toast(e.message ?? "Reinstate failed.", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
+      <div className="w-full max-w-md rounded-xl border border-slate-800 bg-slate-900 p-6" onClick={(e) => e.stopPropagation()}>
+        <h2 className="mb-1 text-base font-semibold text-slate-100">Reinstate earning #{line.id}</h2>
+        <p className="mb-4 text-xs text-slate-500">
+          {line.speaker_name} · {line.gross_ngn != null ? formatNaira(line.gross_ngn) : "—"}. This moves it back to payable and clears its (stale) payout_line_id, so it's genuinely eligible for the next run — not just relabelled.
+        </p>
+        <label className="mb-1 block text-xs text-slate-400">What did you find?</label>
+        <textarea
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          rows={3}
+          placeholder="e.g. Confirmed with the speaker, bank details were out of date — now corrected."
+          className="w-full rounded-lg border border-slate-800 bg-slate-950 p-2 text-sm text-slate-200 focus:border-brand focus:outline-none"
+        />
+        <div className="mt-4 flex justify-end gap-2">
+          <button onClick={onClose} className="rounded-lg px-4 py-2 text-sm text-slate-400 hover:text-slate-200">Cancel</button>
+          <button
+            onClick={submit}
+            disabled={busy || reason.trim().length < 3}
+            className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-dark disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {busy ? "Reinstating…" : "Reinstate"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ReversedEarningsPanel() {
+  const [lines, setLines] = useState<ReversedEarningLine[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [reinstating, setReinstating] = useState<ReversedEarningLine | null>(null);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    api<{ lines: ReversedEarningLine[] }>("/payouts/earnings/reversed")
+      .then((res) => { setLines(res.lines); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  if (loading) return <Skeleton className="h-12 w-full" />;
+  if (!lines?.length) return null; // nothing needing attention — no reason to take up space with an empty-state card
+
+  return (
+    <div className="rounded-xl border border-red-500/30 bg-red-500/5 p-4">
+      {reinstating && (
+        <ReinstateModal line={reinstating} onClose={() => setReinstating(null)} onDone={() => { setReinstating(null); load(); }} />
+      )}
+      <h2 className="mb-1 text-sm font-semibold text-red-300">Reversed earnings — needs a look ({lines.length})</h2>
+      <p className="mb-3 text-xs text-slate-500">A transfer bounced after it was marked paid. Each one stays out of future payout runs until reinstated.</p>
+      <div className="space-y-2">
+        {lines.map((l) => (
+          <div key={l.id} className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm">
+            <div>
+              <span className="text-slate-200">{l.speaker_name}</span>
+              <span className="ml-2 text-slate-500">{l.gross_ngn != null ? formatNaira(l.gross_ngn) : "—"}</span>
+              {l.reversed_at && <span className="ml-2 text-xs text-slate-600">reversed {new Date(l.reversed_at).toLocaleDateString()}</span>}
+            </div>
+            <button onClick={() => setReinstating(l)} className="rounded-lg border border-slate-700 px-3 py-1 text-xs font-medium text-slate-300 hover:bg-slate-800">
+              Reinstate
+            </button>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -481,6 +591,8 @@ export function Payouts() {
           </button>
         </div>
       </div>
+
+      <ReversedEarningsPanel />
 
       {!runs?.length ? (
         <EmptyState

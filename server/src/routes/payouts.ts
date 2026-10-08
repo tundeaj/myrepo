@@ -1,10 +1,11 @@
 import { Router } from "express";
+import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { prisma } from "../lib/prisma.js";
 import { ApiError } from "../lib/errors.js";
 import { getSetting, getBoolSetting } from "../lib/settingValue.js";
 import { initiateTransfer, isPaystackConfigured, verifyWebhookSignature } from "../lib/paystack.js";
-import { computeSubscriptionAccrual, runSubscriptionAccrual } from "../lib/earnings.js";
+import { computeSubscriptionAccrual, runSubscriptionAccrual, sweepHoldback } from "../lib/earnings.js";
 import type { Request, Response, NextFunction } from "express";
 
 /**
@@ -121,18 +122,12 @@ payoutsRouter.get("/eligible-preview", async (_req: Request, res: Response, next
   }
 });
 
-async function sweepHoldback(): Promise<void> {
-  await prisma.earningLine.updateMany({
-    where: { status: "accruing", payout_line_id: null, OR: [{ holdback_until: null }, { holdback_until: { lte: new Date() } }] },
-    data: { status: "payable" },
-  });
-}
-
-// ─── Subscription revenue accrual — a manually-triggered admin tool, not an
-// automatic job (this app has no scheduler). See lib/earnings.ts's own
-// module doc for the full reasoning: it's OFF by default
-// (monetisation.subscription_accrual_enabled), and even once enabled it only
-// ever runs when an admin explicitly asks it to, for a period they name.
+// ─── Subscription revenue accrual — a manually-triggered admin tool, and
+// deliberately not an automatic job even now that lib/scheduler.ts exists.
+// See lib/earnings.ts's own module doc for the full reasoning: it's OFF by
+// default (monetisation.subscription_accrual_enabled), and even once enabled
+// it only ever runs when an admin explicitly asks it to, for a period they
+// name.
 
 const PERIOD_MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 
@@ -407,6 +402,79 @@ payoutsRouter.post("/runs/:id/process", async (req: Request, res: Response, next
   }
 });
 
+// ─── Reversed earnings — the manual, investigate-first path back to payable
+//
+// The transfer webhook below flips a paid EarningLine to 'reversed' when
+// Paystack reports the transfer failed or bounced, and deliberately leaves
+// it there — see that handler's own module doc for why automatic
+// re-queuing would be the wrong move. These two endpoints are that
+// deliberately-manual step, made real: list what needs investigating, then
+// move a specific line back to 'payable' once an admin has actually looked
+// into it (fixed the speaker's bank details, confirmed it was a transient
+// Paystack-side issue, whatever the real cause was).
+
+// GET /payouts/earnings/reversed
+payoutsRouter.get("/earnings/reversed", async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const lines = await prisma.earningLine.findMany({
+      where: { status: "reversed" },
+      orderBy: [{ reversed_at: "desc" }, { id: "desc" }],
+    });
+    const speakers = await prisma.speaker.findMany({
+      where: { id: { in: lines.map((l) => l.speaker_id) } },
+      select: { id: true, full_name: true },
+    });
+    const byId = new Map(speakers.map((s) => [s.id, s.full_name]));
+    res.json({
+      lines: lines.map((l) => ({
+        ...l,
+        gross_ngn: l.gross_ngn != null ? Number(l.gross_ngn) : null,
+        earned_ngn: l.earned_ngn != null ? Number(l.earned_ngn) : null,
+        speaker_name: byId.get(l.speaker_id) ?? `Speaker #${l.speaker_id}`,
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+const ReinstateSchema = z.object({
+  reason: z.string().trim().min(3, "Say what you found before reinstating this — a few words is enough.").max(500),
+});
+
+// POST /payouts/earnings/:id/reinstate
+payoutsRouter.post("/earnings/:id/reinstate", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const id = Number(req.params.id);
+    if (!id) throw new ApiError(400, "Invalid earning line id");
+    const body = ReinstateSchema.parse(req.body);
+
+    const line = await prisma.earningLine.findFirst({ where: { id } });
+    if (!line) throw new ApiError(404, "Earning line not found");
+    if (line.status !== "reversed") throw new ApiError(409, "Only a reversed earning can be reinstated.");
+
+    // payout_line_id is cleared too — exactly what a failed-at-initiation
+    // transfer already does a few lines up in /runs/:id/process — so this
+    // line is genuinely eligible again (computeEligibleLines() only ever
+    // looks for status: 'payable' AND payout_line_id: null), not just
+    // relabelled and invisibly stuck.
+    const updated = await prisma.earningLine.update({
+      where: { id },
+      data: { status: "payable", payout_line_id: null, reversed_at: null },
+    });
+
+    console.error(
+      `[payouts] earning line ${id} (speaker ${line.speaker_id}) reinstated to payable by admin ` +
+        `${req.user!.sub}: "${body.reason}"`,
+    );
+
+    res.json({ line: { ...updated, gross_ngn: updated.gross_ngn != null ? Number(updated.gross_ngn) : null } });
+  } catch (err) {
+    if (err instanceof z.ZodError) return next(new ApiError(422, err.errors[0]?.message ?? "Validation error"));
+    next(err);
+  }
+});
+
 // ─── POST /payouts/webhook — Paystack's transfer status webhook ───────────
 //
 // Public: Paystack calls this directly, with no admin session. Mounted with
@@ -431,8 +499,9 @@ payoutsRouter.post("/runs/:id/process", async (req: Request, res: Response, next
 // status: 'payable') — a bounced transfer usually means something is wrong
 // with the speaker's bank details, and silently re-queuing the same amount
 // for another automatic attempt would just repeat whatever already failed.
-// Getting a reversed earning back into a payable state is left as a manual,
-// investigate-first step: not implemented here, stated as a real gap.
+// Getting a reversed earning back into a payable state is a manual,
+// investigate-first step — see the /earnings/reversed + /earnings/:id/
+// reinstate admin endpoints below, which exist for exactly this.
 export const payoutsWebhookRouter = Router();
 
 // Root, not "/webhook": mounted at the exact path "/api/payouts/webhook" in
@@ -472,13 +541,14 @@ payoutsWebhookRouter.post("/", async (req: Request, res: Response) => {
 
     await prisma.earningLine.updateMany({
       where: { payout_line_id: line.id, status: "paid" },
-      data: { status: "reversed" },
+      data: { status: "reversed", reversed_at: new Date() },
     });
 
     console.error(
       `[payouts webhook] transfer ${transferCode} (payout_line ${line.id}, speaker ${line.speaker_id}) ` +
         `reported "${payload.event}" by Paystack — its earnings are now marked reversed. The PayoutLine ` +
-        `itself is left as-paid per its append-only invariant; this needs manual review, not an automatic re-run.`,
+        `itself is left as-paid per its append-only invariant; this needs manual review, not an automatic re-run — ` +
+        `see GET/POST /api/payouts/earnings/reversed for the admin path back to payable.`,
     );
   } catch (err) {
     console.error("[payouts webhook] failed to process transfer event:", err);

@@ -69,7 +69,7 @@ publicContactRouter.get("/", async (_req: Request, res: Response, next: NextFunc
 // most worth capping even on a single-instance deployment.
 publicContactRouter.post("/", async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const limit = checkRateLimit(`contact:${req.ip ?? "unknown"}`, CONTACT_LIMIT, CONTACT_WINDOW_MS);
+    const limit = await checkRateLimit(`contact:${req.ip ?? "unknown"}`, CONTACT_LIMIT, CONTACT_WINDOW_MS);
     if (!limit.allowed) {
       res.setHeader("Retry-After", String(limit.retryAfter));
       throw new ApiError(429, "Too many requests. Try again in a bit.");

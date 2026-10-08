@@ -141,6 +141,7 @@ try {
     (e) => e?.status === "reversed",
   );
   check("transfer.failed flips the EarningLine to 'reversed'", earningAfterFailed?.status === "reversed", earningAfterFailed?.status);
+  check("the webhook stamps reversed_at — the admin reinstate panel's own timestamp", earningAfterFailed?.reversed_at != null, earningAfterFailed?.reversed_at);
   const lineAfterFailed = await prisma.payoutLine.findUnique({ where: { id: failedFixture.line.id } });
   check(
     "the PayoutLine itself is left exactly as 'paid' — append-only invariant honoured",

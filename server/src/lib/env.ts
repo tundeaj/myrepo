@@ -16,6 +16,12 @@ export const env = {
   CORS_ORIGIN: process.env.CORS_ORIGIN ?? "http://localhost:5173",
   NODE_ENV: process.env.NODE_ENV ?? "development",
 
+  /** Backs both the rate limiter (lib/rateLimit.ts) and the job scheduler
+   *  (lib/scheduler.ts) — one infra decision serving both, since a real
+   *  job queue needs Redis anyway. Defaults to a local dev instance; not a
+   *  secret, so (unlike the keys below) a plain default is fine here. */
+  REDIS_URL: process.env.REDIS_URL ?? "redis://127.0.0.1:6379",
+
   // Prompt 10 integrations — read here so their "configured?" boolean can be
   // surfaced to the client without ever leaking the value itself.
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? "",
