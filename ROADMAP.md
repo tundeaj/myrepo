@@ -1,6 +1,6 @@
 # Webinarflix — Roadmap & TODO
 
-Status snapshot as of this document: **711 assertions across 8 suites, all green** (526 e2e + 35 mail + 6 checkout-webhook + 12 payouts-webhook + 8 stripe-webhook + 124 browser), CI passing on every push to PR #1. This file tracks what's built, what's left, and the order the remaining work is planned in. It's updated at the end of each round that closes or adds a gap — treat it as the living source of truth over any single PR description.
+Status snapshot as of this document: **720 assertions across 8 suites, all green** (533 e2e + 35 mail + 6 checkout-webhook + 12 payouts-webhook + 8 stripe-webhook + 126 browser), CI passing on every push to PR #1. This file tracks what's built, what's left, and the order the remaining work is planned in. It's updated at the end of each round that closes or adds a gap — treat it as the living source of truth over any single PR description.
 
 ---
 
@@ -24,7 +24,7 @@ Signed short-lived playback URLs with concurrency limits, chapters/subtitles, Go
 Earnings accrual, payouts admin workflow, the payouts transfer webhook, subscription revenue accrual (manual admin-run, explicitly a stated simplification — see §3).
 
 **Content operations**
-Ratings (viewer submission + aggregate recompute) with comment moderation, FAQs (admin CRUD + public read path, with real per-user helpful-vote dedup for signed-in viewers), Contact Requests (public form + admin inbox, with a real teammate picker for assignment), Categories, Sponsors/Advertisers/Ads, content-sponsor linking with public display across all three placements — session_page ("Sponsored by" on the detail page), player (video overlay badge), and hero (homepage carousel badge).
+Ratings (viewer submission + aggregate recompute) with comment moderation — reviewer email notifications, bulk approve/reject, and an admin-authored French translation field — FAQs (admin CRUD + public read path, with real per-user helpful-vote dedup for signed-in viewers), Contact Requests (public form + admin inbox, with a real teammate picker for assignment), Categories, Sponsors/Advertisers/Ads, content-sponsor linking with public display across all three placements — session_page ("Sponsored by" on the detail page), player (video overlay badge), and hero (homepage carousel badge).
 
 **Admin management**
 Users (list/detail/role management, with self-demotion and last-admin guards), Registrations (list/filter/status), Speakers (full CRUD).
@@ -43,14 +43,14 @@ Phases are ordered by what unblocks fastest with the least new infrastructure. E
 - [x] **No teammate picker for contact-request assignment** — `assigned_to` now validates against a real, active, non-viewer account (instructor/admin/super_admin) server-side, and the admin UI's raw numeric-id input is a real picker sourced from `GET /users`.
 - [x] **`player` and `hero` sponsorship placements have no public display** — `lib/sponsors.ts`'s shared `resolveActiveSponsors()` now backs all three placements. `Player.tsx` gets a video-overlay badge, `Hero.tsx` gets a carousel badge alongside its LIVE/countdown badges. Found and fixed a real, pre-existing bug along the way: the hero's rotation-indicator pills had no `z-index`, so the content row overlapping the hero's bottom edge (`-mt-8`/`-mt-16`, `z-10`) sat on top of them and made them unclickable for any real visitor at sm+ widths, not just the new browser test.
 
-### Phase B — Medium (admin UI + backend work, no new infrastructure)
+### Phase B — Medium (admin UI + backend work, no new infrastructure) — ✅ done
 - [x] **No reviewer notification on approve/reject** — `routes/ratings.ts`'s moderation `PUT` now emails the comment's own author on a real status transition (approved → "is now live" with a link to the content page; rejected → explains why, reassures them the star rating is unaffected), via the same `sendMail()`/`publicUrl()` pattern every other transactional email already uses. Re-approving an already-approved comment still succeeds but doesn't re-send.
 - [x] **No bulk moderation actions** — `routes/ratings.ts`'s new `POST /ratings-moderation/bulk` shares its actual write (`moderateOne`) with the single-item route, so the two can never drift apart; one bad id in a batch degrades only itself, never the rest. `RatingComments.tsx` gets a per-row checkbox, a "Select all," and an "Approve N"/"Reject N" bar.
-- [ ] **No French-language review display** — `title_fr`/`answer_html_fr`-style columns already exist elsewhere as a pattern; ratings' `comment` has no `_fr` column yet, so this starts with a schema decision, not just UI. *Up next — the last item in Phase B.*
+- [x] **No French-language review display** — re-scoped after investigating: the original framing assumed every other `_fr` field was already visible to French-speaking visitors and ratings was the one outlier missing a column. It isn't — confirmed `publicI18n.tsx` hardcodes `language` to `"en"` with no switcher anywhere on the public site, for any content type. Checked with the user before building; shipped the narrow piece — `Rating.comment_fr` + a moderation-queue textarea, exactly matching every other `_fr` field's existing shape — and recorded the real, larger gap below instead of quietly assuming a display mechanism that doesn't exist.
 
-### Phase C — `PlaceholderPage` routes still unbuilt (9 remaining)
+### Phase C — `PlaceholderPage` routes still unbuilt (9 remaining) — *up next*
 Each is its own scoped project (schema check → routes → admin UI → e2e/browser), same shape as every closed gap above. Suggested order, easiest first:
-- [ ] Promotions
+- [ ] Promotions *— up next.*
 - [ ] Pages / Landing Pages (two related, likely worth doing together)
 - [ ] Bulk Import
 - [ ] Community × 2
@@ -58,6 +58,7 @@ Each is its own scoped project (schema check → routes → admin UI → e2e/bro
 - [ ] Player / PPV Analytics (needs a decision on what's actually measurable from `PlaybackSession` today vs. what would need new instrumentation)
 
 ### Phase D — Cross-cutting / infrastructure (bigger, may need a product or infra decision first)
+- [ ] **No public-facing language switcher exists, for any content type** — discovered while scoping the ratings French-display item: every `_fr` field across the schema (FAQs, content titles, categories, speakers, ...) is already admin-authored and stored, but `web/src/public/lib/publicI18n.tsx` hardcodes `language` to `"en"` with no toggle, URL scheme, or persistence anywhere. Needs a product decision (URL path vs. query param vs. a nav toggle + storage) before any UI work starts — ratings' own `comment_fr` (closed this round) is just one more field waiting on the same missing mechanism.
 - [ ] **No image upload widgets** — every media reference is a plain URL text field. Needs a storage-backend decision (S3-compatible? ImageKit, already referenced elsewhere for delivery?) before any UI work starts.
 - [ ] **Rate limiting is in-process** — needs Redis (or equivalent) before a multi-instance deploy; `lib/rateLimit.ts` is the single choke point to swap.
 - [ ] **No scheduler infrastructure** — blocks both "no path back from a reversed earning to payable" and "no scheduled/time-based status transitions anywhere." One infra decision (cron? a queue?) would unblock both.
