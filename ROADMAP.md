@@ -1,6 +1,6 @@
 # Webinarflix — Roadmap & TODO
 
-Status snapshot as of this document: **693 assertions across 8 suites, all green** (515 e2e + 35 mail + 6 checkout-webhook + 12 payouts-webhook + 8 stripe-webhook + 117 browser), CI passing on every push to PR #1. This file tracks what's built, what's left, and the order the remaining work is planned in. It's updated at the end of each round that closes or adds a gap — treat it as the living source of truth over any single PR description.
+Status snapshot as of this document: **711 assertions across 8 suites, all green** (526 e2e + 35 mail + 6 checkout-webhook + 12 payouts-webhook + 8 stripe-webhook + 124 browser), CI passing on every push to PR #1. This file tracks what's built, what's left, and the order the remaining work is planned in. It's updated at the end of each round that closes or adds a gap — treat it as the living source of truth over any single PR description.
 
 ---
 
@@ -45,8 +45,8 @@ Phases are ordered by what unblocks fastest with the least new infrastructure. E
 
 ### Phase B — Medium (admin UI + backend work, no new infrastructure)
 - [x] **No reviewer notification on approve/reject** — `routes/ratings.ts`'s moderation `PUT` now emails the comment's own author on a real status transition (approved → "is now live" with a link to the content page; rejected → explains why, reassures them the star rating is unaffected), via the same `sendMail()`/`publicUrl()` pattern every other transactional email already uses. Re-approving an already-approved comment still succeeds but doesn't re-send.
-- [ ] **No bulk moderation actions** — `pages/moderation/RatingComments.tsx` + a batch endpoint alongside the existing single-item approve/reject. *Up next.*
-- [ ] **No French-language review display** — `title_fr`/`answer_html_fr`-style columns already exist elsewhere as a pattern; ratings' `comment` has no `_fr` column yet, so this starts with a schema decision, not just UI.
+- [x] **No bulk moderation actions** — `routes/ratings.ts`'s new `POST /ratings-moderation/bulk` shares its actual write (`moderateOne`) with the single-item route, so the two can never drift apart; one bad id in a batch degrades only itself, never the rest. `RatingComments.tsx` gets a per-row checkbox, a "Select all," and an "Approve N"/"Reject N" bar.
+- [ ] **No French-language review display** — `title_fr`/`answer_html_fr`-style columns already exist elsewhere as a pattern; ratings' `comment` has no `_fr` column yet, so this starts with a schema decision, not just UI. *Up next — the last item in Phase B.*
 
 ### Phase C — `PlaceholderPage` routes still unbuilt (9 remaining)
 Each is its own scoped project (schema check → routes → admin UI → e2e/browser), same shape as every closed gap above. Suggested order, easiest first:
