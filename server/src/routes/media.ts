@@ -1,7 +1,10 @@
 import { Router } from "express";
+import multer from "multer";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { ApiError } from "../lib/errors.js";
+import { uploadToImageKit } from "../lib/imageUpload.js";
 import type { Request, Response, NextFunction } from "express";
 
 export const mediaRouter = Router();
@@ -323,6 +326,62 @@ mediaRouter.delete("/:id", async (req: Request, res: Response, next: NextFunctio
 
     await prisma.mediaAsset.delete({ where: { id } });
     res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── POST /media/upload-image — real file upload, not a URL text field ────────
+//
+// Closes a long-stated gap: every image reference in this app (speaker
+// photos, session/course artwork) was a plain URL text field, and the admin
+// console's own "Artwork" panels (components/session/ArtworkPanel.tsx,
+// components/course/CourseArtworkPanel.tsx) went further and actively
+// misled — their file picker called URL.createObjectURL() and saved that
+// blob: URL straight into ContentItem.master_image_url, which only ever
+// resolves in that one browser tab and is already-broken the moment the
+// page reloads or anyone else opens the same content item. This is the
+// real upload behind the fix: an admin-gated multipart endpoint that
+// actually puts the bytes on ImageKit (lib/imageUpload.ts — the same
+// mechanism routes/transcripts.ts's uploadVtt() already used for generated
+// subtitle files) and hands back a real, durable URL.
+//
+// In-memory storage, not disk: this is a single small-image upload, not a
+// stream, and avoids ever writing an unvalidated upload to this
+// container's filesystem.
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB — generous for a photo/poster, not for a sneaked-in video
+});
+
+const ALLOWED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+
+/** Translates multer's own LIMIT_FILE_SIZE error into the same ApiError shape
+ *  every other handler's errors already take — otherwise it falls through to
+ *  errorHandler's generic "something went wrong", which is technically
+ *  correct but tells an admin nothing about the one failure they're actually
+ *  likely to hit (a phone photo well over 10MB). */
+function uploadSingleImage(req: Request, res: Response, next: NextFunction) {
+  upload.single("file")(req, res, (err: unknown) => {
+    if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
+      return next(new ApiError(413, "That image is too large — the limit is 10MB."));
+    }
+    if (err) return next(err);
+    next();
+  });
+}
+
+mediaRouter.post("/upload-image", uploadSingleImage, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const file = req.file;
+    if (!file) throw new ApiError(400, "No file was uploaded.");
+    if (!ALLOWED_IMAGE_TYPES.has(file.mimetype)) {
+      throw new ApiError(415, "Only JPEG, PNG, or WebP images are accepted.");
+    }
+
+    const correlationId = randomUUID();
+    const url = await uploadToImageKit(file.buffer, file.originalname || "upload.jpg", "/images", correlationId);
+    res.status(201).json({ url });
   } catch (err) {
     next(err);
   }

@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback } from "react";
 import { Panel } from "../session/Panel";
 import { api } from "../../lib/api";
+import { uploadImage } from "../../lib/upload";
 
 // ─── The four variant previews ─────────────────────────────────────────────────
 
@@ -179,25 +180,42 @@ export function CourseArtworkPanel({
   onSubstituteAsset,
 }: Props) {
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
   const [dragging, setDragging] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
 
+  // Same fix as components/session/ArtworkPanel.tsx's own handleFileChange:
+  // the blob: URL is only ever used for the local dimension check and
+  // revoked immediately after — onMasterImageUrl() only ever gets the real,
+  // durable URL the server hands back.
   function handleFileChange(file: File) {
     setUploadError(null);
-    const url = URL.createObjectURL(file);
+    const blobUrl = URL.createObjectURL(file);
     const img = new Image();
-    img.onload = () => {
+    img.onload = async () => {
       if (img.naturalWidth < MIN_WIDTH || img.naturalHeight < MIN_HEIGHT) {
         setUploadError(
           `Image too small: ${img.naturalWidth}×${img.naturalHeight}px. Minimum is ${MIN_WIDTH}×${MIN_HEIGHT}px.`,
         );
-        URL.revokeObjectURL(url);
+        URL.revokeObjectURL(blobUrl);
         return;
       }
-      onMasterImageUrl(url);
+      URL.revokeObjectURL(blobUrl);
+      setUploading(true);
+      try {
+        const url = await uploadImage(file);
+        onMasterImageUrl(url);
+      } catch (e: any) {
+        setUploadError(e.message ?? "Upload failed. Please try again.");
+      } finally {
+        setUploading(false);
+      }
     };
-    img.onerror = () => setUploadError("Failed to load image.");
-    img.src = url;
+    img.onerror = () => {
+      URL.revokeObjectURL(blobUrl);
+      setUploadError("Failed to load image.");
+    };
+    img.src = blobUrl;
   }
 
   const updateFocal = useCallback(
@@ -234,17 +252,18 @@ export function CourseArtworkPanel({
       <div className="space-y-5">
         {/* Upload area */}
         {!masterImageUrl ? (
-          <label className="flex h-36 cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed border-slate-700 bg-slate-950/60 transition-colors hover:border-brand hover:bg-brand/5">
+          <label className={`flex h-36 flex-col items-center justify-center rounded-xl border-2 border-dashed border-slate-700 bg-slate-950/60 transition-colors ${uploading ? "cursor-wait opacity-60" : "cursor-pointer hover:border-brand hover:bg-brand/5"}`}>
             <input
               type="file"
               accept="image/jpeg,image/png,image/webp"
               className="sr-only"
+              disabled={uploading}
               onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFileChange(f); }}
             />
             <svg className="mb-2 h-8 w-8 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
             </svg>
-            <p className="text-sm text-slate-400">Click or drag to upload</p>
+            <p className="text-sm text-slate-400">{uploading ? "Uploading…" : "Click or drag to upload"}</p>
             <p className="text-xs text-slate-600">JPEG, PNG or WebP · min {MIN_WIDTH}×{MIN_HEIGHT}px</p>
           </label>
         ) : (
@@ -301,8 +320,17 @@ export function CourseArtworkPanel({
                     ) : (
                       <label className="cursor-pointer text-xs text-brand hover:underline">
                         Override
-                        <input type="file" accept="image/*" className="sr-only"
-                          onChange={(e) => { const f = e.target.files?.[0]; if (f) onImageOverrides({ ...imageOverrides, [v.key]: URL.createObjectURL(f) }); }} />
+                        <input type="file" accept="image/jpeg,image/png,image/webp" className="sr-only"
+                          onChange={async (e) => {
+                            const f = e.target.files?.[0];
+                            if (!f) return;
+                            try {
+                              const url = await uploadImage(f);
+                              onImageOverrides({ ...imageOverrides, [v.key]: url });
+                            } catch (err: any) {
+                              setUploadError(err.message ?? "Upload failed.");
+                            }
+                          }} />
                       </label>
                     )}
                   </div>

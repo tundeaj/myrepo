@@ -6,6 +6,7 @@ import { ErrorState } from "../../components/ErrorState";
 import { Skeleton } from "../../components/Skeleton";
 import { Icon } from "../../components/Icon";
 import { Toggle, inputClass } from "../../components/session/Panel";
+import { uploadImage } from "../../lib/upload";
 
 interface SpeakerRow {
   id: number;
@@ -80,6 +81,7 @@ function SpeakerSlideOver({ speakerId, types, onClose, onSaved }: { speakerId: n
   const [payoutConfigured, setPayoutConfigured] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [photoUploading, setPhotoUploading] = useState(false);
 
   useEffect(() => {
     if (speakerId === "new") return;
@@ -90,6 +92,19 @@ function SpeakerSlideOver({ speakerId, types, onClose, onSaved }: { speakerId: n
 
   function set<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((f) => ({ ...f, [key]: value }));
+  }
+
+  async function uploadPhoto(file: File) {
+    setPhotoUploading(true);
+    setErr(null);
+    try {
+      const url = await uploadImage(file);
+      set("master_image_url", url);
+    } catch (e: any) {
+      setErr(e.message ?? "Photo upload failed.");
+    } finally {
+      setPhotoUploading(false);
+    }
   }
 
   async function save() {
@@ -173,8 +188,30 @@ function SpeakerSlideOver({ speakerId, types, onClose, onSaved }: { speakerId: n
 
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="mb-1 block text-xs text-slate-400">Photo URL</label>
-                <input type="text" value={form.master_image_url} onChange={(e) => set("master_image_url", e.target.value)} className={inputClass} maxLength={500} />
+                <label className="mb-1 block text-xs text-slate-400">Photo</label>
+                <div className="flex items-center gap-2">
+                  {form.master_image_url && (
+                    <img src={form.master_image_url} alt="" className="h-9 w-9 flex-shrink-0 rounded-full object-cover" />
+                  )}
+                  <input
+                    type="text"
+                    value={form.master_image_url}
+                    onChange={(e) => set("master_image_url", e.target.value)}
+                    className={inputClass}
+                    maxLength={500}
+                    placeholder="Paste a URL, or upload →"
+                  />
+                  <label className={`flex-shrink-0 rounded-lg border border-slate-700 px-2.5 py-1.5 text-xs text-slate-300 ${photoUploading ? "cursor-wait opacity-60" : "cursor-pointer hover:bg-slate-800"}`}>
+                    {photoUploading ? "…" : "Upload"}
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      className="sr-only"
+                      disabled={photoUploading}
+                      onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadPhoto(f); }}
+                    />
+                  </label>
+                </div>
               </div>
               <div>
                 <label className="mb-1 block text-xs text-slate-400">LinkedIn URL</label>

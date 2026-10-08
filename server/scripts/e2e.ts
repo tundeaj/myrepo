@@ -1552,6 +1552,60 @@ async function main() {
   const reinstatedInPreview = (previewAfterReinstate.body.speakers ?? []).find((s: { speaker_id: number }) => s.speaker_id === reversedSpeaker.id);
   check("a reinstated earning is genuinely eligible for the next payout run", reinstatedInPreview != null, previewAfterReinstate.body);
 
+  // ─── Image uploads — POST /media/upload-image ──────────────────────────────
+  //
+  // Closes a real, pre-existing bug found while scoping this gap: the admin
+  // console's own Artwork panels saved a URL.createObjectURL() blob: URL
+  // straight into ContentItem.master_image_url — already broken the moment
+  // the page reloads, since nothing else can resolve that URL. This endpoint
+  // is the real fix: a real multipart upload, admin-gated, proxied to
+  // ImageKit via lib/imageUpload.ts.
+  //
+  // This shared dev server has no IMAGEKIT_PRIVATE_KEY configured — same
+  // stated limitation as Stripe/Zoom/Paystack elsewhere in this build — so
+  // this can only prove the endpoint's own validation and auth gates, and
+  // that it fails HONESTLY (a real 503, not a silently "succeeding" fake
+  // URL) when unconfigured. Proving a real upload actually reaches ImageKit
+  // and gets a real URL back needs real credentials nothing in this
+  // environment has.
+  section("Image uploads — POST /media/upload-image");
+
+  const pngBytes = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+    "base64",
+  );
+
+  async function uploadImageCall(token: string | undefined, bytes: Buffer, filename: string, mimeType: string) {
+    const form = new FormData();
+    form.append("file", new Blob([bytes], { type: mimeType }), filename);
+    const res = await fetch(`${API}/api/media/upload-image`, {
+      method: "POST",
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      body: form,
+    });
+    const body = await res.json().catch(() => ({}));
+    return { status: res.status, body };
+  }
+
+  const noTokenUpload = await uploadImageCall(undefined, pngBytes, "photo.png", "image/png");
+  check("no token at all cannot upload an image", noTokenUpload.status === 401, noTokenUpload.body);
+
+  const viewerUpload = await uploadImageCall(sessionToken, pngBytes, "photo.png", "image/png");
+  check("a signed-in VIEWER cannot upload an image", viewerUpload.status === 403, viewerUpload.body);
+
+  const noFileUpload = await fetch(`${API}/api/media/upload-image`, { method: "POST", headers: { Authorization: `Bearer ${adminToken}` } });
+  check("no file at all is rejected", noFileUpload.status === 400, await noFileUpload.json().catch(() => ({})));
+
+  const wrongTypeUpload = await uploadImageCall(adminToken, Buffer.from("not an image"), "notes.txt", "text/plain");
+  check("a non-image mimetype is rejected", wrongTypeUpload.status === 415, wrongTypeUpload.body);
+
+  const realUpload = await uploadImageCall(adminToken, pngBytes, "photo.png", "image/png");
+  check(
+    "a real, admin-authenticated, valid-type upload fails HONESTLY when ImageKit isn't configured — never a fake success",
+    realUpload.status === 503 && /configured/i.test(realUpload.body?.error ?? ""),
+    realUpload.body,
+  );
+
   // ─── Live sessions — go-live / end-live ────────────────────────────────────
   section("Live sessions — go-live / end-live");
 

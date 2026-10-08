@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback } from "react";
 import { Panel } from "./Panel";
+import { uploadImage } from "../../lib/upload";
 
 // The four variant previews as per the spec
 const VARIANTS = [
@@ -34,26 +35,45 @@ export function ArtworkPanel({
   onImageOverrides,
 }: Props) {
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
   const [dragging, setDragging] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
 
-  // Validate and load image
+  // Dimension-check locally first (a local blob: URL, used only for this one
+  // synchronous check and immediately revoked either way) — no reason to
+  // spend a real upload on a file that's already too small. Only a file that
+  // passes actually goes to the server; onMasterImageUrl() is only ever
+  // called with the real, durable URL ImageKit hands back, never the
+  // blob: reference, which would already be broken the moment this page
+  // reloads.
   function handleFileChange(file: File) {
     setUploadError(null);
-    const url = URL.createObjectURL(file);
+    const blobUrl = URL.createObjectURL(file);
     const img = new Image();
-    img.onload = () => {
+    img.onload = async () => {
       if (img.naturalWidth < MIN_WIDTH || img.naturalHeight < MIN_HEIGHT) {
         setUploadError(
           `Image too small: ${img.naturalWidth}×${img.naturalHeight}px. Minimum is ${MIN_WIDTH}×${MIN_HEIGHT}px.`,
         );
-        URL.revokeObjectURL(url);
+        URL.revokeObjectURL(blobUrl);
         return;
       }
-      onMasterImageUrl(url);
+      URL.revokeObjectURL(blobUrl);
+      setUploading(true);
+      try {
+        const url = await uploadImage(file);
+        onMasterImageUrl(url);
+      } catch (e: any) {
+        setUploadError(e.message ?? "Upload failed. Please try again.");
+      } finally {
+        setUploading(false);
+      }
     };
-    img.onerror = () => setUploadError("Failed to load image. Please try a different file.");
-    img.src = url;
+    img.onerror = () => {
+      URL.revokeObjectURL(blobUrl);
+      setUploadError("Failed to load image. Please try a different file.");
+    };
+    img.src = blobUrl;
   }
 
   // Focal point dragging
@@ -91,17 +111,18 @@ export function ArtworkPanel({
       <div className="space-y-5">
         {/* Upload area */}
         {!masterImageUrl ? (
-          <label className="flex h-36 cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed border-slate-700 bg-slate-950/60 transition-colors hover:border-brand hover:bg-brand/5">
+          <label className={`flex h-36 flex-col items-center justify-center rounded-xl border-2 border-dashed border-slate-700 bg-slate-950/60 transition-colors ${uploading ? "cursor-wait opacity-60" : "cursor-pointer hover:border-brand hover:bg-brand/5"}`}>
             <input
               type="file"
               accept="image/jpeg,image/png,image/webp"
               className="sr-only"
+              disabled={uploading}
               onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFileChange(f); }}
             />
             <svg className="mb-2 h-8 w-8 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
             </svg>
-            <p className="text-sm text-slate-400">Click or drag to upload</p>
+            <p className="text-sm text-slate-400">{uploading ? "Uploading…" : "Click or drag to upload"}</p>
             <p className="text-xs text-slate-600">JPEG, PNG or WebP · min {MIN_WIDTH}×{MIN_HEIGHT}px</p>
           </label>
         ) : (
@@ -202,6 +223,22 @@ interface VariantPreviewProps {
 }
 
 function VariantPreview({ variant, imageUrl, focalX, focalY, override, onOverride, onClearOverride }: VariantPreviewProps) {
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleOverride(file: File) {
+    setError(null);
+    setUploading(true);
+    try {
+      const url = await uploadImage(file);
+      onOverride(url);
+    } catch (e: any) {
+      setError(e.message ?? "Upload failed.");
+    } finally {
+      setUploading(false);
+    }
+  }
+
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between">
@@ -211,20 +248,19 @@ function VariantPreview({ variant, imageUrl, focalX, focalY, override, onOverrid
             Clear override
           </button>
         ) : (
-          <label className="cursor-pointer text-xs text-brand hover:underline">
-            Override
+          <label className={`text-xs text-brand hover:underline ${uploading ? "cursor-wait opacity-60" : "cursor-pointer"}`}>
+            {uploading ? "Uploading…" : "Override"}
             <input
               type="file"
-              accept="image/*"
+              accept="image/jpeg,image/png,image/webp"
               className="sr-only"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) onOverride(URL.createObjectURL(f));
-              }}
+              disabled={uploading}
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) handleOverride(f); }}
             />
           </label>
         )}
       </div>
+      {error && <p className="text-xs text-red-400">{error}</p>}
       {/* The crop preview uses object-position to simulate focal point */}
       <div
         className="overflow-hidden rounded-md border border-slate-800 bg-slate-950"

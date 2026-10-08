@@ -24,10 +24,21 @@
  * match the installed Playwright.
  */
 import { chromium, type Page, type Browser } from "playwright";
+import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const BASE = process.env.BASE ?? "http://127.0.0.1:5173";
 const API_BASE = process.env.API_BASE ?? "http://127.0.0.1:4000";
 const CHROMIUM_PATH = process.env.CHROMIUM_PATH;
+
+// A real, 1x1 PNG — written to a temp file so page.setInputFiles() can pick
+// it up as a real file dialog would, not a base64 string in memory. Used for
+// the Image uploads section below.
+const TEST_PNG_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+const TEST_PNG_PATH = join(tmpdir(), "webinarflix-browser-check-photo.png");
+writeFileSync(TEST_PNG_PATH, Buffer.from(TEST_PNG_BASE64, "base64"));
 
 let passed = 0;
 const failures: string[] = [];
@@ -1459,6 +1470,26 @@ async function run(browser: Browser) {
       await page.waitForTimeout(600);
       const afterEdit = await fetch(`${API_BASE}/api/speakers/${speakerId}`, { headers: { Authorization: `Bearer ${adminToken}` } }).then((r) => r.json());
       check("editing a speaker through the real UI persists the change", afterEdit?.speaker?.organisation === "Browser Check Org", afterEdit?.speaker);
+
+      // Real photo upload, not the old URL.createObjectURL() blob: bug —
+      // see components/session/ArtworkPanel.tsx's and this page's own fix.
+      // This sandbox has no IMAGEKIT_PRIVATE_KEY configured, so the real
+      // assertion here is the one that holds regardless: the photo URL
+      // field is NEVER left holding a blob: reference, whether the real
+      // upload call succeeds or honestly fails.
+      //
+      // Saving above closed the slide-over (onSaved() in the parent both
+      // closes it and reloads the list) — reopen it fresh for this check.
+      await page.locator(`text=${speakerName}`).first().click();
+      await page.waitForTimeout(500);
+      await page.setInputFiles('input[type="file"][accept*="image"]', TEST_PNG_PATH);
+      await page.waitForTimeout(1200);
+      const photoUrlValue = await page.locator('input[placeholder="Paste a URL, or upload →"]').inputValue();
+      check("the photo URL field is never a blob: reference after an upload attempt", !photoUrlValue.startsWith("blob:"), { photoUrlValue });
+      if (!photoUrlValue) {
+        const hasConfigError = await page.locator("text=/Image uploads aren.t configured/i").count();
+        check("an unconfigured ImageKit fails honestly with a real error, not a silent fake success", hasConfigError > 0, { hasConfigError });
+      }
 
       await fetch(`${API_BASE}/api/speakers/${speakerId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
     }

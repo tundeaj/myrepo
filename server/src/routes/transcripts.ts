@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { prisma } from "../lib/prisma.js";
 import { ApiError } from "../lib/errors.js";
 import { env } from "../lib/env.js";
+import { uploadToImageKit } from "../lib/imageUpload.js";
 import type { Request, Response, NextFunction } from "express";
 
 export const transcriptsRouter = Router();
@@ -259,35 +260,7 @@ async function uploadVtt(vtt: string, fileName: string, correlationId: string): 
   if (!env.IMAGEKIT_PRIVATE_KEY) {
     return `data:text/vtt;charset=utf-8;base64,${Buffer.from(vtt, "utf8").toString("base64")}`;
   }
-
-  try {
-    const form = new FormData();
-    form.append("file", new Blob([vtt], { type: "text/vtt" }), fileName);
-    form.append("fileName", fileName);
-    form.append("folder", "/subtitles");
-
-    const res = await fetch("https://upload.imagekit.io/api/v1/files/upload", {
-      method: "POST",
-      headers: {
-        Authorization: `Basic ${Buffer.from(`${env.IMAGEKIT_PRIVATE_KEY}:`).toString("base64")}`,
-      },
-      body: form,
-    });
-
-    if (!res.ok) {
-      const detail = await res.text().catch(() => "");
-      console.error(`[${correlationId}] ImageKit upload failed (${res.status}):`, detail.slice(0, 500));
-      throw new ApiError(502, `Couldn't upload the subtitle file. Quote reference ${correlationId} if this keeps happening.`);
-    }
-
-    const json = (await res.json()) as { url?: string };
-    if (!json.url) throw new ApiError(502, `The image service returned no URL. Quote reference ${correlationId}.`);
-    return json.url;
-  } catch (err) {
-    if (err instanceof ApiError) throw err;
-    console.error(`[${correlationId}] ImageKit upload error:`, err);
-    throw new ApiError(503, "Couldn't reach the file storage service. Please try again.");
-  }
+  return uploadToImageKit(Buffer.from(vtt, "utf8"), fileName, "/subtitles", correlationId);
 }
 
 transcriptsRouter.post("/:id/generate-vtt", async (req: Request, res: Response, next: NextFunction) => {
