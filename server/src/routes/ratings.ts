@@ -4,6 +4,7 @@ import { prisma } from "../lib/prisma.js";
 import { ApiError } from "../lib/errors.js";
 import { resolveAccess } from "../lib/access.js";
 import { getSetting } from "../lib/settingValue.js";
+import { sendMail, publicUrl } from "../lib/mail.js";
 import type { Request, Response, NextFunction } from "express";
 
 /**
@@ -191,6 +192,37 @@ ratingsModerationRouter.put("/:id", async (req: Request, res: Response, next: Ne
 
     const body = ModerateSchema.parse(req.body);
     const rating = await prisma.rating.update({ where: { id }, data: { comment_status: body.status } });
+
+    // Notify the reviewer, same sendMail/publicUrl pattern every other
+    // transactional email in this codebase already uses. Only on a real
+    // transition — re-approving an already-approved comment (a double
+    // click, or two admins racing on the same queue row) shouldn't re-send.
+    // sendMail never throws (it logs and returns false on failure), so this
+    // never risks the moderation decision itself, same guarantee every
+    // other sendMail call site in this file relies on.
+    if (existing.comment_status !== body.status) {
+      const [user, content] = await Promise.all([
+        prisma.user.findUnique({ where: { id: existing.user_id }, select: { email: true } }),
+        prisma.contentItem.findUnique({ where: { id: existing.content_id }, select: { title: true, slug: true } }),
+      ]);
+      if (user?.email && content) {
+        const approved = body.status === "approved";
+        await sendMail({
+          to: user.email,
+          subject: approved
+            ? `Your review of ${content.title} is now live`
+            : `Your review of ${content.title} wasn't approved`,
+          lines: approved
+            ? [`The comment on your rating of ${content.title} has been approved and is now visible to other viewers.`]
+            : [
+                `The comment on your rating of ${content.title} wasn't approved for public display.`,
+                "Your star rating itself is unaffected and still counts toward the item's average.",
+              ],
+          action: approved ? { label: "View it", url: publicUrl(`/watch/${content.slug}`) } : undefined,
+        });
+      }
+    }
+
     res.json({ rating });
   } catch (err) {
     if (err instanceof z.ZodError) return next(new ApiError(422, err.errors[0]?.message ?? "Validation error"));
