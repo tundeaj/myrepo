@@ -47,6 +47,23 @@ function section(title: string) {
 }
 
 /**
+ * Polls a locator's count instead of a single fixed `waitForTimeout` before
+ * checking it — a CI runner under load can take longer than a local sandbox
+ * for a click → POST → re-render round trip, and a flat timeout has no way
+ * to tell "still in flight" apart from "genuinely never rendered." Returns
+ * as soon as the count is reached, so this costs nothing on the common case.
+ */
+async function waitForCount(locator: ReturnType<Page["locator"]>, min = 1, timeoutMs = 5000): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  let count = await locator.count();
+  while (count < min && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 150));
+    count = await locator.count();
+  }
+  return count;
+}
+
+/**
  * The assertion that would have caught the gradient bug.
  *
  * Asks the browser what element is actually at the centre of this one. If the
@@ -464,9 +481,8 @@ async function run(browser: Browser) {
     const headlineInput = page.locator('input[placeholder*="20% off"]');
     await headlineInput.fill(promoHeadline);
     await page.getByRole("button", { name: "Create promotion" }).click();
-    await page.waitForTimeout(600);
 
-    const hasPromoRow = await page.locator(`text=${promoHeadline}`).count();
+    const hasPromoRow = await waitForCount(page.locator(`text=${promoHeadline}`));
     check("creating a promotion through the real admin form succeeds and renders", hasPromoRow > 0, { hasPromoRow });
     check("/admin/promotions throws no uncaught render error", pageErrors.length === beforePromoErrors, pageErrors.slice(beforePromoErrors));
 
