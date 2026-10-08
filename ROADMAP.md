@@ -1,6 +1,6 @@
 # Webinarflix — Roadmap & TODO
 
-Status snapshot as of this document: **740 assertions across 8 suites, all green** (547 e2e + 35 mail + 6 checkout-webhook + 12 payouts-webhook + 8 stripe-webhook + 132 browser), CI passing on every push to PR #1. This file tracks what's built, what's left, and the order the remaining work is planned in. It's updated at the end of each round that closes or adds a gap — treat it as the living source of truth over any single PR description.
+Status snapshot as of this document: **766 assertions across 8 suites, all green** (565 e2e + 35 mail + 6 checkout-webhook + 12 payouts-webhook + 8 stripe-webhook + 140 browser), CI passing on every push to PR #1. This file tracks what's built, what's left, and the order the remaining work is planned in. It's updated at the end of each round that closes or adds a gap — treat it as the living source of truth over any single PR description.
 
 ---
 
@@ -24,7 +24,7 @@ Signed short-lived playback URLs with concurrency limits, chapters/subtitles, Go
 Earnings accrual, payouts admin workflow, the payouts transfer webhook, subscription revenue accrual (manual admin-run, explicitly a stated simplification — see §3).
 
 **Content operations**
-Ratings (viewer submission + aggregate recompute) with comment moderation — reviewer email notifications, bulk approve/reject, and an admin-authored French translation field — FAQs (admin CRUD + public read path, with real per-user helpful-vote dedup for signed-in viewers), Contact Requests (public form + admin inbox, with a real teammate picker for assignment), Categories, Sponsors/Advertisers/Ads, content-sponsor linking with public display across all three placements — session_page ("Sponsored by" on the detail page), player (video overlay badge), and hero (homepage carousel badge) — and Promotions (site-wide promo banners on the public homepage).
+Ratings (viewer submission + aggregate recompute) with comment moderation — reviewer email notifications, bulk approve/reject, and an admin-authored French translation field — FAQs (admin CRUD + public read path, with real per-user helpful-vote dedup for signed-in viewers), Contact Requests (public form + admin inbox, with a real teammate picker for assignment), Categories, Sponsors/Advertisers/Ads, content-sponsor linking with public display across all three placements — session_page ("Sponsored by" on the detail page), player (video overlay badge), and hero (homepage carousel badge) — Promotions (site-wide promo banners on the public homepage), and Pages (simple static pages — About/Terms/Privacy/landing pages — at `/p/:slug`, one editor backing both the Pages and Landing Pages nav entries).
 
 **Admin management**
 Users (list/detail/role management, with self-demotion and last-admin guards), Registrations (list/filter/status), Speakers (full CRUD).
@@ -48,11 +48,11 @@ Phases are ordered by what unblocks fastest with the least new infrastructure. E
 - [x] **No bulk moderation actions** — `routes/ratings.ts`'s new `POST /ratings-moderation/bulk` shares its actual write (`moderateOne`) with the single-item route, so the two can never drift apart; one bad id in a batch degrades only itself, never the rest. `RatingComments.tsx` gets a per-row checkbox, a "Select all," and an "Approve N"/"Reject N" bar.
 - [x] **No French-language review display** — re-scoped after investigating: the original framing assumed every other `_fr` field was already visible to French-speaking visitors and ratings was the one outlier missing a column. It isn't — confirmed `publicI18n.tsx` hardcodes `language` to `"en"` with no switcher anywhere on the public site, for any content type. Checked with the user before building; shipped the narrow piece — `Rating.comment_fr` + a moderation-queue textarea, exactly matching every other `_fr` field's existing shape — and recorded the real, larger gap below instead of quietly assuming a display mechanism that doesn't exist.
 
-### Phase C — `PlaceholderPage` routes still unbuilt (8 remaining)
+### Phase C — `PlaceholderPage` routes still unbuilt (6 remaining)
 Each is its own scoped project (schema check → routes → admin UI → e2e/browser), same shape as every closed gap above. Suggested order, easiest first:
 - [x] **Promotions** — re-scoped first, same as the French-review item: the placeholder note just said "a future CMS prompt" with zero schema, genuinely undefined unlike every prior gap. Checked with the user, built as site-wide promo banners — new `Promotion` model, `routes/promotions.ts` admin CRUD, `homepageCache.ts`'s `buildActivePromotion()` (highest-priority, in-window promotion, "home" surface only), `pages/promotions/Promotions.tsx`, and `public/components/PromoBanner.tsx` on the public homepage.
-- [ ] Pages / Landing Pages (two related, likely worth doing together) *— up next.*
-- [ ] Bulk Import
+- [x] **Pages / Landing Pages** — also undefined (same "future CMS prompt" note). Checked with the user: simple static pages only (title + rich HTML body + SEO fields + published toggle), not a block builder, and one model/editor backs both nav entries. New `Page` model, `routes/pages.ts` (admin CRUD + `publicPagesRouter` at `/api/public-pages/:slug`), `pages/pages/Pages.tsx` mounted at both `/admin/pages` and `/admin/landing-pages`, and `public/StaticPage.tsx` at `/p/:slug`.
+- [ ] Bulk Import *— up next.*
 - [ ] Community × 2
 - [ ] Subscriptions & Orders (overlaps existing Payouts/Invoices — needs a scoping pass to avoid duplicating what those already cover)
 - [ ] Player / PPV Analytics (needs a decision on what's actually measurable from `PlaybackSession` today vs. what would need new instrumentation)
