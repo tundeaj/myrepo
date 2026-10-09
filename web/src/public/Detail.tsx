@@ -14,6 +14,7 @@ import { usePublicT, localized } from "./lib/publicI18n";
 import { api, getToken } from "../lib/api";
 import { Row } from "./components/Row";
 import { formatCountdown, formatRuntime, type ContentCard } from "./lib/types";
+import { useHeadTags, type HeadTags } from "../lib/seo";
 
 // ─── Payload ──────────────────────────────────────────────────────────────────
 
@@ -46,7 +47,7 @@ interface Module {
   lessons: Lesson[];
 }
 
-interface DetailPayload extends PublicBootstrap {
+export interface DetailPayload extends PublicBootstrap {
   content: {
     id: number;
     slug: string;
@@ -97,34 +98,25 @@ interface DetailPayload extends PublicBootstrap {
 
 // ─── Document head ────────────────────────────────────────────────────────────
 //
-// Set at runtime. Google executes JS and will read these; most social-preview
-// crawlers do not, so shared links render blank until the public site gets
-// prerendering or SSR. Recorded as a known limitation in the Prompt 11 brief —
-// it is a launch decision, not something this page can fix.
+// Exported so ssrRoutes.ts can compute the identical tags server-side, before
+// any component renders — the SSR round (Phase D) closed the "crawlers see a
+// blank shell" gap this used to document; `origin` is only needed for the
+// canonical/og:url fallback, so a plain client render can pass "".
+
+export function detailHeadTags(payload: DetailPayload, origin: string): HeadTags {
+  const { content, settings } = payload;
+  const platform = settings["brand.platform_name"] ?? "Webinarflix";
+  return {
+    title: `${content.seo_title || content.title} · ${platform}`,
+    description: content.seo_meta_description || content.short_description || undefined,
+    canonical: content.seo_canonical_url || (origin ? `${origin}/watch/${content.slug}` : undefined),
+    image: buildImageUrl(content.master_image_url, 1200) ?? undefined,
+  };
+}
 
 function useDocumentHead(payload: DetailPayload | null) {
-  useEffect(() => {
-    if (!payload) return;
-    const { content, settings } = payload;
-    const platform = settings["brand.platform_name"] ?? "Webinarflix";
-    const previousTitle = document.title;
-    document.title = `${content.seo_title || content.title} · ${platform}`;
-
-    const meta = document.querySelector('meta[name="description"]') ?? (() => {
-      const el = document.createElement("meta");
-      el.setAttribute("name", "description");
-      document.head.appendChild(el);
-      return el;
-    })();
-    const previousDescription = meta.getAttribute("content");
-    meta.setAttribute("content", content.seo_meta_description || content.short_description || "");
-
-    return () => {
-      document.title = previousTitle;
-      if (previousDescription === null) meta.removeAttribute("content");
-      else meta.setAttribute("content", previousDescription);
-    };
-  }, [payload]);
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  useHeadTags(useMemo(() => (payload ? detailHeadTags(payload, origin) : null), [payload, origin]));
 }
 
 // ─── Pieces ───────────────────────────────────────────────────────────────────

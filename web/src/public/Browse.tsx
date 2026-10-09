@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useParams, Link, useSearchParams } from "react-router-dom";
 import { buildImageUrl } from "./lib/images";
 import {
@@ -9,6 +10,7 @@ import {
 } from "./lib/publicPage";
 import { Card } from "./components/Card";
 import type { ContentCard } from "./lib/types";
+import { useHeadTags, type HeadTags } from "../lib/seo";
 
 interface Category {
   id: number;
@@ -18,11 +20,11 @@ interface Category {
   image_url: string | null;
 }
 
-interface CategoryIndexPayload extends PublicBootstrap {
+export interface CategoryIndexPayload extends PublicBootstrap {
   categories: Category[];
 }
 
-interface CategoryPayload extends PublicBootstrap {
+export interface CategoryPayload extends PublicBootstrap {
   category: Category;
   items: ContentCard[];
   page: number;
@@ -31,12 +33,23 @@ interface CategoryPayload extends PublicBootstrap {
 
 const PER_PAGE = 24;
 
+export const BROWSE_INDEX_API_URL = "/api/public-categories";
+
+export function browseIndexHeadTags(payload: CategoryIndexPayload): HeadTags {
+  const platform = payload.settings["brand.platform_name"] || "Webinarflix";
+  return {
+    title: `Browse — ${platform}`,
+    description: `Every category of live webinars and courses on ${platform}.`,
+  };
+}
+
 /** /browse — every category as a tile. The destination for a homepage tile row
  *  when the row itself has no category slug to point at. */
 export function BrowseIndex() {
   const { data, error, loading, retry } = usePublicData<CategoryIndexPayload>(
-    "/api/public-categories",
+    BROWSE_INDEX_API_URL,
   );
+  useHeadTags(useMemo(() => (data ? browseIndexHeadTags(data) : null), [data]));
 
   if (loading) return <PublicPageSkeleton />;
   if (error || !data) return <PublicError kind={error ?? "failed"} onRetry={retry} />;
@@ -76,6 +89,18 @@ export function BrowseIndex() {
   );
 }
 
+export function browseCategoryApiUrl(slug: string, page: number): string {
+  return `/api/public-categories/${encodeURIComponent(slug)}?page=${page}`;
+}
+
+export function browseCategoryHeadTags(payload: CategoryPayload): HeadTags {
+  const platform = payload.settings["brand.platform_name"] || "Webinarflix";
+  return {
+    title: `${payload.category.name} — ${platform}`,
+    description: payload.category.description || `${payload.category.name} on ${platform}.`,
+  };
+}
+
 /** /browse/:slug — one category, paginated. */
 export function BrowseCategory() {
   const { slug = "" } = useParams();
@@ -83,8 +108,9 @@ export function BrowseCategory() {
   const page = Math.max(1, Number(params.get("page")) || 1);
 
   const { data, error, loading, retry } = usePublicData<CategoryPayload>(
-    `/api/public-categories/${encodeURIComponent(slug)}?page=${page}`,
+    browseCategoryApiUrl(slug, page),
   );
+  useHeadTags(useMemo(() => (data ? browseCategoryHeadTags(data) : null), [data]));
 
   if (loading) return <PublicPageSkeleton />;
   if (error || !data) return <PublicError kind={error ?? "failed"} onRetry={retry} />;

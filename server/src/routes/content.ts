@@ -442,19 +442,28 @@ publicCategoriesRouter.get("/:slug", async (req: Request, res: Response, next: N
     const page = Math.max(1, Number(req.query.page) || 1);
     const perPage = 24;
 
-    const contentIds = (
-      await prisma.contentCategory.findMany({
+    const [contentIdRows, settings, strings] = await Promise.all([
+      prisma.contentCategory.findMany({
         where: { category_id: category.id },
         select: { content_id: true },
-      })
-    ).map((c) => c.content_id);
+      }),
+      publicSettings(),
+      publicStrings(),
+    ]);
+    const contentIds = contentIdRows.map((c) => c.content_id);
 
+    const { is_active: _active, ...safeCategory } = category;
+
+    // Every response shape below carries settings/strings — PublicBootstrap,
+    // same as every other public-* endpoint — so the client's bootstrap
+    // (ImageKit config, i18n strings) is never missing just because a
+    // category happens to have nothing published in it yet.
     if (!contentIds.length) {
-      return res.json({ category, items: [], page, total: 0 });
+      return res.json({ category: safeCategory, items: [], page, total: 0, settings, strings });
     }
 
     const where = { ...visible, id: { in: contentIds } };
-    const [total, raw, settings, strings] = await Promise.all([
+    const [total, raw] = await Promise.all([
       prisma.contentItem.count({ where }),
       prisma.contentItem.findMany({
         where,
@@ -463,11 +472,8 @@ publicCategoriesRouter.get("/:slug", async (req: Request, res: Response, next: N
         take: perPage,
         select: CARD_SELECT,
       }),
-      publicSettings(),
-      publicStrings(),
     ]);
 
-    const { is_active: _active, ...safeCategory } = category;
     res.setHeader("Cache-Control", "public, max-age=120");
     res.json({
       category: safeCategory,

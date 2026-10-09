@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useParams } from "react-router-dom";
 import {
   usePublicData,
@@ -7,6 +8,7 @@ import {
   type PublicBootstrap,
 } from "./lib/publicPage";
 import { usePublicT, localized } from "./lib/publicI18n";
+import { useHeadTags, type HeadTags } from "../lib/seo";
 
 interface Page {
   title: string;
@@ -18,7 +20,7 @@ interface Page {
   seo_meta_description: string | null;
 }
 
-interface PagePayload extends PublicBootstrap {
+export interface PagePayload extends PublicBootstrap {
   page: Page;
 }
 
@@ -43,12 +45,26 @@ function PageBody({ page }: { page: Page }) {
   );
 }
 
+export function staticPageApiUrl(slug: string): string {
+  return `/api/public-pages/${encodeURIComponent(slug)}`;
+}
+
+export function staticPageHeadTags(payload: PagePayload): HeadTags {
+  const platform = payload.settings["brand.platform_name"] || "Webinarflix";
+  const { page } = payload;
+  return {
+    title: `${page.seo_title || page.title} — ${platform}`,
+    description: page.seo_meta_description || undefined,
+  };
+}
+
 /** /p/:slug — a static page (About, Terms, Privacy, or a one-off marketing
  *  landing page). An unpublished or nonexistent slug both 404 identically
  *  server-side — see routes/pages.ts. */
 export function StaticPage() {
   const { slug = "" } = useParams();
-  const { data, error, loading, retry } = usePublicData<PagePayload>(`/api/public-pages/${encodeURIComponent(slug)}`);
+  const { data, error, loading, retry } = usePublicData<PagePayload>(staticPageApiUrl(slug));
+  useHeadTags(useMemo(() => (data ? staticPageHeadTags(data) : null), [data]));
 
   if (loading) return <PublicPageSkeleton />;
   if (error || !data) return <PublicError kind={error ?? "failed"} onRetry={retry} />;

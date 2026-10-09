@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { getToken } from "../lib/api";
 import {
   usePublicData,
@@ -8,6 +8,7 @@ import {
   type PublicBootstrap,
 } from "./lib/publicPage";
 import { usePublicT, localized } from "./lib/publicI18n";
+import { useHeadTags, type HeadTags } from "../lib/seo";
 
 interface Faq {
   id: number;
@@ -22,7 +23,7 @@ interface Faq {
   helpful_no: number;
 }
 
-interface FaqsPayload extends PublicBootstrap {
+export interface FaqsPayload extends PublicBootstrap {
   faqs: Faq[];
 }
 
@@ -121,11 +122,22 @@ function FaqRow({ faq }: { faq: Faq }) {
   );
 }
 
+export const FAQS_API_URL = "/api/public-faqs";
+
+export function faqsHeadTags(payload: FaqsPayload): HeadTags {
+  const platform = payload.settings["brand.platform_name"] || "Webinarflix";
+  return {
+    title: `Frequently asked questions — ${platform}`,
+    description: `Answers to common questions about ${platform}.`,
+  };
+}
+
 /** /faqs — every published global FAQ, grouped by category (uncategorised
  *  ones fall under "General"). Content-scoped FAQs don't appear here — see
  *  the FAQ section on the content detail page instead. */
 export function Faqs() {
-  const { data, error, loading, retry } = usePublicData<FaqsPayload>("/api/public-faqs");
+  const { data, error, loading, retry } = usePublicData<FaqsPayload>(FAQS_API_URL);
+  useHeadTags(useMemo(() => (data ? faqsHeadTags(data) : null), [data]));
 
   if (loading) return <PublicPageSkeleton />;
   if (error || !data) return <PublicError kind={error ?? "failed"} onRetry={retry} />;

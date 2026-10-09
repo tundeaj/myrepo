@@ -1913,6 +1913,65 @@ async function run(browser: Browser) {
     if (hbSponsorId) await fetch(`${API_BASE}/api/sponsors/${hbSponsorId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
   }
 
+  // ─── SSR — raw HTML, before any JS runs ────────────────────────────────────
+  // Everything above drives a real browser, which executes JS regardless of
+  // whether the page was server- or client-rendered — it can't tell the two
+  // apart. These checks use a plain fetch instead, the same as a crawler
+  // that never runs JS at all, and read the response body as text: the only
+  // way to prove the server itself put real content there, not Playwright
+  // waiting for the client to paint it in afterwards.
+  section("SSR — raw HTML before any JS runs");
+
+  if (adminToken) {
+    const ssrSession = await fetch(`${API_BASE}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({
+        title: `Browser check SSR fixture ${Date.now()}`,
+        access_level: "public",
+        status: "registration_open",
+        short_description: "A fixture session created only to verify server-rendered HTML.",
+        scheduled_start_at: new Date(Date.now() + 86400000).toISOString(),
+        scheduled_duration_minutes: 45,
+      }),
+    }).then((r) => r.json());
+    const ssrSessionId = ssrSession?.session?.id as number | undefined;
+    const ssrSlug = ssrSession?.session?.slug as string | undefined;
+    check("a fixture session is created for the SSR check", typeof ssrSessionId === "number" && typeof ssrSlug === "string", ssrSession);
+
+    if (ssrSlug) {
+      const raw = await fetch(`${BASE}/watch/${ssrSlug}`).then((r) => r.text());
+      check("the raw response contains the fixture's real title, not a loading shell",
+        raw.includes(`Browser check SSR fixture`), raw.slice(0, 300));
+      check("the raw response's <title> is the fixture's title, not the generic default",
+        /<title>[^<]*Browser check SSR fixture/.test(raw), raw.match(/<title>[^<]*<\/title>/)?.[0]);
+      check("the raw response carries an og:description meta tag",
+        raw.includes('property="og:description"'), raw.includes('property="og:description"'));
+      check("the raw response seeds window.__SSR_DATA__ for hydration to reuse",
+        raw.includes("window.__SSR_DATA__"), raw.includes("window.__SSR_DATA__"));
+    }
+
+    // A non-whitelisted route (see ssrRoutes.ts) must still be the plain,
+    // generic shell — SSR is deliberately scoped to public/SEO pages only.
+    const adminRaw = await fetch(`${BASE}/admin`).then((r) => r.text());
+    check("a non-whitelisted route (/admin) gets the plain shell, not SSR'd content",
+      !adminRaw.includes("Browser check SSR fixture") && /<title>Webinarflix<\/title>/.test(adminRaw),
+      adminRaw.match(/<title>[^<]*<\/title>/)?.[0]);
+
+    // A real, seeded detail page's title is distinctive per-item — not every
+    // page quietly sharing the one static fallback title.
+    const faqRaw = await fetch(`${BASE}/faqs`).then((r) => r.text());
+    check("a different SSR'd route gets its own distinct <title>, not the fixture's",
+      /<title>Frequently asked questions/.test(faqRaw), faqRaw.match(/<title>[^<]*<\/title>/)?.[0]);
+
+    // A nonexistent slug must 404 at the HTTP level, not just show an error
+    // in the rendered DOM — the status code is the signal a crawler acts on.
+    const missingStatus = await fetch(`${BASE}/watch/does-not-exist-${Date.now()}`).then((r) => r.status);
+    check("a nonexistent content slug's SSR response is a real 404, not 200", missingStatus === 404, missingStatus);
+
+    if (ssrSessionId) await fetch(`${API_BASE}/api/sessions/${ssrSessionId}`, { method: "DELETE", headers: { Authorization: `Bearer ${adminToken}` } });
+  }
+
   check("no uncaught page errors across the run", pageErrors.length === 0, pageErrors);
 
   await page.close();

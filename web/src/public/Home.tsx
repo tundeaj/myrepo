@@ -7,6 +7,24 @@ import { PromoBanner } from "./components/PromoBanner";
 import { Hero, HeroSkeleton } from "./components/Hero";
 import { LazyRow } from "./components/Row";
 import type { HomepagePayload, PersonalRowsPayload, LiveRowsPayload, HomepageRow, ContentCard } from "./lib/types";
+import { useSsrMatch } from "../lib/ssrData";
+import { useHeadTags, type HeadTags } from "../lib/seo";
+
+/** Exported so ssrRoutes.ts can build the exact same tags server-side before
+ *  any component renders — the request-time home head stays a one-liner. */
+export function homeHeadTags(payload: HomepagePayload): HeadTags {
+  const platform = payload.settings["brand.platform_name"] || "Webinarflix";
+  return {
+    title: `${platform} — Live webinars & on-demand courses`,
+    description:
+      payload.settings["brand.tagline"] ||
+      `Join live sessions and courses on ${platform}.`,
+  };
+}
+
+/** The exact Stage 1 URL — kept in one place so the SSR loader and this
+ *  component can never drift onto different query strings. */
+export const HOME_API_URL = "/api/homepage?surface=home&platform=web&audience=logged_out";
 
 // ─── Three-stage load ─────────────────────────────────────────────────────────
 //
@@ -50,6 +68,7 @@ async function fetchJson<T>(url: string, withAuth = false): Promise<T> {
 
 function HomeInner({ payload, onRetry }: { payload: HomepagePayload; onRetry: () => void }) {
   const { t } = usePublicT();
+  useHeadTags(useMemo(() => homeHeadTags(payload), [payload]));
   const [personal, setPersonal] = useState<PersonalRowsPayload["rows"] | null>(null);
   const [personalDone, setPersonalDone] = useState(false);
   const [liveRows, setLiveRows] = useState<LiveRowsPayload["rows"] | null>(null);
@@ -150,12 +169,18 @@ function HomeInner({ payload, onRetry }: { payload: HomepagePayload; onRetry: ()
 }
 
 export function Home() {
-  const [payload, setPayload] = useState<HomepagePayload | null>(null);
+  // SSR prefetches this exact URL for a desktop/logged-out visitor (see
+  // ssrRoutes.ts) — reuse it when it matches rather than re-fetching on
+  // hydration. A mobile or signed-in visitor's real URL differs, so this
+  // naturally falls through to a normal client fetch for them instead.
+  const ssrPayload = useSsrMatch<HomepagePayload>(HOME_API_URL);
+  const [payload, setPayload] = useState<HomepagePayload | null>(ssrPayload);
   const [error, setError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
 
   // ── STAGE 1 ────────────────────────────────────────────────────────────────
   useEffect(() => {
+    if (ssrPayload && nonce === 0) return; // already have it — skip the redundant round trip
     let cancelled = false;
     const plat = platform();
     const aud = audience();
@@ -172,6 +197,13 @@ export function Home() {
 
     return () => { cancelled = true; };
   }, [nonce]);
+
+  // Mirrors the `.then()` branch above for the one render where that branch
+  // was skipped because SSR already supplied the payload.
+  useEffect(() => {
+    if (ssrPayload) configureImages(ssrPayload.settings?.["integrations.imagekit_url_endpoint"] ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (error && !payload) {
     return (

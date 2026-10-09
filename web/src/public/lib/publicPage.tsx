@@ -3,6 +3,7 @@ import { getToken } from "../../lib/api";
 import { configureImages } from "./images";
 import { PublicI18nProvider } from "./publicI18n";
 import { PublicNav } from "../components/PublicNav";
+import { useSsrMatch } from "../../lib/ssrData";
 
 /**
  * Shared shell for the public pages that aren't the homepage.
@@ -56,9 +57,14 @@ export async function postPublic<T>(url: string, body: unknown): Promise<T> {
 }
 
 export function usePublicData<T extends PublicBootstrap>(url: string) {
-  const [data, setData] = useState<T | null>(null);
+  // SSR already fetched this exact URL before the first render (see
+  // ssrRoutes.ts) — seed state from it directly and skip the redundant
+  // client-side round trip on hydration. A different URL (e.g. the next
+  // page of a paginated category) just finds no match and fetches normally.
+  const ssrPayload = useSsrMatch<T>(url);
+  const [data, setData] = useState<T | null>(ssrPayload);
   const [error, setError] = useState<"notfound" | "failed" | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!ssrPayload);
 
   const load = useCallback(() => {
     let cancelled = false;
@@ -83,7 +89,14 @@ export function usePublicData<T extends PublicBootstrap>(url: string) {
     };
   }, [url]);
 
-  useEffect(() => load(), [load]);
+  useEffect(() => {
+    // Only the very first render can have SSR data for this exact URL — once
+    // consumed into `data`'s initial state above, any later effect run (url
+    // changed, or a real retry) must hit the network like normal.
+    if (ssrPayload && data === ssrPayload) return;
+    return load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [load]);
 
   return { data, error, loading, retry: load };
 }

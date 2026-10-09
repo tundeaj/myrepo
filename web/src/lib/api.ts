@@ -1,10 +1,17 @@
 const TOKEN_KEY = "webinarflix_token";
 
+// SSR (entry-server.tsx) renders this same module tree with no `window` at
+// all — every public page that calls getToken() (directly, or indirectly via
+// api()/fetchPublic()) must get a clean "signed out" rather than a crash. A
+// server render is always anonymous anyway: it never carries a visitor's
+// token to begin with.
 export function getToken(): string | null {
+  if (typeof window === "undefined") return null;
   return localStorage.getItem(TOKEN_KEY);
 }
 
 export function setToken(token: string | null) {
+  if (typeof window === "undefined") return;
   if (token) localStorage.setItem(TOKEN_KEY, token);
   else localStorage.removeItem(TOKEN_KEY);
 }

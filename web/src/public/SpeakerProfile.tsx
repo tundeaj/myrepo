@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useParams } from "react-router-dom";
 import { buildImageUrl, focalPosition } from "./lib/images";
 import {
@@ -9,8 +10,9 @@ import {
 } from "./lib/publicPage";
 import { Card } from "./components/Card";
 import type { ContentCard } from "./lib/types";
+import { useHeadTags, type HeadTags } from "../lib/seo";
 
-interface SpeakerPayload extends PublicBootstrap {
+export interface SpeakerPayload extends PublicBootstrap {
   speaker: {
     id: number;
     slug: string;
@@ -26,11 +28,26 @@ interface SpeakerPayload extends PublicBootstrap {
   items: ContentCard[];
 }
 
+export function speakerApiUrl(slug: string): string {
+  return `/api/public-speakers/${encodeURIComponent(slug)}`;
+}
+
+export function speakerHeadTags(payload: SpeakerPayload): HeadTags {
+  const platform = payload.settings["brand.platform_name"] || "Webinarflix";
+  const { speaker } = payload;
+  return {
+    title: `${speaker.full_name} — ${platform}`,
+    description: speaker.bio
+      ? speaker.bio.slice(0, 200)
+      : [speaker.title, speaker.organisation].filter(Boolean).join(" · ") || undefined,
+    image: buildImageUrl(speaker.master_image_url, 320) ?? undefined,
+  };
+}
+
 export function SpeakerProfile() {
   const { slug = "" } = useParams();
-  const { data, error, loading, retry } = usePublicData<SpeakerPayload>(
-    `/api/public-speakers/${encodeURIComponent(slug)}`,
-  );
+  const { data, error, loading, retry } = usePublicData<SpeakerPayload>(speakerApiUrl(slug));
+  useHeadTags(useMemo(() => (data ? speakerHeadTags(data) : null), [data]));
 
   if (loading) return <PublicPageSkeleton />;
   if (error || !data) return <PublicError kind={error ?? "failed"} onRetry={retry} />;

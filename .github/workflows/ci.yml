@@ -136,9 +136,13 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
 
+      # web/server.ts (not bare `vite`) since the SSR round — it's the
+      # process that actually serves the app now, in dev and prod alike (see
+      # ROADMAP.md's SSR entry). It still proxies /api exactly like vite's
+      # own dev server did, so this step's env is unchanged.
       - name: Start web dev server
         working-directory: web
-        run: nohup npx vite --host 127.0.0.1 --port 5173 > vite.log 2>&1 &
+        run: nohup npx tsx server.ts > vite.log 2>&1 &
 
       - name: Wait for web dev server
         run: |
@@ -152,9 +156,14 @@ jobs:
         working-directory: web
         run: npx tsx scripts/browser.ts
 
-      - name: Web production build
+      # Both halves of the SSR build — the client bundle AND the server
+      # bundle web/server.ts loads in production — so a break in either one
+      # fails CI, not just a silent gap discovered at deploy time.
+      - name: Web production build (client + SSR server bundles)
         working-directory: web
-        run: npx vite build
+        run: |
+          npx vite build --outDir dist/client
+          npx vite build --outDir dist/server --ssr src/entry-server.tsx
 
       - name: Upload server/vite logs on failure
         if: failure()

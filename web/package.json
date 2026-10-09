@@ -4,13 +4,14 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
-    "preview": "vite preview",
+    "dev": "tsx server.ts",
+    "build": "tsc -b && vite build --outDir dist/client && vite build --outDir dist/server --ssr src/entry-server.tsx",
+    "start": "NODE_ENV=production tsx server.ts",
     "lint": "tsc --noEmit",
     "test:browser": "tsx scripts/browser.ts"
   },
   "dependencies": {
+    "express": "^4.21.0",
     "hls.js": "^1.7.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -18,6 +19,7 @@
     "recharts": "^2.12.7"
   },
   "devDependencies": {
+    "@types/express": "^4.17.21",
     "@types/react": "^18.3.5",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
