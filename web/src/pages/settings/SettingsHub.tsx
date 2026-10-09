@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api } from "../../lib/api";
+import { useAuth } from "../../lib/AuthContext";
 import { useToast } from "../../components/Toast";
 import { ErrorState } from "../../components/ErrorState";
 import { Skeleton } from "../../components/Skeleton";
@@ -286,10 +287,17 @@ const GROUP_META = [
   { key: "notifications", label: "Notifications & Email" },
   { key: "integrations", label: "Integrations" },
   { key: "instructor", label: "Instructor & Partner" },
+  // Mirrors settingsSchema.ts's superAdminOnly flag — the server already
+  // leaves this group out of GET /settings entirely for anyone else, so
+  // hiding the nav entry too is purely about not showing a dead link, not
+  // the actual access control.
+  { key: "discovery", label: "Discovery", superAdminOnly: true },
 ];
 
 export function SettingsHub() {
   const { toast } = useToast();
+  const { user } = useAuth();
+  const visibleGroupMeta = GROUP_META.filter((g) => !g.superAdminOnly || user?.role === "super_admin");
   const [searchParams, setSearchParams] = useSearchParams();
   const activeGroup = searchParams.get("group") || "brand";
 
@@ -362,7 +370,7 @@ export function SettingsHub() {
     setSaving(true);
     try {
       await api(`/settings/${activeGroup}`, { method: "PUT", body: JSON.stringify({ values }) });
-      toast(`${GROUP_META.find((g) => g.key === activeGroup)?.label ?? "Settings"} saved.`);
+      toast(`${visibleGroupMeta.find((g) => g.key === activeGroup)?.label ?? "Settings"} saved.`);
       setDrafts({});
       setResets(new Set());
       load();
@@ -384,7 +392,7 @@ export function SettingsHub() {
     <div className="flex flex-col gap-5 lg:flex-row">
       {/* Left sub-nav */}
       <nav className="flex flex-shrink-0 gap-1 overflow-x-auto pb-2 lg:w-52 lg:flex-col lg:overflow-visible lg:pb-0">
-        {GROUP_META.map((g) => (
+        {visibleGroupMeta.map((g) => (
           <button
             key={g.key}
             onClick={() => switchGroup(g.key)}

@@ -26,7 +26,7 @@ export interface SettingField {
   max?: number;
 }
 
-export const SETTINGS_GROUPS: { key: string; label: string }[] = [
+export const SETTINGS_GROUPS: { key: string; label: string; superAdminOnly?: boolean }[] = [
   { key: "brand", label: "Brand" },
   { key: "localisation", label: "Localisation" },
   { key: "registration", label: "Registration & Access" },
@@ -36,6 +36,10 @@ export const SETTINGS_GROUPS: { key: string; label: string }[] = [
   { key: "notifications", label: "Notifications & Email" },
   { key: "integrations", label: "Integrations" },
   { key: "instructor", label: "Instructor & Partner" },
+  // Platform-wide, not easily spotted by glancing at a page — only a Super
+  // Admin can even see this group exists (routes/settings.ts enforces it;
+  // this flag is what it checks). Every other group above is plain-admin.
+  { key: "discovery", label: "Discovery", superAdminOnly: true },
 ];
 
 const LANGUAGE_OPTIONS = [
@@ -179,6 +183,19 @@ export const SETTINGS_FIELDS: Record<string, SettingField[]> = {
     { key: "instructor.applications_open", label: "Applications open", helper: "Accept new instructor applications from the public /teach page.", control: "toggle", default: "true" },
     { key: "instructor.default_commission_pct", label: "Default commission %", helper: "Applied to newly approved instructors unless adjusted individually.", control: "number", default: "30", min: 0, max: 100 },
     { key: "instructor.auto_approve_default", label: "Auto-approve content by default", helper: "New instructors can publish directly without review, unless changed individually.", control: "toggle", default: "false" },
+  ],
+  discovery: [
+    {
+      key: "discovery.hero_ranking_mode",
+      label: "Homepage hero ranking",
+      helper: "Business-curated keeps the hero carousel exactly as the Trending page orders it by hand. Algorithm-driven replaces that order with a live ranking by real recent watch activity (the same signal Trending's own \"recently popular\" suggestions already use) — closer to Netflix's own approach, but no longer this platform's deliberate default. The curated list itself is never discarded; switching back restores it exactly as left.",
+      control: "select",
+      default: "curated",
+      options: [
+        { value: "curated", label: "Business-curated (admin-ordered, via the Trending page)" },
+        { value: "algorithmic", label: "Algorithm-driven (ranked by real recent watch activity)" },
+      ],
+    },
   ],
 };
 

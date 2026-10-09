@@ -2,8 +2,9 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { ApiError } from "../lib/errors.js";
-import { rebuildAllCaches, VISIBLE_STATUSES } from "../lib/homepageCache.js";
+import { rebuildAllCaches, VISIBLE_STATUSES, heroRankingMode } from "../lib/homepageCache.js";
 import { syncHeroTrending } from "../lib/trending.js";
+import { recentActivityRanking } from "../lib/activity.js";
 import type { Request, Response, NextFunction } from "express";
 
 /**
@@ -37,6 +38,15 @@ import type { Request, Response, NextFunction } from "express";
  * ranked nudge toward what's recently popular but not yet on the list, not
  * a second way to BE on the list — adding a suggestion goes through the
  * exact same POST / as the search box.
+ *
+ * This manual ordering is the DEFAULT, not the only mode: a Super-Admin-only
+ * Settings field (discovery.hero_ranking_mode — see settingsSchema.ts) can
+ * switch the public hero to rank by the same real-activity signal
+ * suggestions already uses, instead of this list. GET / still always
+ * returns this admin-curated list (and the current mode, for display) even
+ * while algorithmic mode is active — the curated order isn't discarded,
+ * just not the one currently driving the public hero. See
+ * homepageCache.ts's buildHero() for where the two modes actually fork.
  */
 export const trendingRouter = Router();
 
@@ -72,8 +82,8 @@ function refreshHomepageCache() {
 
 trendingRouter.get("/", async (_req: Request, res: Response, next: NextFunction) => {
   try {
-    const items = await orderedTrending();
-    res.json({ items });
+    const [items, hero_ranking_mode] = await Promise.all([orderedTrending(), heroRankingMode()]);
+    res.json({ items, hero_ranking_mode });
   } catch (err) {
     next(err);
   }
@@ -97,37 +107,11 @@ const SUGGEST_LIMIT = 8;
 
 trendingRouter.get("/suggestions", async (_req: Request, res: Response, next: NextFunction) => {
   try {
-    const since = new Date(Date.now() - SUGGEST_WINDOW_DAYS * 86_400_000);
-
-    const [playbackCounts, attendanceCounts, alreadyTrending] = await Promise.all([
-      prisma.playbackSession.groupBy({
-        by: ["content_id"],
-        where: { content_id: { not: null }, started_at: { gte: since } },
-        _count: { _all: true },
-      }),
-      prisma.meetingAttendance.groupBy({
-        by: ["content_id"],
-        where: { joined_at: { gte: since } },
-        _count: { _all: true },
-      }),
-      prisma.contentItem.findMany({ where: { show_in_hero: true }, select: { id: true } }),
-    ]);
-
+    const alreadyTrending = await prisma.contentItem.findMany({ where: { show_in_hero: true }, select: { id: true } });
     const trendingIds = new Set(alreadyTrending.map((r) => r.id));
-    const activity = new Map<number, number>();
-    for (const row of playbackCounts) {
-      if (row.content_id == null || trendingIds.has(row.content_id)) continue;
-      activity.set(row.content_id, (activity.get(row.content_id) ?? 0) + row._count._all);
-    }
-    for (const row of attendanceCounts) {
-      if (trendingIds.has(row.content_id)) continue;
-      activity.set(row.content_id, (activity.get(row.content_id) ?? 0) + row._count._all);
-    }
 
-    const rankedIds = [...activity.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, SUGGEST_LIMIT)
-      .map(([id]) => id);
+    const ranked = await recentActivityRanking({ excludeIds: trendingIds, windowDays: SUGGEST_WINDOW_DAYS });
+    const rankedIds = ranked.slice(0, SUGGEST_LIMIT).map((r) => r.id);
 
     if (!rankedIds.length) return res.json({ suggestions: [], window_days: SUGGEST_WINDOW_DAYS });
 
@@ -139,10 +123,11 @@ trendingRouter.get("/suggestions", async (_req: Request, res: Response, next: Ne
       select: { id: true, title: true, slug: true, content_type: true, status: true, master_image_url: true },
     });
     const byId = new Map(content.map((c) => [c.id, c]));
+    const activityById = new Map(ranked.map((r) => [r.id, r.activity]));
 
     const suggestions = rankedIds
       .filter((id) => byId.has(id))
-      .map((id) => ({ ...byId.get(id)!, recent_activity: activity.get(id)! }));
+      .map((id) => ({ ...byId.get(id)!, recent_activity: activityById.get(id)! }));
 
     res.json({ suggestions, window_days: SUGGEST_WINDOW_DAYS });
   } catch (err) {

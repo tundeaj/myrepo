@@ -1690,6 +1690,101 @@ async function run(browser: Browser) {
     }
   }
 
+  // ─── Discovery — the hero ranking toggle only a Super Admin can see ─────────
+  //
+  // settingsAsSuperAdmin's own account (admin@webinarflix.dev, seeded as
+  // super_admin) is used for every other admin-gated section in this file —
+  // which is exactly why this needs a SEPARATE, genuinely plain "admin"
+  // fixture: every other check here would pass even if the role check were
+  // accidentally requireAdmin instead of requireSuperAdmin, since the seeded
+  // account clears both. Promoted via the real admin endpoint, logged in for
+  // real, not a shortcut.
+  section("Discovery — Super Admin-only hero ranking toggle");
+
+  if (adminToken) {
+    const stamp = Date.now();
+    const plainEmail = `browser-check-plain-admin-${stamp}@example.test`;
+    const plainPassword = "BrowserCheckPlain123!";
+
+    const registered = await fetch(`${API_BASE}/api/auth/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: plainEmail, password: plainPassword, full_name: `Browser Check Plain Admin ${stamp}`, country: "NG" }),
+    }).then((r) => r.json());
+    const plainUserId = registered?.user?.id;
+    check("a fixture viewer account registers for this check", typeof plainUserId === "number", registered);
+
+    if (plainUserId) {
+      const promoted = await fetch(`${API_BASE}/api/users/${plainUserId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ role: "admin" }),
+      });
+      check("a super_admin can promote the fixture to plain admin", promoted.status === 200, await promoted.clone().json().catch(() => null));
+
+      // A fresh login, not the registration token — the role just changed
+      // server-side and a JWT carries role at the moment it was signed.
+      const plainLogin = await fetch(`${API_BASE}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: plainEmail, password: plainPassword }),
+      }).then((r) => r.json());
+      const plainAdminToken = plainLogin?.token as string | undefined;
+      check("the now-admin fixture can log in with a token reflecting the new role", typeof plainAdminToken === "string", plainLogin);
+
+      if (plainAdminToken) {
+        const beforeErrors = pageErrors.length;
+
+        // ── As the plain admin: Settings Hub never lists Discovery ──────────
+        await page.evaluate((token) => localStorage.setItem("webinarflix_token", token), plainAdminToken);
+        await page.goto(`${BASE}/admin/settings`, { waitUntil: "networkidle" });
+        await page.waitForTimeout(500);
+        const discoveryNavAsPlainAdmin = await page.locator('nav button:has-text("Discovery")').count();
+        check("a plain admin's Settings Hub nav has no Discovery entry at all", discoveryNavAsPlainAdmin === 0, { discoveryNavAsPlainAdmin });
+
+        // ── As the plain admin: Trending shows the mode, not a way to change it ─
+        await page.goto(`${BASE}/admin/trending`, { waitUntil: "networkidle" });
+        await page.waitForTimeout(500);
+        const modeTextAsPlainAdmin = await page.locator("text=business-curated").count();
+        check("a plain admin still sees the current hero ranking mode", modeTextAsPlainAdmin > 0, { modeTextAsPlainAdmin });
+        const toggleButtonsAsPlainAdmin = await page.locator('button:has-text("Algorithmic")').count();
+        check("...but gets no control to change it", toggleButtonsAsPlainAdmin === 0, { toggleButtonsAsPlainAdmin });
+        const noticeAsPlainAdmin = await page.locator("text=Only a Super Admin can change this.").count();
+        check("...and is told plainly who can", noticeAsPlainAdmin > 0, { noticeAsPlainAdmin });
+
+        check("no uncaught render error while viewing as a plain admin", pageErrors.length === beforeErrors, pageErrors.slice(beforeErrors));
+
+        // ── Back to the real super_admin: both controls are there ───────────
+        await page.evaluate((token) => localStorage.setItem("webinarflix_token", token), adminToken);
+        await page.goto(`${BASE}/admin/settings`, { waitUntil: "networkidle" });
+        await page.waitForTimeout(500);
+        const discoveryNavAsSuperAdmin = await page.locator('nav button:has-text("Discovery")').count();
+        check("a super_admin's Settings Hub nav DOES list Discovery", discoveryNavAsSuperAdmin > 0, { discoveryNavAsSuperAdmin });
+
+        if (discoveryNavAsSuperAdmin > 0) {
+          await page.locator('nav button:has-text("Discovery")').click();
+          await page.waitForTimeout(400);
+          const hasRankingField = await page.locator("text=Homepage hero ranking").count();
+          check("the Discovery group renders the hero ranking field", hasRankingField > 0, { hasRankingField });
+        }
+
+        await page.goto(`${BASE}/admin/trending`, { waitUntil: "networkidle" });
+        await page.waitForTimeout(500);
+        const toggleButtonsAsSuperAdmin = await page.locator('button:has-text("Algorithmic")').count();
+        check("a super_admin DOES get the inline toggle on the Trending page", toggleButtonsAsSuperAdmin > 0, { toggleButtonsAsSuperAdmin });
+      }
+
+      // Cleanup: no DELETE /api/users/:id exists in this codebase (soft
+      // deactivation only) — leave the fixture deactivated rather than a
+      // live extra admin account.
+      await fetch(`${API_BASE}/api/users/${plainUserId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ is_active: false }),
+      });
+    }
+  }
+
   // ─── Content Sponsors — linking a sponsor to content from the Sponsors page ──
   section("Content Sponsors");
 

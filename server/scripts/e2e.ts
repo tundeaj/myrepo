@@ -44,6 +44,11 @@ import { getSetting, getBoolSetting } from "../src/lib/settingValue.js";
 // counter itself works right.
 import { checkRateLimit } from "../src/lib/rateLimit.js";
 import { NOTIFICATION_EVENT_KEYS } from "../src/constants/notificationEvents.js";
+// Only this section needs a fixture that logs in as a genuinely different
+// role than the seeded super_admin — real bcrypt hash, real /auth/login
+// call, same as every real account, so the 403 it gets back is the actual
+// role check, not a shortcut around it.
+import bcrypt from "bcryptjs";
 
 const API = process.env.API ?? "http://127.0.0.1:4000";
 const prisma = new PrismaClient();
@@ -4050,6 +4055,111 @@ async function main() {
   const suggestAfterAdd = await call("/api/trending/suggestions", { token: adminToken });
   const suggestIdsAfterAdd = (suggestAfterAdd.body.suggestions as { id: number }[]).map((s) => s.id);
   check("D disappears from suggestions the moment it's added to the trending list", !suggestIdsAfterAdd.includes(trendD.id), suggestIdsAfterAdd);
+
+  // ─── Discovery — Super-Admin-only hero ranking mode toggle ─────────────────
+  //
+  // discovery.hero_ranking_mode (settingsSchema.ts) switches the public
+  // homepage hero between this platform's own default — business-curated,
+  // via the Trending list above — and an algorithm-driven ranking by the
+  // exact same real-activity signal suggestions already uses (lib/activity.ts).
+  // Gated behind requireSuperAdmin, stricter than every other settings group:
+  // a plain admin can still see the current mode (GET /trending's own
+  // hero_ranking_mode field) but cannot change it, and the "discovery"
+  // settings group doesn't even appear in their GET /settings response.
+  section("Discovery — Super-Admin-only hero ranking mode");
+
+  const plainAdminPassword = "E2ePlainAdmin123!";
+  const plainAdmin = await prisma.user.create({
+    data: {
+      email: `e2e-plain-admin-${RUN}@example.test`,
+      full_name: `E2E Plain Admin ${RUN}`,
+      role: "admin",
+      is_active: true,
+      email_verified: true,
+      password_hash: await bcrypt.hash(plainAdminPassword, 10),
+    },
+  });
+  created.users.push(plainAdmin.id);
+  const plainAdminLogin = await call("/api/auth/login", { method: "POST", body: { email: plainAdmin.email, password: plainAdminPassword } });
+  check("the plain-admin fixture (role: admin, not super_admin) can log in", plainAdminLogin.status === 200, plainAdminLogin.body);
+  const plainAdminToken = plainAdminLogin.body.token as string;
+
+  const settingsAsPlainAdmin = await call("/api/settings", { token: plainAdminToken });
+  const plainAdminGroupKeys = (settingsAsPlainAdmin.body.groups as { key: string }[] | undefined)?.map((g) => g.key) ?? [];
+  check("a plain admin's settings groups do not include Discovery at all",
+    !plainAdminGroupKeys.includes("discovery"), plainAdminGroupKeys);
+
+  const settingsAsSuperAdmin = await call("/api/settings", { token: adminToken });
+  const discoveryGroup = (settingsAsSuperAdmin.body.groups as { key: string; fields: { key: string; value?: string }[] }[]).find((g) => g.key === "discovery");
+  check("a super_admin's settings groups DO include Discovery", Boolean(discoveryGroup), settingsAsSuperAdmin.body.groups?.map((g: any) => g.key));
+  const modeField = discoveryGroup?.fields.find((f) => f.key === "discovery.hero_ranking_mode");
+  check("the hero ranking mode defaults to curated", modeField?.value === "curated", modeField);
+
+  const plainAdminWrite = await call("/api/settings/discovery", {
+    method: "PUT", token: plainAdminToken,
+    body: { values: { "discovery.hero_ranking_mode": "algorithmic" } },
+  });
+  check("a plain admin cannot change the hero ranking mode", plainAdminWrite.status === 403, plainAdminWrite.body);
+
+  const trendingAsPlainAdmin = await call("/api/trending", { token: plainAdminToken });
+  check("GET /trending still works for a plain admin (requireAdmin, not requireSuperAdmin)", trendingAsPlainAdmin.status === 200, trendingAsPlainAdmin.body);
+  check("...and reports the real current mode (curated) even though they can't change it",
+    trendingAsPlainAdmin.body.hero_ranking_mode === "curated", trendingAsPlainAdmin.body);
+
+  const anonSettings = await call("/api/settings");
+  check("an anonymous request cannot read settings at all", anonSettings.status === 401, anonSettings.body);
+
+  // ─── The mode switch actually changes what the public hero plays ──────────
+  //
+  // Never added to the curated (show_in_hero) list at all — the point is to
+  // prove algorithmic mode picks this up from real activity alone, not
+  // because it was ever manually curated.
+  const discoveryAlgo = await makeContent("public", { slug: `e2e-discovery-algo-${RUN}`, title: `E2E Discovery Algo ${RUN}` });
+  for (let i = 0; i < 30; i++) {
+    const s = await prisma.playbackSession.create({ data: { content_id: discoveryAlgo.id, started_at: new Date() } });
+    created.playbackSessions.push(s.id);
+  }
+
+  const heroBaseline = await call("/api/homepage?surface=home&platform=web&audience=logged_out");
+  const heroIdsBaseline = (heroBaseline.body.hero ?? []).map((c: { id: number }) => c.id);
+  check("before switching modes, the activity-only fixture is not in the (curated) hero",
+    !heroIdsBaseline.includes(discoveryAlgo.id), heroIdsBaseline);
+
+  const switchToAlgorithmic = await call("/api/settings/discovery", {
+    method: "PUT", token: adminToken,
+    body: { values: { "discovery.hero_ranking_mode": "algorithmic" } },
+  });
+  check("a super_admin can switch the hero to algorithm-driven", switchToAlgorithmic.status === 200, switchToAlgorithmic.body);
+
+  const trendingAfterSwitch = await call("/api/trending", { token: adminToken });
+  check("GET /trending reports the new mode immediately", trendingAfterSwitch.body.hero_ranking_mode === "algorithmic", trendingAfterSwitch.body);
+
+  const heroWhileAlgorithmic = await call("/api/homepage?surface=home&platform=web&audience=logged_out");
+  const heroIdsAlgorithmic = (heroWhileAlgorithmic.body.hero ?? []).map((c: { id: number }) => c.id);
+  check("in algorithmic mode, the hero now plays the real-activity fixture it never curated",
+    heroIdsAlgorithmic.includes(discoveryAlgo.id), heroIdsAlgorithmic);
+
+  // The curated list itself (hero_display_order etc.) must be untouched by
+  // the mode switch — switching modes changes which list drives the public
+  // hero, never the list's own contents.
+  const curatedListAfterSwitch = await call("/api/trending", { token: adminToken });
+  check("the curated list's own contents are untouched by the mode switch",
+    JSON.stringify((curatedListAfterSwitch.body.items as unknown[])) === JSON.stringify((trendingAsPlainAdmin.body.items as unknown[])),
+    { before: trendingAsPlainAdmin.body.items, after: curatedListAfterSwitch.body.items });
+
+  const switchBack = await call("/api/settings/discovery", {
+    method: "PUT", token: adminToken,
+    body: { values: { "discovery.hero_ranking_mode": "curated" } },
+  });
+  check("switching back to curated succeeds", switchBack.status === 200, switchBack.body);
+
+  const heroAfterSwitchBack = await call("/api/homepage?surface=home&platform=web&audience=logged_out");
+  const heroIdsAfterSwitchBack = (heroAfterSwitchBack.body.hero ?? []).map((c: { id: number }) => c.id);
+  check("switching back restores EXACTLY the pre-switch curated hero, in the same order",
+    JSON.stringify(heroIdsAfterSwitchBack) === JSON.stringify(heroIdsBaseline), { heroIdsAfterSwitchBack, heroIdsBaseline });
+
+  // ─── Reset — the one piece of state this section dirties outside created.* ─
+  await prisma.setting.deleteMany({ where: { setting_key: "discovery.hero_ranking_mode" } });
 
   // ─── Cleanup ───────────────────────────────────────────────────────────────
   await prisma.meetingAttendance.deleteMany({

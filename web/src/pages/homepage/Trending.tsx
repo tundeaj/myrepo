@@ -1,11 +1,14 @@
 import { useState, useEffect, useCallback } from "react";
 import { api } from "../../lib/api";
+import { useAuth } from "../../lib/AuthContext";
 import { useToast } from "../../components/Toast";
 import { EmptyState } from "../../components/EmptyState";
 import { ErrorState } from "../../components/ErrorState";
 import { Skeleton } from "../../components/Skeleton";
 import { Icon } from "../../components/Icon";
 import { inputClass } from "../../components/session/Panel";
+
+type HeroRankingMode = "curated" | "algorithmic";
 
 /**
  * Which content plays in the public homepage's rotating hero banner
@@ -201,10 +204,95 @@ function SuggestionChips({
   );
 }
 
+/**
+ * The curated list below (this whole page, apart from this control) is only
+ * what the public hero plays while mode === "curated" — the Super-Admin-only
+ * discovery.hero_ranking_mode setting (settingsSchema.ts) can switch it to
+ * an automatic ranking by real recent watch activity instead. Every admin
+ * sees which mode is live (so the page is never silently lying about what
+ * Promote/Demote/Add/Remove currently affect); only a Super Admin gets the
+ * control to actually change it — enforced server-side (PUT /settings/discovery),
+ * this is just the convenient surface for it, right where it matters.
+ */
+function RankingModeControl({
+  mode,
+  canEdit,
+  onChanged,
+}: {
+  mode: HeroRankingMode;
+  canEdit: boolean;
+  onChanged: (mode: HeroRankingMode) => void;
+}) {
+  const { toast } = useToast();
+  const [saving, setSaving] = useState(false);
+
+  async function setMode(next: HeroRankingMode) {
+    if (next === mode || saving) return;
+    setSaving(true);
+    try {
+      await api("/settings/discovery", {
+        method: "PUT",
+        body: JSON.stringify({ values: { "discovery.hero_ranking_mode": next } }),
+      });
+      onChanged(next);
+      toast(
+        next === "algorithmic"
+          ? "Hero now ranks by real recent watch activity, live within moments."
+          : "Hero back to this curated list, live within moments.",
+      );
+    } catch (e: any) {
+      toast(e.message ?? "Couldn't change the hero ranking mode.", "error");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+      <div>
+        <p className="text-sm font-medium text-slate-200">
+          Public hero is currently{" "}
+          <span className={mode === "algorithmic" ? "text-brand" : "text-slate-100"}>
+            {mode === "algorithmic" ? "algorithm-driven" : "business-curated"}
+          </span>
+        </p>
+        <p className="mt-0.5 text-xs text-slate-500">
+          {mode === "algorithmic"
+            ? "Ranked live by real recent watch activity — the list and Promote/Demote below are kept, but not what's currently playing."
+            : "Playing exactly the list below, in the order Promote/Demote leaves it."}
+          {!canEdit && " Only a Super Admin can change this."}
+        </p>
+      </div>
+      {canEdit && (
+        <div className="flex gap-1 rounded-lg border border-slate-800 bg-slate-950 p-1">
+          <button
+            type="button"
+            onClick={() => setMode("curated")}
+            disabled={saving}
+            className={`rounded px-3 py-1.5 text-xs font-medium transition-colors ${mode === "curated" ? "bg-brand text-white" : "text-slate-400 hover:text-slate-200"}`}
+          >
+            Curated
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode("algorithmic")}
+            disabled={saving}
+            className={`rounded px-3 py-1.5 text-xs font-medium transition-colors ${mode === "algorithmic" ? "bg-brand text-white" : "text-slate-400 hover:text-slate-200"}`}
+          >
+            Algorithmic
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Trending() {
   const { toast } = useToast();
+  const { user } = useAuth();
   const [items, setItems] = useState<TrendingItem[] | null>(null);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [heroMode, setHeroMode] = useState<HeroRankingMode>("curated");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [correlationId, setCorrelationId] = useState<string | undefined>();
@@ -218,13 +306,14 @@ export function Trending() {
     setLoading(true);
     setError(null);
     Promise.all([
-      api<{ items: TrendingItem[] }>("/trending"),
+      api<{ items: TrendingItem[]; hero_ranking_mode: HeroRankingMode }>("/trending"),
       // Suggestions are a nudge, not load-bearing — a failure here shouldn't
       // block the actual trending list from rendering.
       api<{ suggestions: Suggestion[] }>("/trending/suggestions").catch(() => ({ suggestions: [] })),
     ])
       .then(([trendingRes, suggestRes]) => {
         setItems(trendingRes.items);
+        setHeroMode(trendingRes.hero_ranking_mode);
         setSuggestions(suggestRes.suggestions);
         setLoading(false);
       })
@@ -294,6 +383,8 @@ export function Trending() {
           it later, or remove it entirely. A change here goes live within moments, not the homepage's usual cache window.
         </p>
       </div>
+
+      <RankingModeControl mode={heroMode} canEdit={user?.role === "super_admin"} onChanged={setHeroMode} />
 
       <SuggestionChips suggestions={suggestions} busyId={busyId} onAdd={addSuggestion} />
 

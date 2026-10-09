@@ -32,3 +32,14 @@ export function requireAdmin(req: Request, _res: Response, next: NextFunction) {
   }
   next();
 }
+
+/** Stricter than requireAdmin — "admin" is not enough. For settings whose
+ *  blast radius is platform-wide and not easily undone by glancing at a UI
+ *  (e.g. switching the public hero's ranking algorithm), not every admin
+ *  action. Always stack behind requireAuth, same as requireAdmin. */
+export function requireSuperAdmin(req: Request, _res: Response, next: NextFunction) {
+  if (!req.user || req.user.role !== "super_admin") {
+    throw new ApiError(403, "Only a Super Admin can do that.");
+  }
+  next();
+}

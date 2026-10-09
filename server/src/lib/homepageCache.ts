@@ -2,6 +2,8 @@ import { prisma } from "./prisma.js";
 import { getRowType, isPersonalRow } from "./rowTypes.js";
 import { endOfWeek, daysAgo } from "./dates.js";
 import { resolveActiveSponsors, type PublicSponsor } from "./sponsors.js";
+import { recentActivityRanking, DEFAULT_ACTIVITY_WINDOW_DAYS } from "./activity.js";
+import { getSetting } from "./settingValue.js";
 
 // ─── Card payload ─────────────────────────────────────────────────────────────
 //
@@ -346,21 +348,68 @@ async function attachHeroSponsors(cards: ContentCard[]): Promise<ContentCard[]> 
   return cards.map((c) => ({ ...c, sponsors: sponsorsByContent.get(c.id) ?? [] }));
 }
 
-async function buildHero(): Promise<ContentCard[]> {
-  // Explicitly flagged hero items first, in the admin's own trending order —
-  // see routes/trending.ts, the only writer of hero_display_order. Ties (or a
-  // pre-promote/demote item still at its default 0) fall back to
-  // scheduled_start_at desc, the ordering this used exclusively before
-  // trending existed. Fall back further to whatever is live, then to featured
-  // content, so the hero is never empty on a young platform.
-  const flagged = await prisma.contentItem.findMany({
-    where: visibleWhere({ show_in_hero: true }),
-    orderBy: [{ hero_display_order: "asc" }, { scheduled_start_at: "desc" }],
-    take: HERO_LIMIT,
-    select: CARD_SELECT,
-  });
-  if (flagged.length) return attachHeroSponsors(await decorateCards(flagged as RawCard[]));
+/**
+ * Super-Admin-only Settings field (discovery.hero_ranking_mode) — the one
+ * read of it that actually changes public output, not just admin-console
+ * display. "curated" (the default) is this platform's own choice, business/
+ * marketing-ordered rather than algorithm-driven; "algorithmic" switches the
+ * hero to rank by the same real-activity signal routes/trending.ts's
+ * suggestions already uses (see lib/activity.ts). Either way the result
+ * still passes through visibleWhere() below — algorithmic mode ranks the
+ * whole catalogue by recent activity, but never surfaces something that
+ * isn't actually publishable right now.
+ */
+export async function heroRankingMode(): Promise<"curated" | "algorithmic"> {
+  const value = await getSetting("discovery.hero_ranking_mode");
+  return value === "algorithmic" ? "algorithmic" : "curated";
+}
 
+async function buildHero(): Promise<ContentCard[]> {
+  const mode = await heroRankingMode();
+
+  if (mode === "algorithmic") {
+    // Rank the whole eligible catalogue by real recent watch activity — no
+    // excludeIds, unlike suggestions' "not yet trending" framing: here the
+    // ranking itself IS what plays, not a nudge toward manually adding
+    // something. hero_display_order (the curated list) is simply not
+    // consulted in this mode; it's left untouched, ready for a switch back.
+    const ranked = await recentActivityRanking({ windowDays: DEFAULT_ACTIVITY_WINDOW_DAYS });
+    if (ranked.length) {
+      // Headroom before the visibility filter: the top-ranked ids may include
+      // content that isn't currently publishable (pulled back to draft,
+      // deactivated) — over-fetch candidates, then cut to HERO_LIMIT in rank
+      // order once only the actually-visible ones remain.
+      const candidateIds = ranked.slice(0, HERO_LIMIT * 6).map((r) => r.id);
+      const visible = (await prisma.contentItem.findMany({
+        where: visibleWhere({ id: { in: candidateIds } }),
+        select: CARD_SELECT,
+      })) as RawCard[];
+      const byId = new Map(visible.map((v) => [v.id, v]));
+      const ordered = candidateIds
+        .map((id) => byId.get(id))
+        .filter((c): c is RawCard => Boolean(c))
+        .slice(0, HERO_LIMIT);
+      if (ordered.length) return attachHeroSponsors(await decorateCards(ordered));
+    }
+    // No real activity yet (a young platform) — same live/featured fallback
+    // curated mode uses below, rather than an empty hero.
+  } else {
+    // Explicitly flagged hero items first, in the admin's own trending order —
+    // see routes/trending.ts, the only writer of hero_display_order. Ties (or
+    // a pre-promote/demote item still at its default 0) fall back to
+    // scheduled_start_at desc, the ordering this used exclusively before
+    // trending existed.
+    const flagged = await prisma.contentItem.findMany({
+      where: visibleWhere({ show_in_hero: true }),
+      orderBy: [{ hero_display_order: "asc" }, { scheduled_start_at: "desc" }],
+      take: HERO_LIMIT,
+      select: CARD_SELECT,
+    });
+    if (flagged.length) return attachHeroSponsors(await decorateCards(flagged as RawCard[]));
+  }
+
+  // Shared fallback, either mode: whatever is live, then featured content, so
+  // the hero is never empty on a young platform.
   const fallback = await prisma.contentItem.findMany({
     where: visibleWhere({ OR: [{ status: "live" }, { is_featured: true }] }),
     orderBy: [{ status: "asc" }, { scheduled_start_at: "desc" }],

@@ -3,20 +3,28 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { ApiError } from "../lib/errors.js";
 import { SETTINGS_FIELDS, SETTINGS_GROUPS, TIMEZONE_OPTIONS, findField } from "../lib/settingsSchema.js";
+import { rebuildAllCaches } from "../lib/homepageCache.js";
+import { requireSuperAdmin } from "../middleware/auth.js";
 import type { Request, Response, NextFunction } from "express";
 
 export const settingsRouter = Router();
 
 // ─── GET /settings — every group, every field, merged with stored overrides.
-// Secret fields NEVER return their value — only whether one is set.
+// Secret fields NEVER return their value — only whether one is set. A
+// superAdminOnly group (see settingsSchema.ts) is left out of the list
+// entirely for anyone who isn't one — not just write-protected, so a plain
+// admin never even learns the group exists.
 
-settingsRouter.get("/", async (_req: Request, res: Response, next: NextFunction) => {
+settingsRouter.get("/", async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const isSuperAdmin = req.user?.role === "super_admin";
+    const visibleGroups = SETTINGS_GROUPS.filter((g) => !g.superAdminOnly || isSuperAdmin);
+
     const allKeys = Object.values(SETTINGS_FIELDS).flat().map((f) => f.key);
     const stored = await prisma.setting.findMany({ where: { setting_key: { in: allKeys } } });
     const byKey = new Map(stored.map((s) => [s.setting_key, s]));
 
-    const groups = SETTINGS_GROUPS.map((group) => ({
+    const groups = visibleGroups.map((group) => ({
       key: group.key,
       label: group.label,
       fields: SETTINGS_FIELDS[group.key].map((field) => {
@@ -63,6 +71,13 @@ settingsRouter.put("/:group", async (req: Request, res: Response, next: NextFunc
     const group = req.params.group;
     const fields = SETTINGS_FIELDS[group];
     if (!fields) throw new ApiError(404, "Unknown settings group.");
+
+    const groupMeta = SETTINGS_GROUPS.find((g) => g.key === group);
+    // Same check GET /settings uses to decide whether to even list the
+    // group, called here as a plain function (not route middleware, since
+    // whether it applies depends on :group) so there's one place that
+    // decides what "super admin" means.
+    if (groupMeta?.superAdminOnly) requireSuperAdmin(req, res, () => {});
 
     const body = z.object({
       values: z.record(z.union([z.string(), z.boolean(), z.null()])),
@@ -119,6 +134,23 @@ settingsRouter.put("/:group", async (req: Request, res: Response, next: NextFunc
         update: { setting_value: stringValue, updated_by: userId },
         create: { setting_key: key, setting_value: stringValue, setting_group: group, is_secret: false, updated_by: userId },
       });
+    }
+
+    // The hero ranking mode changes what the PUBLIC homepage shows right
+    // now, not just an admin-console display — rebuild immediately rather
+    // than leaving it to the cache's usual TTL. Awaited, not fire-and-forget:
+    // this is a rare, deliberate Super Admin action (same reasoning
+    // lib/trending.ts's syncHeroTrending gives for awaiting its own rebuild),
+    // and "live within moments" should actually be true by the time this
+    // response returns, not just usually true. Still never fails the save
+    // itself — a stale cache for a few minutes is a real but recoverable
+    // consequence.
+    if (group === "discovery") {
+      try {
+        await rebuildAllCaches();
+      } catch (err) {
+        console.error("[settings] homepage cache rebuild failed:", err);
+      }
     }
 
     res.json({ ok: true });
