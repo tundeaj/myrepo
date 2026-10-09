@@ -21,7 +21,13 @@ import { readFileSync } from "node:fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const isProd = process.env.NODE_ENV === "production";
-const PORT = Number(process.env.PORT ?? 5173);
+// Deliberately NOT `process.env.PORT` — the API server (server/src/lib/env.ts)
+// already owns that name, and CI's job-level `env:` sets it to 4000 for every
+// step, this one included. Reusing it here made this server try to bind
+// 127.0.0.1:4000 too — a real EADDRINUSE caught by CI itself, not by anything
+// run locally first (dev always ran these as two separate `npm run dev`
+// invocations in different shells, so PORT was never actually shared).
+const PORT = Number(process.env.WEB_PORT ?? 5173);
 // Internal, server-to-server calls only — never exposed to the browser.
 const API_BASE_URL = (process.env.API_BASE_URL ?? "http://127.0.0.1:4000").replace(/\/+$/, "");
 
